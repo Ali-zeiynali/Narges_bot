@@ -1,12 +1,13 @@
 import json
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
+from sqlalchemy import func, select
 
 from bot.models.channel import MembershipCheck, MembershipItem, RequiredChannel
 from bot.storage.database import Database
+from bot.storage.orm import AdminBypassORM, ChannelAuditLogORM, MembershipCacheORM, RequiredChannelORM
 
 
 VALID_MEMBER_STATUSES = {"member", "administrator", "creator"}
@@ -19,19 +20,19 @@ class RequiredChannelService:
         self.admin_ids = set(admin_ids)
 
     def list_active(self) -> list[RequiredChannel]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM required_channels
-                WHERE active = 1
-                ORDER BY position ASC, id ASC
-                """
-            ).fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(RequiredChannelORM)
+                .where(RequiredChannelORM.active.is_(True))
+                .order_by(RequiredChannelORM.position.asc(), RequiredChannelORM.id.asc())
+            ).all()
         return [self._row_to_channel(row) for row in rows]
 
     def list_all(self) -> list[RequiredChannel]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute("SELECT * FROM required_channels ORDER BY position ASC, id ASC").fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(RequiredChannelORM).order_by(RequiredChannelORM.position.asc(), RequiredChannelORM.id.asc())
+            ).all()
         return [self._row_to_channel(row) for row in rows]
 
     async def check_user(self, bot: Bot, user_id: int, use_cache: bool = True) -> MembershipCheck:
@@ -61,23 +62,30 @@ class RequiredChannelService:
         is_private: bool,
         position: int | None = None,
     ) -> RequiredChannel:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
         if position is None:
             position = self._next_position()
-        self.database.execute(
-            """
-            INSERT INTO required_channels(chat_id, title, join_url, position, is_private, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                title = excluded.title,
-                join_url = excluded.join_url,
-                position = excluded.position,
-                is_private = excluded.is_private,
-                active = 1,
-                updated_at = excluded.updated_at
-            """,
-            (chat_id, title, join_url, position, int(is_private), now, now),
-        )
+        with self.database.orm.session() as session:
+            row = session.scalar(select(RequiredChannelORM).where(RequiredChannelORM.chat_id == chat_id))
+            if row is None:
+                row = RequiredChannelORM(
+                    chat_id=chat_id,
+                    title=title,
+                    join_url=join_url,
+                    position=position,
+                    is_private=is_private,
+                    active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.title = title
+                row.join_url = join_url
+                row.position = position
+                row.is_private = is_private
+                row.active = True
+                row.updated_at = now
         channel = self._find_by_chat_id(chat_id)
         self._audit(admin_id, "upsert_channel", channel.id, None, channel)
         return channel
@@ -86,10 +94,11 @@ class RequiredChannelService:
         before = self.get(channel_id)
         if before is None:
             return False
-        self.database.execute(
-            "UPDATE required_channels SET active = 0, updated_at = ? WHERE id = ?",
-            (datetime.now(UTC).isoformat(), channel_id),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(RequiredChannelORM, channel_id)
+            if row:
+                row.active = False
+                row.updated_at = datetime.now(UTC)
         self._audit(admin_id, "remove_channel", channel_id, before, None)
         return True
 
@@ -97,48 +106,38 @@ class RequiredChannelService:
         before = self.get(channel_id)
         if before is None:
             return False
-        self.database.execute(
-            "UPDATE required_channels SET position = ?, updated_at = ? WHERE id = ?",
-            (position, datetime.now(UTC).isoformat(), channel_id),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(RequiredChannelORM, channel_id)
+            if row:
+                row.position = position
+                row.updated_at = datetime.now(UTC)
         after = self.get(channel_id)
         self._audit(admin_id, "move_channel", channel_id, before, after)
         return True
 
     def get(self, channel_id: int) -> RequiredChannel | None:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute("SELECT * FROM required_channels WHERE id = ?", (channel_id,)).fetchone()
+        with self.database.orm.session() as session:
+            row = session.get(RequiredChannelORM, channel_id)
         return self._row_to_channel(row) if row else None
 
     def grant_admin_bypass(self, admin_id: int, user_id: int, minutes: int, reason: str | None = None) -> None:
         now = datetime.now(UTC)
-        self.database.execute(
-            """
-            INSERT INTO admin_bypasses(user_id, bypass_until, reason, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                bypass_until = excluded.bypass_until,
-                reason = excluded.reason,
-                created_by = excluded.created_by,
-                created_at = excluded.created_at
-            """,
-            (
-                user_id,
-                (now + timedelta(minutes=minutes)).isoformat(),
-                reason,
-                admin_id,
-                now.isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(AdminBypassORM, user_id)
+            if row is None:
+                row = AdminBypassORM(user_id=user_id, bypass_until=now + timedelta(minutes=minutes), reason=reason, created_by=admin_id, created_at=now)
+                session.add(row)
+            else:
+                row.bypass_until = now + timedelta(minutes=minutes)
+                row.reason = reason
+                row.created_by = admin_id
+                row.created_at = now
         self._audit(admin_id, "grant_bypass", None, None, {"user_id": user_id, "minutes": minutes})
 
     def has_admin_bypass(self, user_id: int) -> bool:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT bypass_until FROM admin_bypasses WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-        return bool(row and datetime.fromisoformat(row["bypass_until"]) > datetime.now(UTC))
+        with self.database.orm.session() as session:
+            row = session.get(AdminBypassORM, user_id)
+        return bool(row and self._dt(row.bypass_until) > datetime.now(UTC))
 
     async def _fetch_membership(self, bot: Bot, user_id: int, channel: RequiredChannel) -> MembershipItem:
         try:
@@ -155,73 +154,62 @@ class RequiredChannelService:
 
     def _get_cached(self, user_id: int, channel_id: int) -> MembershipItem | None:
         now = datetime.now(UTC)
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT mc.*, rc.* FROM membership_cache mc
-                JOIN required_channels rc ON rc.id = mc.channel_id
-                WHERE mc.user_id = ? AND mc.channel_id = ? AND mc.expires_at > ?
-                """,
-                (user_id, channel_id, now.isoformat()),
-            ).fetchone()
-        if row is None:
+        with self.database.orm.session() as session:
+            cache = session.get(MembershipCacheORM, {"user_id": user_id, "channel_id": channel_id})
+            channel_row = session.get(RequiredChannelORM, channel_id) if cache else None
+        if cache is None or channel_row is None or self._dt(cache.expires_at) <= now:
             return None
         return MembershipItem(
-            channel=self._row_to_channel(row),
-            status=row["status"],
-            is_member=bool(row["is_member"]),
-            error=row["error"],
+            channel=self._row_to_channel(channel_row),
+            status=cache.status,
+            is_member=bool(cache.is_member),
+            error=cache.error,
         )
 
     def _cache(self, user_id: int, item: MembershipItem) -> None:
         now = datetime.now(UTC)
-        self.database.execute(
-            """
-            INSERT INTO membership_cache(user_id, channel_id, status, is_member, error, checked_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, channel_id) DO UPDATE SET
-                status = excluded.status,
-                is_member = excluded.is_member,
-                error = excluded.error,
-                checked_at = excluded.checked_at,
-                expires_at = excluded.expires_at
-            """,
-            (
-                user_id,
-                item.channel.id,
-                item.status,
-                int(item.is_member),
-                item.error,
-                now.isoformat(),
-                (now + timedelta(seconds=self.cache_seconds)).isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(MembershipCacheORM, {"user_id": user_id, "channel_id": item.channel.id})
+            if row is None:
+                row = MembershipCacheORM(
+                    user_id=user_id,
+                    channel_id=item.channel.id,
+                    status=item.status,
+                    is_member=item.is_member,
+                    error=item.error,
+                    checked_at=now,
+                    expires_at=now + timedelta(seconds=self.cache_seconds),
+                )
+                session.add(row)
+            else:
+                row.status = item.status
+                row.is_member = item.is_member
+                row.error = item.error
+                row.checked_at = now
+                row.expires_at = now + timedelta(seconds=self.cache_seconds)
 
     def _next_position(self) -> int:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute("SELECT COALESCE(MAX(position), 0) + 10 AS pos FROM required_channels").fetchone()
-        return int(row["pos"])
+        with self.database.orm.session() as session:
+            value = session.scalar(select(func.coalesce(func.max(RequiredChannelORM.position), 0) + 10))
+        return int(value or 10)
 
     def _find_by_chat_id(self, chat_id: str) -> RequiredChannel:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute("SELECT * FROM required_channels WHERE chat_id = ?", (chat_id,)).fetchone()
+        with self.database.orm.session() as session:
+            row = session.scalar(select(RequiredChannelORM).where(RequiredChannelORM.chat_id == chat_id))
         return self._row_to_channel(row)
 
     def _audit(self, admin_id: int, action: str, channel_id: int | None, before, after) -> None:
-        self.database.execute(
-            """
-            INSERT INTO channel_audit_logs(admin_id, action, channel_id, before_payload, after_payload, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                admin_id,
-                action,
-                channel_id,
-                self._serialize(before),
-                self._serialize(after),
-                datetime.now(UTC).isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            session.add(
+                ChannelAuditLogORM(
+                    admin_id=admin_id,
+                    action=action,
+                    channel_id=channel_id,
+                    before_payload=self._serialize(before),
+                    after_payload=self._serialize(after),
+                    created_at=datetime.now(UTC),
+                )
+            )
 
     def _serialize(self, value) -> str | None:
         if value is None:
@@ -232,13 +220,24 @@ class RequiredChannelService:
 
     def _row_to_channel(self, row) -> RequiredChannel:
         return RequiredChannel(
-            id=row["id"],
-            chat_id=row["chat_id"],
-            title=row["title"],
-            join_url=row["join_url"],
-            position=row["position"],
-            is_private=bool(row["is_private"]),
-            active=bool(row["active"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            id=self._value(row, "id"),
+            chat_id=self._value(row, "chat_id"),
+            title=self._value(row, "title"),
+            join_url=self._value(row, "join_url"),
+            position=self._value(row, "position"),
+            is_private=bool(self._value(row, "is_private")),
+            active=bool(self._value(row, "active")),
+            created_at=self._dt(self._value(row, "created_at")),
+            updated_at=self._dt(self._value(row, "updated_at")),
         )
+
+    def _value(self, row, name: str):
+        if hasattr(row, name):
+            return getattr(row, name)
+        return row[name]
+
+    def _dt(self, value: datetime | str) -> datetime:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed

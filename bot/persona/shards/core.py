@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 try:
-    from .narges_intimacy_persona import render_intimacy_prompt
-    from .narges_user_affect_persona import render_user_affect_prompt
+    from bot.persona.texts.narges_intimacy_persona import render_intimacy_prompt
+    from bot.persona.texts.narges_user_affect_persona import render_user_affect_prompt
 except ImportError:
-    from narges_intimacy_persona import render_intimacy_prompt
-    from narges_user_affect_persona import render_user_affect_prompt
+    from persona.texts.narges_intimacy_persona import render_intimacy_prompt
+    from persona.texts.narges_user_affect_persona import render_user_affect_prompt
 
 
 CORE_SECTIONS: tuple[str, ...] = (

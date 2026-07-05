@@ -1,11 +1,13 @@
 import json
-from contextlib import closing
 from datetime import UTC, date, datetime
+
+from sqlalchemy import select
 
 from bot.models.ai import EventSuggestion
 from bot.models.state import DailyEvent, GlobalState
 from bot.services.scheduler import DailyScheduler
 from bot.storage.database import Database
+from bot.storage.orm import DailyEventORM
 
 
 class EventService:
@@ -14,18 +16,15 @@ class EventService:
         self.scheduler = scheduler
 
     def get_events_for_day(self, event_date: date) -> list[DailyEvent]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT payload FROM daily_events
-                WHERE event_date = ?
-                ORDER BY start_at ASC
-                """,
-                (event_date.isoformat(),),
-            ).fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(DailyEventORM)
+                .where(DailyEventORM.event_date == event_date.isoformat())
+                .order_by(DailyEventORM.start_at.asc())
+            ).all()
 
         if rows:
-            return [DailyEvent.model_validate(json.loads(row["payload"])) for row in rows]
+            return [DailyEvent.model_validate(json.loads(row.payload)) for row in rows]
 
         events = self.scheduler.create_daily_events(event_date)
         for event in events:
@@ -50,17 +49,16 @@ class EventService:
         return suggestion.title not in titles
 
     def _save_event(self, event_date: date, event: DailyEvent) -> None:
-        self.database.execute(
-            """
-            INSERT OR IGNORE INTO daily_events(id, event_date, payload, start_at, end_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.id,
-                event_date.isoformat(),
-                event.model_dump_json(),
-                event.start_at.isoformat(),
-                event.end_at.isoformat(),
-                event.expires_at.isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            if session.get(DailyEventORM, event.id) is not None:
+                return
+            session.add(
+                DailyEventORM(
+                    id=event.id,
+                    event_date=event_date.isoformat(),
+                    payload=event.model_dump_json(),
+                    start_at=event.start_at,
+                    end_at=event.end_at,
+                    expires_at=event.expires_at,
+                )
+            )

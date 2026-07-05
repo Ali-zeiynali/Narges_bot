@@ -233,4 +233,70 @@ MIGRATIONS: list[tuple[str, str]] = [
         );
         """,
     ),
+    (
+        "004_user_moderation_and_message_dates",
+        """
+        CREATE TABLE IF NOT EXISTS user_warning_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_message_id INTEGER,
+            warning_count_after INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_warning_events_user_created
+            ON user_warning_events(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS user_blocks (
+            user_id INTEGER PRIMARY KEY,
+            warning_count INTEGER NOT NULL,
+            blocked_until TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        "005_account_debug_and_phone_bonus",
+        """
+        ALTER TABLE users ADD COLUMN phone_number TEXT;
+        ALTER TABLE users ADD COLUMN phone_verified_at TEXT;
+        ALTER TABLE users ADD COLUMN phone_bonus_claimed INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS debug_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_debug_logs_event_created
+            ON debug_logs(event, created_at);
+        """,
+    ),
+    (
+        "006_billing_invoices",
+        """
+        CREATE TABLE IF NOT EXISTS billing_invoices (
+            invoice_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            plan_id TEXT NOT NULL,
+            stars_cost INTEGER NOT NULL,
+            message_quota INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            payment_id TEXT UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_billing_invoices_user_created
+            ON billing_invoices(user_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
+            ON billing_invoices(status);
+        """,
+    ),
 ]

@@ -34,5 +34,8 @@ class UserProfile:
     onboarding_state: OnboardingState
     name_confirm_attempted: bool
     plan: str
+    phone_number: str | None
+    phone_verified_at: datetime | None
+    phone_bonus_claimed: bool
     created_at: datetime
     updated_at: datetime

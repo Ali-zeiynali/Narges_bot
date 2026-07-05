@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import UTC, datetime, time
 
+from bot.persona.texts.state_prompts import STATE_PERSONA
 from bot.services.groq_client import GroqChatClient
 from bot.services.narges_state_service import NargesStateService
 
@@ -15,25 +16,6 @@ STATE_SLOTS = {
     "afternoon": time(15, 0),
     "night": time(22, 0),
 }
-
-
-STATE_PERSONA = """
-تو فقط وضعیت شخصی و مستقل نرگس را برنامه‌ریزی می‌کنی، نه پاسخ به کاربر.
-وضعیت باید ساده، روزمره، منطقی و امن باشد.
-خروجی فقط JSON معتبر باشد:
-{
-  "mood": "calm",
-  "energy": 70,
-  "activity": "reading",
-  "location": "home",
-  "is_alone": true,
-  "companions": [],
-  "mind_topics": ["work"],
-  "note": "optional short note",
-  "confidence": 0.8,
-  "reason": "why this update makes sense"
-}
-""".strip()
 
 
 class NargesStateScheduler:

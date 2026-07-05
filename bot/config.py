@@ -38,6 +38,7 @@ def float_env(name: str, default: float, minimum: float, maximum: float) -> floa
 class Settings:
     telegram_token: str
     telegram_proxy: str | None
+    groq_proxy: str | None
     groq_api_key: str
     groq_model: str
     groq_temperature: float
@@ -51,12 +52,15 @@ class Settings:
     admin_ids: tuple[int, ...]
     support_url: str | None
     free_daily_quota: int
+    free_monthly_quota: int
     rate_limit_short_count: int
     rate_limit_short_window_seconds: int
     rate_limit_long_count: int
     rate_limit_long_window_seconds: int
     membership_cache_seconds: int
     admin_bypass_minutes: int
+    debug_mode: bool
+    debug_user_ids: tuple[int, ...]
     name_transliteration_map: dict[str, str]
 
 
@@ -85,9 +89,15 @@ def json_map_env(name: str, default: dict[str, str]) -> dict[str, str]:
     return {str(key).strip().lower(): str(value).strip() for key, value in parsed.items()}
 
 
+def bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name, str(default)).strip().lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
 def load_settings() -> Settings:
     load_dotenv()
     proxy = os.getenv("TELEGRAM_PROXY", "http://127.0.0.1:12334").strip()
+    groq_proxy = os.getenv("GROQ_PROXY", "").strip() or proxy
     default_name_map = {
         "ali": "علی",
         "mohammad": "محمد",
@@ -101,6 +111,7 @@ def load_settings() -> Settings:
     return Settings(
         telegram_token=require_env("TELEGRAM_TOKEN"),
         telegram_proxy=proxy or None,
+        groq_proxy=groq_proxy or None,
         groq_api_key=require_env("GROQ_API_KEY"),
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
         groq_temperature=float_env("GROQ_TEMPERATURE", 0.7, 0, 2),
@@ -114,11 +125,14 @@ def load_settings() -> Settings:
         admin_ids=csv_int_env("ADMIN_IDS"),
         support_url=os.getenv("SUPPORT_URL", "").strip() or None,
         free_daily_quota=int_env("FREE_DAILY_QUOTA", 40, 1, 10000),
+        free_monthly_quota=int_env("FREE_MONTHLY_QUOTA", 300, 1, 100000),
         rate_limit_short_count=int_env("RATE_LIMIT_SHORT_COUNT", 6, 1, 100),
         rate_limit_short_window_seconds=int_env("RATE_LIMIT_SHORT_WINDOW_SECONDS", 120, 10, 3600),
         rate_limit_long_count=int_env("RATE_LIMIT_LONG_COUNT", 15, 1, 300),
         rate_limit_long_window_seconds=int_env("RATE_LIMIT_LONG_WINDOW_SECONDS", 600, 60, 86400),
         membership_cache_seconds=int_env("MEMBERSHIP_CACHE_SECONDS", 60, 5, 3600),
         admin_bypass_minutes=int_env("ADMIN_BYPASS_MINUTES", 60, 1, 10080),
+        debug_mode=bool_env("DEBUG_MODE", False),
+        debug_user_ids=csv_int_env("DEBUG_USER_IDS"),
         name_transliteration_map=json_map_env("NAME_TRANSLITERATION_MAP", default_name_map),
     )

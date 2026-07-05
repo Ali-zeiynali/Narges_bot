@@ -1,8 +1,10 @@
 import hashlib
-from contextlib import closing
 from datetime import UTC, datetime
 
+from sqlalchemy import select, text
+
 from bot.storage.database import Database
+from bot.storage.orm import ConversationHistoryORM, ConversationMessageORM
 
 
 class HistoryService:
@@ -16,51 +18,45 @@ class HistoryService:
         text: str,
         chat_id: int | None = None,
         telegram_message_id: int | None = None,
+        created_at: datetime | None = None,
     ) -> None:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         preview = text[:240]
-        now = datetime.now(UTC).isoformat()
-        self.database.execute(
-            """
-            INSERT INTO conversation_history(user_id, role, text_hash, text_preview, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (user_id, role, text_hash, preview, now),
-        )
-        self.database.execute(
-            """
-            INSERT INTO conversation_messages(
-                user_id, chat_id, telegram_message_id, role, text, text_hash, created_at
+        now = (created_at or datetime.now(UTC)).astimezone(UTC)
+        with self.database.orm.session() as session:
+            session.add(ConversationHistoryORM(user_id=user_id, role=role, text_hash=text_hash, text_preview=preview, created_at=now))
+            session.add(
+                ConversationMessageORM(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    telegram_message_id=telegram_message_id,
+                    role=role,
+                    text=text,
+                    text_hash=text_hash,
+                    created_at=now,
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, chat_id, telegram_message_id, role, text, text_hash, now),
-        )
 
     def recent_assistant_replies(self, user_id: int, limit: int = 5) -> list[str]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT text_preview FROM conversation_history
-                WHERE user_id = ? AND role = 'assistant'
-                ORDER BY id DESC LIMIT ?
-                """,
-                (user_id, limit),
-            ).fetchall()
-        return [row["text_preview"] for row in rows]
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(ConversationHistoryORM.text_preview)
+                .where(ConversationHistoryORM.user_id == user_id, ConversationHistoryORM.role == "assistant")
+                .order_by(ConversationHistoryORM.id.desc())
+                .limit(limit)
+            ).all()
+        return list(rows)
 
     def recent_turns(self, user_id: int, limit: int = 10) -> list[dict[str, str]]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT role, text, created_at FROM conversation_messages
-                WHERE user_id = ?
-                ORDER BY id DESC LIMIT ?
-                """,
-                (user_id, limit),
-            ).fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(ConversationMessageORM)
+                .where(ConversationMessageORM.user_id == user_id)
+                .order_by(ConversationMessageORM.id.desc())
+                .limit(limit)
+            ).all()
         return [
-            {"role": row["role"], "text": row["text"], "created_at": row["created_at"]}
+            {"role": row.role, "text": row.text, "created_at": self._iso(row.created_at)}
             for row in reversed(rows)
         ]
 
@@ -68,21 +64,30 @@ class HistoryService:
         query = self._sanitize_fts_query(query)
         if not query:
             return []
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
+        with self.database.orm.session() as session:
+            rows = session.execute(
+                text(
+                    """
                 SELECT cm.role, cm.text, cm.created_at
                 FROM conversation_messages_fts fts
                 JOIN conversation_messages cm ON cm.id = fts.rowid
-                WHERE conversation_messages_fts MATCH ? AND cm.user_id = ?
+                WHERE conversation_messages_fts MATCH :query AND cm.user_id = :user_id
                 ORDER BY bm25(conversation_messages_fts)
-                LIMIT ?
+                LIMIT :limit
                 """,
-                (query, user_id, limit),
-            ).fetchall()
+                ),
+                {"query": query, "user_id": user_id, "limit": limit},
+            ).mappings().all()
         return [{"role": row["role"], "text": row["text"], "created_at": row["created_at"]} for row in rows]
 
     def _sanitize_fts_query(self, query: str) -> str:
         words = [word.strip('"*():-') for word in (query or "").split()]
         words = [word for word in words if len(word) >= 2]
         return " OR ".join(words[:8])
+
+    def _iso(self, value: datetime | str) -> str:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.isoformat()
+        return value

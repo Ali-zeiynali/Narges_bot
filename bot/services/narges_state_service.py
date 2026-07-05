@@ -1,10 +1,12 @@
 import json
 import re
-from contextlib import closing
 from datetime import UTC, datetime
+
+from sqlalchemy import select
 
 from bot.models.state import NargesSelfState, NargesSelfStateCandidate
 from bot.storage.database import Database
+from bot.storage.orm import NargesSelfStateORM, NargesStateAuditLogORM, NargesStateSchedulerRunORM
 
 
 BLOCKED_STATE_WORDS = [
@@ -24,10 +26,13 @@ class NargesStateService:
         self.database = database
 
     def get_active(self) -> NargesSelfState:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT payload FROM narges_self_states WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(NargesSelfStateORM)
+                .where(NargesSelfStateORM.is_active.is_(True))
+                .order_by(NargesSelfStateORM.id.desc())
+                .limit(1)
+            )
         if row is None:
             state = NargesSelfState(updated_at=datetime.now(UTC))
             self.save_candidate(
@@ -46,7 +51,7 @@ class NargesStateService:
                 source="default",
             )
             return state
-        return NargesSelfState.model_validate(json.loads(row["payload"]))
+        return NargesSelfState.model_validate(json.loads(row.payload))
 
     def save_candidate(self, candidate: NargesSelfStateCandidate, source: str) -> bool:
         before = self._active_payload()
@@ -67,30 +72,26 @@ class NargesStateService:
             note=candidate.note,
             updated_at=now,
         )
-        with closing(self.database.connect()) as connection:
-            connection.execute("UPDATE narges_self_states SET is_active = 0 WHERE is_active = 1")
-            connection.execute(
-                """
-                INSERT INTO narges_self_states(
-                    payload, mood, energy, activity, location, is_alone,
-                    companions, mind_topics, source, is_active, created_at
+        with self.database.orm.session() as session:
+            active_rows = session.scalars(select(NargesSelfStateORM).where(NargesSelfStateORM.is_active.is_(True))).all()
+            for row in active_rows:
+                row.is_active = False
+            session.flush()
+            session.add(
+                NargesSelfStateORM(
+                    payload=state.model_dump_json(),
+                    mood=state.mood,
+                    energy=state.energy,
+                    activity=state.activity,
+                    location=state.location,
+                    is_alone=state.is_alone,
+                    companions=json.dumps(state.companions, ensure_ascii=False),
+                    mind_topics=json.dumps(state.mind_topics, ensure_ascii=False),
+                    source=source,
+                    is_active=True,
+                    created_at=now,
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                """,
-                (
-                    state.model_dump_json(),
-                    state.mood,
-                    state.energy,
-                    state.activity,
-                    state.location,
-                    int(state.is_alone),
-                    json.dumps(state.companions, ensure_ascii=False),
-                    json.dumps(state.mind_topics, ensure_ascii=False),
-                    source,
-                    now.isoformat(),
-                ),
             )
-            connection.commit()
         self._audit("state_update", "accepted", candidate.reason, before, state.model_dump(mode="json"))
         return True
 
@@ -120,45 +121,40 @@ class NargesStateService:
         return True, "accepted"
 
     def mark_scheduler_run(self, run_date: str, slot: str, status: str, error: str | None = None) -> None:
-        self.database.execute(
-            """
-            INSERT INTO narges_state_scheduler_runs(run_date, slot, status, error, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(run_date, slot) DO UPDATE SET
-                status = excluded.status,
-                error = excluded.error,
-                created_at = excluded.created_at
-            """,
-            (run_date, slot, status, error, datetime.now(UTC).isoformat()),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(NargesStateSchedulerRunORM, {"run_date": run_date, "slot": slot})
+            if row is None:
+                row = NargesStateSchedulerRunORM(run_date=run_date, slot=slot, status=status, error=error, created_at=datetime.now(UTC))
+                session.add(row)
+            else:
+                row.status = status
+                row.error = error
+                row.created_at = datetime.now(UTC)
 
     def has_scheduler_run(self, run_date: str, slot: str) -> bool:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT status FROM narges_state_scheduler_runs WHERE run_date = ? AND slot = ? AND status = 'ok'",
-                (run_date, slot),
-            ).fetchone()
-        return row is not None
+        with self.database.orm.session() as session:
+            row = session.get(NargesStateSchedulerRunORM, {"run_date": run_date, "slot": slot})
+        return row is not None and row.status == "ok"
 
     def _active_payload(self) -> dict | None:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT payload FROM narges_self_states WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        return json.loads(row["payload"]) if row else None
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(NargesSelfStateORM)
+                .where(NargesSelfStateORM.is_active.is_(True))
+                .order_by(NargesSelfStateORM.id.desc())
+                .limit(1)
+            )
+        return json.loads(row.payload) if row else None
 
     def _audit(self, action: str, decision: str, reason: str | None, before, after) -> None:
-        self.database.execute(
-            """
-            INSERT INTO narges_state_audit_logs(action, decision, reason, before_payload, after_payload, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                action,
-                decision,
-                reason,
-                json.dumps(before, ensure_ascii=False, default=str) if before is not None else None,
-                json.dumps(after, ensure_ascii=False, default=str) if after is not None else None,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            session.add(
+                NargesStateAuditLogORM(
+                    action=action,
+                    decision=decision,
+                    reason=reason,
+                    before_payload=json.dumps(before, ensure_ascii=False, default=str) if before is not None else None,
+                    after_payload=json.dumps(after, ensure_ascii=False, default=str) if after is not None else None,
+                    created_at=datetime.now(UTC),
+                )
+            )

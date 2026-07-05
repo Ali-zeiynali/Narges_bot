@@ -12,6 +12,7 @@ def make_settings() -> Settings:
     return Settings(
         telegram_token="t",
         telegram_proxy=None,
+        groq_proxy=None,
         groq_api_key="g",
         groq_model="m",
         groq_temperature=0.7,
@@ -25,12 +26,15 @@ def make_settings() -> Settings:
         admin_ids=(),
         support_url=None,
         free_daily_quota=3,
+        free_monthly_quota=300,
         rate_limit_short_count=2,
         rate_limit_short_window_seconds=120,
         rate_limit_long_count=10,
         rate_limit_long_window_seconds=600,
         membership_cache_seconds=60,
         admin_bypass_minutes=60,
+        debug_mode=False,
+        debug_user_ids=(),
         name_transliteration_map={},
     )
 

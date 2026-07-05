@@ -19,7 +19,7 @@ class ResponseMode(str, Enum):
 class TelegramOutboundMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(min_length=1, max_length=3500)
+    text: str = Field(min_length=1, max_length=1200)
     delay_seconds: float = Field(default=0.4, ge=0, le=8)
 
     @field_validator("text")
@@ -28,6 +28,8 @@ class TelegramOutboundMessage(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("message text cannot be empty")
+        if len(value.splitlines()) > 8:
+            raise ValueError("telegram message cannot be longer than 8 lines")
         return value
 
 

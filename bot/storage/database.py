@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Iterable
 
 from bot.storage.migrations import MIGRATIONS
+from bot.storage.orm import DatabaseSessionManager
 
 
 class Database:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.orm = DatabaseSessionManager(path)
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -40,6 +42,7 @@ class Database:
                     (version, datetime.now(UTC).isoformat()),
                 )
             connection.commit()
+        self.orm.create_all()
 
     def execute(self, sql: str, params: Iterable[object] = ()) -> None:
         with closing(self.connect()) as connection:

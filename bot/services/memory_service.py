@@ -1,12 +1,15 @@
 import json
 import re
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
+from sqlalchemy import func, select
+
 from bot.models.ai import MemorySuggestion
 from bot.models.memory import MemoryItem, MemoryKind
+from bot.services.debug_service import DebugService
 from bot.storage.database import Database
+from bot.storage.orm import MemoryAuditLogORM, MemoryORM
 
 
 SENSITIVE_WORDS = [
@@ -34,22 +37,24 @@ LOW_VALUE_PATTERNS = [
 
 
 class MemoryService:
-    def __init__(self, database: Database, max_active_memories: int = 80) -> None:
+    def __init__(self, database: Database, max_active_memories: int = 80, debug_service: DebugService | None = None) -> None:
         self.database = database
         self.max_active_memories = max_active_memories
+        self.debug_service = debug_service
 
     def list_active(self, user_id: int, limit: int = 20) -> list[MemoryItem]:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM memories
-                WHERE user_id = ? AND active = 1
-                  AND (expires_at IS NULL OR expires_at > ?)
-                ORDER BY importance DESC, updated_at DESC
-                LIMIT ?
-                """,
-                (user_id, datetime.now(UTC).isoformat(), limit),
-            ).fetchall()
+        now = datetime.now(UTC)
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MemoryORM)
+                .where(
+                    MemoryORM.user_id == user_id,
+                    MemoryORM.active.is_(True),
+                    (MemoryORM.expires_at.is_(None) | (MemoryORM.expires_at > now)),
+                )
+                .order_by(MemoryORM.importance.desc(), MemoryORM.updated_at.desc())
+                .limit(limit)
+            ).all()
         return [self._row_to_memory(row) for row in rows]
 
     def retrieve_relevant(self, user_id: int, text: str, limit: int = 12) -> list[MemoryItem]:
@@ -80,13 +85,13 @@ class MemoryService:
 
     def delete(self, user_id: int, memory_id: int) -> bool:
         before = self._get(user_id, memory_id)
-        with closing(self.database.connect()) as connection:
-            cursor = connection.execute(
-                "UPDATE memories SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
-                (datetime.now(UTC).isoformat(), memory_id, user_id),
-            )
-            connection.commit()
-            deleted = cursor.rowcount > 0
+        deleted = False
+        with self.database.orm.session() as session:
+            row = session.get(MemoryORM, memory_id)
+            if row and row.user_id == user_id:
+                row.active = False
+                row.updated_at = datetime.now(UTC)
+                deleted = True
         if deleted:
             self._audit(user_id, memory_id, "delete", "accepted", "user requested deletion", before, None, None)
         return deleted
@@ -102,6 +107,7 @@ class MemoryService:
             allowed, reason = self._is_allowed(user_id, source_text, suggestion)
             if not allowed:
                 self._audit(user_id, None, suggestion.action, "rejected", reason, None, suggestion.model_dump(), source_message_id)
+                self._debug("memory_rejected", user_id, {"reason": reason, "suggestion": suggestion.model_dump()})
                 continue
 
             action = "create" if suggestion.action == "save" else suggestion.action
@@ -122,20 +128,22 @@ class MemoryService:
         source_message_id: int | None,
         suggestion: MemorySuggestion,
     ) -> None:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM memories
-                WHERE user_id = ? AND kind = 'identity' AND active = 1 AND summary LIKE 'User wants to be called %'
-                """,
-                (user_id,),
-            ).fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MemoryORM).where(
+                    MemoryORM.user_id == user_id,
+                    MemoryORM.kind == "identity",
+                    MemoryORM.active.is_(True),
+                    MemoryORM.summary.like("User wants to be called %"),
+                )
+            ).all()
         for row in rows:
             item = self._row_to_memory(row)
-            self.database.execute(
-                "UPDATE memories SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
-                (datetime.now(UTC).isoformat(), item.id, user_id),
-            )
+            with self.database.orm.session() as session:
+                current = session.get(MemoryORM, item.id)
+                if current:
+                    current.active = False
+                    current.updated_at = datetime.now(UTC)
             self._audit(user_id, item.id, "replace", "accepted", "replaced display name", item.model_dump(), None, source_message_id)
         self._save(user_id, source_message_id, suggestion, "replace")
 
@@ -166,31 +174,25 @@ class MemoryService:
         if suggestion.kind == "temporary_event" or suggestion.expires_in_days:
             days = suggestion.expires_in_days or 14
             expires_at = now + timedelta(days=days)
-        with closing(self.database.connect()) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO memories(
-                    user_id, kind, summary, confidence, importance, source_message_id,
-                    created_at, updated_at, last_seen_at, expires_at, active
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                """,
-                (
-                    user_id,
-                    suggestion.kind,
-                    suggestion.summary.strip(),
-                    suggestion.confidence,
-                    suggestion.importance,
-                    source_message_id,
-                    now.isoformat(),
-                    now.isoformat(),
-                    now.isoformat(),
-                    expires_at.isoformat() if expires_at else None,
-                ),
+        with self.database.orm.session() as session:
+            row = MemoryORM(
+                user_id=user_id,
+                kind=suggestion.kind,
+                summary=suggestion.summary.strip(),
+                confidence=suggestion.confidence,
+                importance=suggestion.importance,
+                source_message_id=source_message_id,
+                created_at=now,
+                updated_at=now,
+                last_seen_at=now,
+                expires_at=expires_at,
+                active=True,
             )
-            connection.commit()
-            memory_id = int(cursor.lastrowid)
+            session.add(row)
+            session.flush()
+            memory_id = int(row.id)
         self._audit(user_id, memory_id, action, "accepted", "stored", None, suggestion.model_dump(), source_message_id)
+        self._debug("memory_saved", user_id, {"memory_id": memory_id, "action": action, "suggestion": suggestion.model_dump()})
         return memory_id
 
     def _edit_similar(self, user_id: int, source_message_id: int | None, suggestion: MemorySuggestion) -> None:
@@ -199,22 +201,15 @@ class MemoryService:
             self._save(user_id, source_message_id, suggestion, "create")
             return
         before = target.model_dump()
-        self.database.execute(
-            """
-            UPDATE memories
-            SET summary = ?, confidence = ?, importance = ?, updated_at = ?
-            WHERE id = ? AND user_id = ?
-            """,
-            (
-                suggestion.summary.strip(),
-                suggestion.confidence,
-                suggestion.importance,
-                datetime.now(UTC).isoformat(),
-                target.id,
-                user_id,
-            ),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(MemoryORM, target.id)
+            if row and row.user_id == user_id:
+                row.summary = suggestion.summary.strip()
+                row.confidence = suggestion.confidence
+                row.importance = suggestion.importance
+                row.updated_at = datetime.now(UTC)
         self._audit(user_id, target.id, "edit", "accepted", "updated similar memory", before, suggestion.model_dump(), source_message_id)
+        self._debug("memory_edited", user_id, {"memory_id": target.id, "before": before, "after": suggestion.model_dump()})
 
     def _merge_similar(self, user_id: int, source_message_id: int | None, suggestion: MemorySuggestion) -> None:
         similar = self._find_all_similar(user_id, suggestion.kind, suggestion.summary)
@@ -223,12 +218,14 @@ class MemoryService:
             return
         before = [item.model_dump() for item in similar]
         for item in similar:
-            self.database.execute(
-                "UPDATE memories SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
-                (datetime.now(UTC).isoformat(), item.id, user_id),
-            )
+            with self.database.orm.session() as session:
+                row = session.get(MemoryORM, item.id)
+                if row and row.user_id == user_id:
+                    row.active = False
+                    row.updated_at = datetime.now(UTC)
         memory_id = self._save(user_id, source_message_id, suggestion, "merge")
         self._audit(user_id, memory_id, "merge", "accepted", "merged similar memories", before, suggestion.model_dump(), source_message_id)
+        self._debug("memory_merged", user_id, {"memory_id": memory_id, "merged": before, "after": suggestion.model_dump()})
 
     def _replace_similar(self, user_id: int, source_message_id: int | None, suggestion: MemorySuggestion) -> None:
         self._forget_similar(user_id, suggestion.summary, source_message_id, reason="replace old similar memories")
@@ -243,30 +240,31 @@ class MemoryService:
     ) -> None:
         similar = self._find_all_similar(user_id, None, summary)
         for item in similar:
-            self.database.execute(
-                "UPDATE memories SET active = 0, updated_at = ? WHERE id = ? AND user_id = ?",
-                (datetime.now(UTC).isoformat(), item.id, user_id),
-            )
+            with self.database.orm.session() as session:
+                row = session.get(MemoryORM, item.id)
+                if row and row.user_id == user_id:
+                    row.active = False
+                    row.updated_at = datetime.now(UTC)
             self._audit(user_id, item.id, "delete", "accepted", reason, item.model_dump(), None, source_message_id)
+            self._debug("memory_deleted", user_id, {"memory_id": item.id, "reason": reason})
 
     def _active_count(self, user_id: int) -> int:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) AS count FROM memories WHERE user_id = ? AND active = 1",
-                (user_id,),
-            ).fetchone()
-        return int(row["count"])
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                select(func.count()).select_from(MemoryORM).where(MemoryORM.user_id == user_id, MemoryORM.active.is_(True))
+            )
+        return int(value or 0)
 
     def _is_duplicate(self, user_id: int, kind: str, summary: str) -> bool:
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                """
-                SELECT summary FROM memories
-                WHERE user_id = ? AND kind = ? AND active = 1
-                """,
-                (user_id, kind),
-            ).fetchall()
-        return any(SequenceMatcher(None, row["summary"].lower(), summary.lower()).ratio() > 0.9 for row in rows)
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MemoryORM.summary).where(
+                    MemoryORM.user_id == user_id,
+                    MemoryORM.kind == kind,
+                    MemoryORM.active.is_(True),
+                )
+            ).all()
+        return any(SequenceMatcher(None, row.lower(), summary.lower()).ratio() > 0.9 for row in rows)
 
     def _has_simple_contradiction(self, user_id: int, kind: str, summary: str) -> bool:
         if kind not in {"preference", "constraint", "boundary"}:
@@ -274,13 +272,16 @@ class MemoryService:
         lower = summary.lower()
         negated = any(token in lower for token in ["not ", "don't", "نمی", "دوست ندارد", "نخواهد"])
         positive_text = re.sub(r"\b(not|don't|doesn't)\b", "", lower).replace("نمی", "").replace("دوست ندارد", "دوست دارد")
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(
-                "SELECT summary FROM memories WHERE user_id = ? AND kind = ? AND active = 1",
-                (user_id, kind),
-            ).fetchall()
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MemoryORM.summary).where(
+                    MemoryORM.user_id == user_id,
+                    MemoryORM.kind == kind,
+                    MemoryORM.active.is_(True),
+                )
+            ).all()
         for row in rows:
-            other = row["summary"].lower()
+            other = row.lower()
             other_negated = any(token in other for token in ["not ", "don't", "نمی", "دوست ندارد", "نخواهد"])
             other_positive = re.sub(r"\b(not|don't|doesn't)\b", "", other).replace("نمی", "").replace("دوست ندارد", "دوست دارد")
             if negated != other_negated and SequenceMatcher(None, positive_text, other_positive).ratio() > 0.78:
@@ -292,13 +293,11 @@ class MemoryService:
         return items[0] if items else None
 
     def _find_all_similar(self, user_id: int, kind: str | None, summary: str) -> list[MemoryItem]:
-        query = "SELECT * FROM memories WHERE user_id = ? AND active = 1"
-        params: list[object] = [user_id]
+        filters = [MemoryORM.user_id == user_id, MemoryORM.active.is_(True)]
         if kind:
-            query += " AND kind = ?"
-            params.append(kind)
-        with closing(self.database.connect()) as connection:
-            rows = connection.execute(query, tuple(params)).fetchall()
+            filters.append(MemoryORM.kind == kind)
+        with self.database.orm.session() as session:
+            rows = session.scalars(select(MemoryORM).where(*filters)).all()
         items = [self._row_to_memory(row) for row in rows]
         scored = [
             item for item in items
@@ -308,18 +307,17 @@ class MemoryService:
         return scored[:5]
 
     def _get(self, user_id: int, memory_id: int) -> dict | None:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
-                (user_id, memory_id),
-            ).fetchone()
-        return dict(row) if row else None
+        with self.database.orm.session() as session:
+            row = session.get(MemoryORM, memory_id)
+            if not row or row.user_id != user_id:
+                return None
+            return self._row_to_memory(row).model_dump(mode="json")
 
     def _touch(self, memory_id: int) -> None:
-        self.database.execute(
-            "UPDATE memories SET last_seen_at = ? WHERE id = ?",
-            (datetime.now(UTC).isoformat(), memory_id),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(MemoryORM, memory_id)
+            if row:
+                row.last_seen_at = datetime.now(UTC)
 
     def _audit(
         self,
@@ -332,42 +330,51 @@ class MemoryService:
         after,
         source_message_id: int | None,
     ) -> None:
-        self.database.execute(
-            """
-            INSERT INTO memory_audit_logs(
-                user_id, memory_id, action, decision, reason,
-                before_payload, after_payload, source_message_id, created_at
+        with self.database.orm.session() as session:
+            session.add(
+                MemoryAuditLogORM(
+                    user_id=user_id,
+                    memory_id=memory_id,
+                    action=action,
+                    decision=decision,
+                    reason=reason,
+                    before_payload=json.dumps(before, ensure_ascii=False, default=str) if before is not None else None,
+                    after_payload=json.dumps(after, ensure_ascii=False, default=str) if after is not None else None,
+                    source_message_id=source_message_id,
+                    created_at=datetime.now(UTC),
+                )
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                memory_id,
-                action,
-                decision,
-                reason,
-                json.dumps(before, ensure_ascii=False, default=str) if before is not None else None,
-                json.dumps(after, ensure_ascii=False, default=str) if after is not None else None,
-                source_message_id,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
+
+    def _debug(self, event: str, user_id: int, payload: dict) -> None:
+        if self.debug_service:
+            self.debug_service.log(event, payload, user_id=user_id)
 
     def _keywords(self, text: str) -> set[str]:
         return {word.lower() for word in re.findall(r"[\w\u0600-\u06FF]{3,}", text or "")}
 
     def _row_to_memory(self, row) -> MemoryItem:
         return MemoryItem(
-            id=row["id"],
-            user_id=row["user_id"],
-            kind=MemoryKind(row["kind"]),
-            summary=row["summary"],
-            confidence=row["confidence"],
-            importance=row["importance"] if "importance" in row.keys() else 3,
-            source_message_id=row["source_message_id"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-            last_seen_at=datetime.fromisoformat(row["last_seen_at"]) if row["last_seen_at"] else None,
-            expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
-            active=bool(row["active"]),
+            id=self._value(row, "id"),
+            user_id=self._value(row, "user_id"),
+            kind=MemoryKind(self._value(row, "kind")),
+            summary=self._value(row, "summary"),
+            confidence=self._value(row, "confidence"),
+            importance=self._value(row, "importance") or 3,
+            source_message_id=self._value(row, "source_message_id"),
+            created_at=self._dt(self._value(row, "created_at")),
+            updated_at=self._dt(self._value(row, "updated_at")),
+            last_seen_at=self._dt(self._value(row, "last_seen_at")) if self._value(row, "last_seen_at") else None,
+            expires_at=self._dt(self._value(row, "expires_at")) if self._value(row, "expires_at") else None,
+            active=bool(self._value(row, "active")),
         )
+
+    def _value(self, row, name: str):
+        if hasattr(row, name):
+            return getattr(row, name)
+        return row[name]
+
+    def _dt(self, value: datetime | str) -> datetime:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed

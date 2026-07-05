@@ -1,11 +1,14 @@
 import asyncio
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import func, select
+
 from bot.config import Settings
 from bot.models.ai import NargesReply, ResponseMode
+from bot.services.debug_service import DebugService
 from bot.storage.database import Database
+from bot.storage.orm import QuotaEventORM
 
 
 @dataclass(frozen=True)
@@ -15,10 +18,30 @@ class QuotaCheck:
     remaining: int
 
 
+@dataclass(frozen=True)
+class AccountQuota:
+    total_sent: int
+    daily_remaining: int
+    monthly_remaining: int
+    extra_remaining: int
+    daily_limit: int
+    monthly_limit: int
+
+    @property
+    def can_send(self) -> bool:
+        return (self.daily_remaining > 0 and self.monthly_remaining > 0) or self.extra_remaining > 0
+
+    @property
+    def effective_remaining(self) -> int:
+        free_remaining = min(self.daily_remaining, self.monthly_remaining)
+        return max(0, free_remaining) + max(0, self.extra_remaining)
+
+
 class QuotaService:
-    def __init__(self, database: Database, settings: Settings) -> None:
+    def __init__(self, database: Database, settings: Settings, debug_service: DebugService | None = None) -> None:
         self.database = database
         self.settings = settings
+        self.debug_service = debug_service
         self._active_generations: set[int] = set()
         self._lock = asyncio.Lock()
 
@@ -28,7 +51,7 @@ class QuotaService:
                 return QuotaCheck(
                     False,
                     "هنوز دارم جواب پیام قبلی‌ات را آماده می‌کنم. چند ثانیه صبر کن و دوباره بفرست.",
-                    self.remaining_today(user_id),
+                    self.account_quota(user_id).effective_remaining,
                 )
             check = self.check_limits(user_id)
             if not check.ok:
@@ -42,11 +65,16 @@ class QuotaService:
             self._active_generations.discard(user_id)
 
     def check_limits(self, user_id: int) -> QuotaCheck:
-        remaining = self.remaining_today(user_id)
-        if remaining <= 0:
+        account = self.account_quota(user_id)
+        if not account.can_send:
             return QuotaCheck(
                 False,
-                "سهمیه امروزت تمام شده. پلن رایگان روزانه ۴۰ پیام دارد؛ فردا دوباره شارژ می‌شود.",
+                (
+                    "سهمیه پیام‌هایت تمام شده.\n"
+                    f"باقی‌مانده روزانه: {account.daily_remaining}\n"
+                    f"باقی‌مانده ماهانه: {account.monthly_remaining}\n"
+                    f"ظرفیت اضافه: {account.extra_remaining}"
+                ),
                 0,
             )
         short_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_short_window_seconds)
@@ -54,27 +82,49 @@ class QuotaService:
             return QuotaCheck(
                 False,
                 "کمی تند شد. در پلن فعلی حداکثر ۶ نوبت در ۲ دقیقه مجاز است. چند لحظه بعد دوباره بفرست.",
-                remaining,
+                account.effective_remaining,
             )
         long_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_long_window_seconds)
         if long_count >= self.settings.rate_limit_long_count:
             return QuotaCheck(
                 False,
                 "برای جلوگیری از فشار زیاد، فعلاً سقف ۱۵ نوبت در ۱۰ دقیقه فعال است. چند دقیقه دیگر امتحان کن.",
-                remaining,
+                account.effective_remaining,
             )
-        return QuotaCheck(True, "", remaining)
+        return QuotaCheck(True, "", account.effective_remaining)
 
     def consume_successful_reply(self, user_id: int, reply: NargesReply) -> int:
         cost = self.reply_cost(reply)
-        self._record_event(user_id, "quota_consume", cost)
+        account = self.account_quota(user_id)
+        kind = "quota_consume" if account.daily_remaining >= cost and account.monthly_remaining >= cost else "extra_consume"
+        self._record_event(user_id, kind, cost)
+        self._debug("quota_consumed", user_id, {"kind": kind, "cost": cost, "remaining": self.account_quota(user_id)})
         return cost
 
     def can_consume_reply(self, user_id: int, reply: NargesReply) -> bool:
-        return self.remaining_today(user_id) >= self.reply_cost(reply)
+        return self.account_quota(user_id).effective_remaining >= self.reply_cost(reply)
+
+    def add_extra_credit(self, user_id: int, amount: int, reason: str = "manual") -> None:
+        self._record_event(user_id, f"extra_grant:{reason}", amount)
+        self._debug("extra_credit_granted", user_id, {"amount": amount, "reason": reason})
 
     def remaining_today(self, user_id: int) -> int:
-        return max(0, self.settings.free_daily_quota - self._used_today(user_id))
+        return self.account_quota(user_id).daily_remaining
+
+    def account_quota(self, user_id: int) -> AccountQuota:
+        daily_used = self._used_since(user_id, "quota_consume", self._start_of_day())
+        monthly_used = self._used_since(user_id, "quota_consume", self._start_of_month())
+        extra_granted = self._sum_kind_prefix(user_id, "extra_grant")
+        extra_used = self._sum_kind_prefix(user_id, "extra_consume")
+        total_sent = self._sum_kind_prefix(user_id, "quota_consume") + extra_used
+        return AccountQuota(
+            total_sent=total_sent,
+            daily_remaining=max(0, self.settings.free_daily_quota - daily_used),
+            monthly_remaining=max(0, self.settings.free_monthly_quota - monthly_used),
+            extra_remaining=max(0, extra_granted - extra_used),
+            daily_limit=self.settings.free_daily_quota,
+            monthly_limit=self.settings.free_monthly_quota,
+        )
 
     def reply_cost(self, reply: NargesReply) -> int:
         if reply.mode == ResponseMode.DEEP:
@@ -84,32 +134,57 @@ class QuotaService:
             return 2
         return 1
 
-    def _used_today(self, user_id: int) -> int:
-        start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT COALESCE(SUM(cost), 0) AS used FROM quota_events
-                WHERE user_id = ? AND kind = 'quota_consume' AND created_at >= ?
-                """,
-                (user_id, start.isoformat()),
-            ).fetchone()
-        return int(row["used"])
+    def _used_since(self, user_id: int, kind: str, since: datetime) -> int:
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                select(func.coalesce(func.sum(QuotaEventORM.cost), 0)).where(
+                    QuotaEventORM.user_id == user_id,
+                    QuotaEventORM.kind == kind,
+                    QuotaEventORM.created_at >= since,
+                )
+            )
+        return int(value or 0)
 
     def _count_since(self, user_id: int, kind: str, seconds: int) -> int:
         since = datetime.now(UTC) - timedelta(seconds=seconds)
-        with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS count FROM quota_events
-                WHERE user_id = ? AND kind = ? AND created_at >= ?
-                """,
-                (user_id, kind, since.isoformat()),
-            ).fetchone()
-        return int(row["count"])
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                select(func.count()).select_from(QuotaEventORM).where(
+                    QuotaEventORM.user_id == user_id,
+                    QuotaEventORM.kind == kind,
+                    QuotaEventORM.created_at >= since,
+                )
+            )
+        return int(value or 0)
+
+    def _sum_kind_prefix(self, user_id: int, kind_prefix: str) -> int:
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                select(func.coalesce(func.sum(QuotaEventORM.cost), 0)).where(
+                    QuotaEventORM.user_id == user_id,
+                    QuotaEventORM.kind.like(f"{kind_prefix}%"),
+                )
+            )
+        return int(value or 0)
 
     def _record_event(self, user_id: int, kind: str, cost: int) -> None:
-        self.database.execute(
-            "INSERT INTO quota_events(user_id, kind, cost, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, kind, cost, datetime.now(UTC).isoformat()),
-        )
+        with self.database.orm.session() as session:
+            session.add(
+                QuotaEventORM(
+                    user_id=user_id,
+                    kind=kind,
+                    cost=cost,
+                    created_at=datetime.now(UTC),
+                )
+            )
+
+    def _debug(self, event: str, user_id: int, payload: dict) -> None:
+        if self.debug_service:
+            self.debug_service.log(event, payload, user_id=user_id)
+
+    def _start_of_day(self) -> datetime:
+        return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def _start_of_month(self) -> datetime:
+        now = datetime.now(UTC)
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

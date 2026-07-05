@@ -1,8 +1,8 @@
-from contextlib import closing
 from datetime import UTC, datetime
 
 from bot.models.user import OnboardingState, TelegramUserProfile, UserProfile
 from bot.storage.database import Database
+from bot.storage.orm import UserORM
 
 
 class UserService:
@@ -10,94 +10,90 @@ class UserService:
         self.database = database
 
     def upsert_telegram_user(self, profile: TelegramUserProfile) -> UserProfile:
-        now = datetime.now(UTC).isoformat()
-        existing = self.get(profile.telegram_id)
-        if existing is None:
-            self.database.execute(
-                """
-                INSERT INTO users(
-                    telegram_id, username, first_name, last_name, language_code,
-                    onboarding_state, plan, created_at, updated_at
+        now = datetime.now(UTC)
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, profile.telegram_id)
+            if row is None:
+                row = UserORM(
+                    telegram_id=profile.telegram_id,
+                    username=profile.username,
+                    first_name=profile.first_name,
+                    last_name=profile.last_name,
+                    language_code=profile.language_code,
+                    onboarding_state=OnboardingState.NEW.value,
+                    plan="free",
+                    created_at=now,
+                    updated_at=now,
                 )
-                VALUES (?, ?, ?, ?, ?, 'new', 'free', ?, ?)
-                """,
-                (
-                    profile.telegram_id,
-                    profile.username,
-                    profile.first_name,
-                    profile.last_name,
-                    profile.language_code,
-                    now,
-                    now,
-                ),
-            )
-        else:
-            self.database.execute(
-                """
-                UPDATE users
-                SET username = ?, first_name = ?, last_name = ?, language_code = ?, updated_at = ?
-                WHERE telegram_id = ?
-                """,
-                (
-                    profile.username,
-                    profile.first_name,
-                    profile.last_name,
-                    profile.language_code,
-                    now,
-                    profile.telegram_id,
-                ),
-            )
+                session.add(row)
+            else:
+                row.username = profile.username
+                row.first_name = profile.first_name
+                row.last_name = profile.last_name
+                row.language_code = profile.language_code
+                row.updated_at = now
         return self.get(profile.telegram_id)  # type: ignore[return-value]
 
     def get(self, user_id: int) -> UserProfile | None:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute("SELECT * FROM users WHERE telegram_id = ?", (user_id,)).fetchone()
-        if row is None:
-            return None
-        return UserProfile(
-            telegram_id=row["telegram_id"],
-            username=row["username"],
-            first_name=row["first_name"],
-            last_name=row["last_name"],
-            language_code=row["language_code"],
-            display_name=row["display_name"],
-            suggested_name=row["suggested_name"],
-            pending_name=row["pending_name"],
-            onboarding_state=OnboardingState(row["onboarding_state"]),
-            name_confirm_attempted=bool(row["name_confirm_attempted"]),
-            plan=row["plan"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, user_id)
+            return self._to_profile(row) if row else None
 
     def set_state(self, user_id: int, state: OnboardingState) -> None:
-        self.database.execute(
-            "UPDATE users SET onboarding_state = ?, updated_at = ? WHERE telegram_id = ?",
-            (state.value, datetime.now(UTC).isoformat(), user_id),
-        )
+        self._update(user_id, onboarding_state=state.value)
 
     def set_suggested_name(self, user_id: int, name: str | None) -> None:
-        self.database.execute(
-            "UPDATE users SET suggested_name = ?, updated_at = ? WHERE telegram_id = ?",
-            (name, datetime.now(UTC).isoformat(), user_id),
-        )
+        self._update(user_id, suggested_name=name)
 
     def set_pending_name(self, user_id: int, name: str | None, attempted: bool = True) -> None:
-        self.database.execute(
-            """
-            UPDATE users
-            SET pending_name = ?, name_confirm_attempted = ?, updated_at = ?
-            WHERE telegram_id = ?
-            """,
-            (name, int(attempted), datetime.now(UTC).isoformat(), user_id),
-        )
+        self._update(user_id, pending_name=name, name_confirm_attempted=attempted)
 
     def save_display_name(self, user_id: int, name: str) -> None:
-        self.database.execute(
-            """
-            UPDATE users
-            SET display_name = ?, pending_name = NULL, onboarding_state = 'ready', updated_at = ?
-            WHERE telegram_id = ?
-            """,
-            (name, datetime.now(UTC).isoformat(), user_id),
+        self._update(
+            user_id,
+            display_name=name,
+            pending_name=None,
+            onboarding_state=OnboardingState.READY.value,
+        )
+
+    def save_phone_number(self, user_id: int, phone_number: str) -> bool:
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, user_id)
+            if row is None:
+                return False
+            row.phone_number = phone_number
+            row.phone_verified_at = datetime.now(UTC)
+            row.updated_at = datetime.now(UTC)
+            return not row.phone_bonus_claimed
+
+    def mark_phone_bonus_claimed(self, user_id: int) -> None:
+        self._update(user_id, phone_bonus_claimed=True)
+
+    def _update(self, user_id: int, **values) -> None:
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, user_id)
+            if row is None:
+                return
+            for key, value in values.items():
+                setattr(row, key, value)
+            row.updated_at = datetime.now(UTC)
+
+    def _to_profile(self, row: UserORM) -> UserProfile:
+        return UserProfile(
+            telegram_id=row.telegram_id,
+            username=row.username,
+            first_name=row.first_name,
+            last_name=row.last_name,
+            language_code=row.language_code,
+            display_name=row.display_name,
+            suggested_name=row.suggested_name,
+            pending_name=row.pending_name,
+            onboarding_state=OnboardingState(row.onboarding_state),
+            name_confirm_attempted=bool(row.name_confirm_attempted),
+            plan=row.plan,
+            phone_number=row.phone_number,
+            phone_verified_at=row.phone_verified_at,
+            phone_bonus_claimed=bool(row.phone_bonus_claimed),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
         )

@@ -1,9 +1,9 @@
-from contextlib import closing
 from datetime import UTC, datetime
 
 from bot.models.ai import RelationshipDelta
 from bot.models.relationship import RelationshipState
 from bot.storage.database import Database
+from bot.storage.orm import RelationshipORM
 
 
 class RelationshipService:
@@ -11,61 +11,55 @@ class RelationshipService:
         self.database = database
 
     def get(self, user_id: int) -> RelationshipState:
-        with closing(self.database.connect()) as connection:
-            row = connection.execute("SELECT * FROM relationships WHERE user_id = ?", (user_id,)).fetchone()
+        with self.database.orm.session() as session:
+            row = session.get(RelationshipORM, user_id)
         if row is None:
             state = RelationshipState(user_id=user_id, updated_at=datetime.now(UTC))
             self.save(state)
             return state
         return RelationshipState(
-            user_id=row["user_id"],
-            familiarity=row["familiarity"],
-            trust=row["trust"],
-            respect=row["respect"],
-            comfort=row["comfort"],
-            joke_permission=bool(row["joke_permission"]),
-            nickname=row["nickname"],
-            boundary_warnings=row["boundary_warnings"],
-            intimacy_level=row["intimacy_level"] if "intimacy_level" in row.keys() else 1,
-            current_chat_feeling=row["current_chat_feeling"] if "current_chat_feeling" in row.keys() else "neutral",
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            user_id=row.user_id,
+            familiarity=row.familiarity,
+            trust=row.trust,
+            respect=row.respect,
+            comfort=row.comfort,
+            joke_permission=bool(row.joke_permission),
+            nickname=row.nickname,
+            boundary_warnings=row.boundary_warnings,
+            intimacy_level=row.intimacy_level,
+            current_chat_feeling=row.current_chat_feeling,
+            updated_at=self._as_datetime(row.updated_at),
         )
 
     def save(self, state: RelationshipState) -> None:
-        self.database.execute(
-            """
-            INSERT INTO relationships(
-                user_id, familiarity, trust, respect, comfort,
-                joke_permission, nickname, boundary_warnings, intimacy_level,
-                current_chat_feeling, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                familiarity = excluded.familiarity,
-                trust = excluded.trust,
-                respect = excluded.respect,
-                comfort = excluded.comfort,
-                joke_permission = excluded.joke_permission,
-                nickname = excluded.nickname,
-                boundary_warnings = excluded.boundary_warnings,
-                intimacy_level = excluded.intimacy_level,
-                current_chat_feeling = excluded.current_chat_feeling,
-                updated_at = excluded.updated_at
-            """,
-            (
-                state.user_id,
-                state.familiarity,
-                state.trust,
-                state.respect,
-                state.comfort,
-                int(state.joke_permission),
-                state.nickname,
-                state.boundary_warnings,
-                state.intimacy_level,
-                state.current_chat_feeling,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
+        with self.database.orm.session() as session:
+            row = session.get(RelationshipORM, state.user_id)
+            if row is None:
+                row = RelationshipORM(
+                    user_id=state.user_id,
+                    familiarity=state.familiarity,
+                    trust=state.trust,
+                    respect=state.respect,
+                    comfort=state.comfort,
+                    joke_permission=state.joke_permission,
+                    nickname=state.nickname,
+                    boundary_warnings=state.boundary_warnings,
+                    intimacy_level=state.intimacy_level,
+                    current_chat_feeling=state.current_chat_feeling,
+                    updated_at=datetime.now(UTC),
+                )
+                session.add(row)
+                return
+            row.familiarity = state.familiarity
+            row.trust = state.trust
+            row.respect = state.respect
+            row.comfort = state.comfort
+            row.joke_permission = state.joke_permission
+            row.nickname = state.nickname
+            row.boundary_warnings = state.boundary_warnings
+            row.intimacy_level = state.intimacy_level
+            row.current_chat_feeling = state.current_chat_feeling
+            row.updated_at = datetime.now(UTC)
 
     def apply_delta(self, user_id: int, delta: RelationshipDelta) -> RelationshipState:
         state = self.get(user_id)
@@ -89,3 +83,6 @@ class RelationshipService:
 
     def _clamp(self, value: int) -> int:
         return max(0, min(100, value))
+
+    def _as_datetime(self, value: datetime | str) -> datetime:
+        return value if isinstance(value, datetime) else datetime.fromisoformat(value)

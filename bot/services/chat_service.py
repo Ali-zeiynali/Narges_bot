@@ -2,13 +2,17 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from bot.models.ai import NargesReply, RelationshipDelta, ResponseMode, TelegramOutboundMessage
 from bot.persona.compiler import PersonaCompiler
+from bot.persona.texts.engine_prompts import CHAT_QUOTA_COST_RULE, CHAT_USER_PAYLOAD_INSTRUCTION
 from bot.services.groq_client import GroqChatClient, GroqResult
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.services.conversation_search_tool import ConversationSearchTool
+from bot.services.debug_service import DebugService
+from bot.services.moderation_service import ModerationService
 from bot.services.relationship_service import RelationshipService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QuotaService
@@ -42,6 +46,8 @@ class ChatService:
         relationship_service: RelationshipService,
         history_service: HistoryService,
         conversation_search_tool: ConversationSearchTool,
+        moderation_service: ModerationService,
+        debug_service: DebugService,
         usage_service: UsageService,
         style_linter: StyleLinter,
         quota_service: QuotaService,
@@ -54,11 +60,21 @@ class ChatService:
         self.relationship_service = relationship_service
         self.history_service = history_service
         self.conversation_search_tool = conversation_search_tool
+        self.moderation_service = moderation_service
+        self.debug_service = debug_service
         self.usage_service = usage_service
         self.style_linter = style_linter
         self.quota_service = quota_service
 
-    async def answer(self, user_id: int, chat_id: int, message_id: int | None, text: str) -> ChatTurnResult:
+    async def answer(
+        self,
+        user_id: int,
+        chat_id: int,
+        message_id: int | None,
+        text: str,
+        message_datetime: datetime | None = None,
+    ) -> ChatTurnResult:
+        message_datetime = (message_datetime or datetime.now(UTC)).astimezone(UTC)
         state = self.narges_state_service.get_active()
         relationship = self.relationship_service.get(user_id)
         memories = self.memory_service.retrieve_relevant(user_id, text)
@@ -73,6 +89,7 @@ class ChatService:
             recent,
             short_term_messages,
             search_results,
+            message_datetime.isoformat(),
         )
 
         validation = self.validator.validate(text, compiled.system_prompt)
@@ -83,7 +100,19 @@ class ChatService:
         if not quota_check.ok:
             raise UserFacingError(quota_check.message)
 
-        messages = self._build_messages(compiled.system_prompt, text, quota_check.remaining)
+        messages = self._build_messages(compiled.system_prompt, text, quota_check.remaining, message_datetime)
+        self.debug_service.log(
+            "model_request_prepared",
+            {
+                "sections": compiled.sections,
+                "message_datetime": message_datetime.isoformat(),
+                "memory_count": len(memories),
+                "short_term_count": len(short_term_messages),
+                "search_result_count": len(search_results),
+                "quota_remaining": quota_check.remaining,
+            },
+            user_id=user_id,
+        )
         provider_failed = False
         try:
             result = await asyncio.to_thread(self.groq_client.complete, messages)
@@ -95,7 +124,17 @@ class ChatService:
 
         try:
             if not provider_failed:
-                if not self.quota_service.can_consume_reply(user_id, result.reply):
+                warning = result.reply.warning_suggestion
+                if warning and warning.level == "firm":
+                    warning_result = self.moderation_service.apply_model_warning(
+                        user_id,
+                        warning.reason or "security boundary violation",
+                        message_id,
+                    )
+                    self.relationship_service.apply_delta(user_id, result.reply.relationship_delta)
+                    result = GroqResult(reply=self._warning_reply(warning_result.message), raw_text="{}", usage=result.usage)
+                    provider_failed = True
+                elif not self.quota_service.can_consume_reply(user_id, result.reply):
                     result = GroqResult(reply=self._quota_fallback_reply(), raw_text="{}", usage=result.usage)
                     provider_failed = True
                 else:
@@ -104,9 +143,40 @@ class ChatService:
                     if result.reply.event_suggestion:
                         logger.info("event_suggestion_ignored_from_chat_model user_id=%s", user_id)
                     self.quota_service.consume_successful_reply(user_id, result.reply)
+                    self.debug_service.log(
+                        "model_response_accepted",
+                        {
+                            "mode": result.reply.mode.value,
+                            "messages": [message.text for message in result.reply.messages],
+                            "memory_suggestions": [item.model_dump() for item in result.reply.memory_suggestions],
+                            "relationship_delta": result.reply.relationship_delta.model_dump(),
+                            "usage": result.usage,
+                        },
+                        user_id=user_id,
+                    )
 
             assistant_text = "\n".join(message.text for message in result.reply.messages)
-            self.history_service.add(user_id, "user", text, chat_id=chat_id, telegram_message_id=message_id)
+            if self.debug_service.can_debug(user_id):
+                result.reply.messages[-1].text += self.debug_service.format_block(
+                    {
+                        "sections": compiled.sections,
+                        "message_datetime": message_datetime.isoformat(),
+                        "quota": self.quota_service.account_quota(user_id),
+                        "usage": result.usage,
+                        "memories": [memory.model_dump(mode="json") for memory in memories],
+                        "short_term": short_term_messages,
+                        "search_results": search_results,
+                    }
+                )
+                assistant_text = "\n".join(message.text for message in result.reply.messages)
+            self.history_service.add(
+                user_id,
+                "user",
+                text,
+                chat_id=chat_id,
+                telegram_message_id=message_id,
+                created_at=message_datetime,
+            )
             self.history_service.add(user_id, "assistant", assistant_text, chat_id=chat_id)
             self.usage_service.log(user_id, chat_id, validation.estimated_tokens, result.usage)
         finally:
@@ -118,12 +188,19 @@ class ChatService:
             estimated_tokens=validation.estimated_tokens,
         )
 
-    def _build_messages(self, system_prompt: str, user_text: str, remaining_quota_units: int) -> list[dict[str, str]]:
+    def _build_messages(
+        self,
+        system_prompt: str,
+        user_text: str,
+        remaining_quota_units: int,
+        message_datetime: datetime,
+    ) -> list[dict[str, str]]:
         payload = {
             "user_message": user_text,
-            "instruction": "با رعایت schema و سبک نرگس جواب بده.",
+            "current_message_datetime": message_datetime.isoformat(),
+            "instruction": CHAT_USER_PAYLOAD_INSTRUCTION,
             "remaining_quota_units_today": remaining_quota_units,
-            "quota_cost_rule": "normal costs 1, detailed costs 2, deep costs 3. If remaining is low, choose a cheaper response.",
+            "quota_cost_rule": CHAT_QUOTA_COST_RULE,
         }
         return [
             {"role": "system", "content": system_prompt},
@@ -182,6 +259,18 @@ class ChatService:
                 TelegramOutboundMessage(
                     text="باقی‌مانده امروزت برای این جواب کافی نیست. یک پیام کوتاه‌تر بفرست یا فردا دوباره امتحان کن.",
                     delay_seconds=0.2,
+                )
+            ],
+            relationship_delta=RelationshipDelta(),
+        )
+
+    def _warning_reply(self, text: str) -> NargesReply:
+        return NargesReply(
+            mode=ResponseMode.SERIOUS,
+            messages=[
+                TelegramOutboundMessage(
+                    text=text,
+                    delay_seconds=0.1,
                 )
             ],
             relationship_delta=RelationshipDelta(),

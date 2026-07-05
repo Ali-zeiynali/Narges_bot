@@ -1,3 +1,6 @@
 aiogram
 groq
 python-dotenv
+SQLAlchemy
+alembic
+httpx
