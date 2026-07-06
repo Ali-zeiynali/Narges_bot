@@ -63,7 +63,7 @@ class Settings:
     debug_user_ids: tuple[int, ...]
     name_transliteration_map: dict[str, str]
     max_api_input_tokens: int = 3000
-    ai_providers_config: str = "data/ai_providers.json"
+    ai_providers_config: str = "config/ai_providers.json"
     admin_panel_token: str | None = None
     admin_panel_host: str = "127.0.0.1"
     admin_panel_port: int = 8080
@@ -117,7 +117,7 @@ def load_settings() -> Settings:
         telegram_token=require_env("TELEGRAM_TOKEN"),
         telegram_proxy=proxy or None,
         groq_proxy=groq_proxy or None,
-        groq_api_key=require_env("GROQ_API_KEY"),
+        groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
         groq_temperature=float_env("GROQ_TEMPERATURE", 0.7, 0, 2),
         groq_max_completion_tokens=int_env("GROQ_MAX_COMPLETION_TOKENS", 512, 1, 4096),
@@ -141,7 +141,7 @@ def load_settings() -> Settings:
         debug_mode=bool_env("DEBUG_MODE", False),
         debug_user_ids=csv_int_env("DEBUG_USER_IDS"),
         name_transliteration_map=json_map_env("NAME_TRANSLITERATION_MAP", default_name_map),
-        ai_providers_config=os.getenv("AI_PROVIDERS_CONFIG", "data/ai_providers.json").strip(),
+        ai_providers_config=os.getenv("AI_PROVIDERS_CONFIG", "config/ai_providers.json").strip(),
         admin_panel_token=os.getenv("ADMIN_PANEL_TOKEN", "").strip() or None,
         admin_panel_host=os.getenv("ADMIN_PANEL_HOST", "127.0.0.1").strip(),
         admin_panel_port=int_env("ADMIN_PANEL_PORT", 8080, 1, 65535),

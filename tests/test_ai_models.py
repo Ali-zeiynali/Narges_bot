@@ -46,6 +46,25 @@ class NargesReplyModelTests(unittest.TestCase):
         self.assertFalse(hasattr(reply, "ignored_delta"))
         self.assertEqual(reply.warning_suggestion.reason, "soft boundary")
 
+    def test_plain_text_reply_is_supported(self) -> None:
+        reply = NargesReply.from_text("Plain Telegram answer")
+
+        self.assertEqual(reply.messages[0].text, "Plain Telegram answer")
+        self.assertEqual(reply.memory_suggestions, [])
+
+    def test_invalid_memory_suggestion_shape_is_normalized(self) -> None:
+        reply = NargesReply.validate_provider_payload(
+            {
+                "text": "یادم می‌مونه.",
+                "memory_suggestions": [
+                    {"id": 4, "action": "create", "summary": "کاربر موز دوست دارد"}
+                ],
+            }
+        )
+
+        self.assertEqual(reply.memory_suggestions[0].kind, "preference")
+        self.assertEqual(reply.memory_suggestions[0].confidence, 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

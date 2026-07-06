@@ -7,7 +7,7 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
+from aiogram.types import CallbackQuery, ChatMemberUpdated, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
 from pydantic import BaseModel
 
 from bot.config import Settings
@@ -16,6 +16,7 @@ from bot.models.user import OnboardingState, TelegramUserProfile
 from bot.services.billing_service import BillingService
 from bot.services.chat_service import ChatService, UserFacingError
 from bot.services.debug_service import DebugService
+from bot.services.group_service import GroupService
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.services.menu_service import MenuService
@@ -44,6 +45,7 @@ def register_handlers(
     history_service: HistoryService,
     narges_state_service: NargesStateService,
     debug_service: DebugService,
+    group_service: GroupService | None,
     settings: Settings,
 ) -> None:
     admin_ids = set(settings.admin_ids)
@@ -100,12 +102,30 @@ def register_handlers(
         text = json.dumps(jsonable(payload), ensure_ascii=False, indent=2, default=str)
         await message.answer(f"```json\n{text[:3800]}\n```")
 
+    def is_group_chat_type(chat_type: str | None) -> bool:
+        return chat_type in {"group", "supergroup"}
+
+    def track_group_message(message: Message) -> None:
+        if group_service is None or not is_group_chat_type(getattr(message.chat, "type", None)):
+            return
+        group_service.upsert_group(
+            chat_id=message.chat.id,
+            title=getattr(message.chat, "title", None),
+            username=getattr(message.chat, "username", None),
+            chat_type=str(message.chat.type),
+            active=True,
+        )
+
     async def show_membership_gate(message: Message, check: MembershipCheck) -> None:
         text = (
-            "فعلاً نتوانستم عضویت کانال‌ها را از تلگرام بررسی کنم.\n"
-            "اگر عضو شده‌ای، چند لحظه بعد دوباره بررسی کن."
+            "📣 عضویت لازم است\n\n"
+            "برای استفاده از نرگس، اول عضو کانال‌های زیر شو.\n"
+            "بعد از عضویت، دکمه «✅ عضو شدم، بررسی کن» را بزن.\n\n"
+            "⚠️ اگر عضو هستی ولی تأیید نمی‌شود، ممکن است تلگرام لحظه‌ای اجازه بررسی نداده باشد؛ چند ثانیه بعد دوباره دکمه را بزن."
             if check.errors
-            else "برای استفاده از نرگس باید اول عضو کانال‌های زیر باشی.\nبعد از عضویت، دکمه بررسی را بزن."
+            else "📣 عضویت لازم است\n\n"
+            "برای استفاده از نرگس، اول عضو کانال‌های زیر شو.\n"
+            "بعد از عضویت، دکمه «✅ عضو شدم، بررسی کن» را بزن."
         )
         await message.answer(text, reply_markup=menu_service.membership_keyboard(check))
 
@@ -203,10 +223,10 @@ def register_handlers(
             return
         memories = memory_service.list_active(user_id, limit=30)
         if not memories:
-            await message.answer("هنوز چیزی برایت ذخیره نکرده‌ام.")
+            await message.answer("🧠 حافظه‌ها\n\n✨ هنوز چیزی برایت ذخیره نکرده‌ام.")
             return
-        lines = ["حافظه‌های فعال:"]
-        lines.extend(f"{item.id}. {item.kind.value}: {item.summary}" for item in memories)
+        lines = ["🧠 حافظه‌های فعال", ""]
+        lines.extend(f"🔹 #{item.id} | {item.kind.value}\n{item.summary}" for item in memories)
         await message.answer("\n".join(lines))
 
     async def show_account(message: Message) -> None:
@@ -215,23 +235,42 @@ def register_handlers(
         quota = quota_service.account_quota(user_id)
         block = moderation_service.get_block_status(user_id)
         if profile is None:
-            await message.answer("اول /start را بزن تا حساب کاربری‌ات ساخته شود.")
+            await message.answer("👤 پروفایل\n\n⚠️ اول /start را بزن تا حساب کاربری‌ات ساخته شود.")
             return
         block_line = "فعال نیست"
         if block.blocked and block.blocked_until:
             block_line = f"مسدود تا {block.blocked_until.strftime('%Y-%m-%d %H:%M UTC')}"
         await message.answer(
-            "👤 پروفایل\n\n"
-            f"نام: {profile.display_name or 'ثبت نشده'}\n"
-            f"جنسیت: {gender_label(profile.gender)}\n"
-            f"مصرف کل: {format_quota_units(quota.total_sent)} پیام\n"
-            f"باقی‌مانده روزانه: {format_quota_units(quota.daily_remaining)} از {quota.daily_limit}\n"
-            f"باقی‌مانده ماهانه: {format_quota_units(quota.monthly_remaining)} از {quota.monthly_limit}\n"
-            f"ظرفیت اضافه: {format_quota_units(quota.extra_remaining)} پیام\n"
-            f"شماره موبایل: {'✅ ثبت شده' if profile.phone_number else 'ثبت نشده'}\n"
-            f"وضعیت مسدودی: {block_line}",
+            "👤 پروفایل کاربر\n\n"
+            f"🏷️ نام: {profile.display_name or 'ثبت نشده'}\n"
+            f"⚧️ جنسیت: {gender_label(profile.gender)}\n"
+            f"📨 مصرف کل: {format_quota_units(quota.total_sent)} پیام\n"
+            f"☀️ باقی‌مانده روزانه: {format_quota_units(quota.daily_remaining)} از {quota.daily_limit}\n"
+            f"🗓️ باقی‌مانده ماهانه: {format_quota_units(quota.monthly_remaining)} از {quota.monthly_limit}\n"
+            f"⚡ ظرفیت اضافه: {format_quota_units(quota.extra_remaining)} پیام\n"
+            f"📱 شماره موبایل: {'✅ ثبت شده' if profile.phone_number else '❌ ثبت نشده'}\n"
+            f"🛡️ وضعیت مسدودی: {block_line}",
             reply_markup=menu_service.account_keyboard(can_debug(user_id)),
         )
+
+    @dispatcher.my_chat_member()
+    async def my_chat_member_handler(event: ChatMemberUpdated) -> None:
+        if group_service is None or not is_group_chat_type(getattr(event.chat, "type", None)):
+            return
+        status = getattr(event.new_chat_member.status, "value", str(event.new_chat_member.status))
+        group_service.upsert_group(
+            chat_id=event.chat.id,
+            title=getattr(event.chat, "title", None),
+            username=getattr(event.chat, "username", None),
+            chat_type=str(event.chat.type),
+            bot_status=status,
+            active=status in {"member", "administrator", "creator"},
+        )
+
+    @dispatcher.message(F.chat.type.in_({"group", "supergroup"}))
+    async def group_message_handler(message: Message) -> None:
+        track_group_message(message)
+        return
 
     @dispatcher.message(CommandStart())
     async def start_handler(message: Message, bot: Bot) -> None:

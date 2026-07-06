@@ -8,10 +8,38 @@
   <div class="card metric">اخطار<b>{{ detail.warnings|length }}</b></div>
 </div>
 <div class="grid two">
-  <div class="card"><h3>پروفایل</h3><pre>{{ detail.user.__dict__ | json_pretty }}</pre></div>
-  <div class="card"><h3>مسدودی</h3>{% if detail.block %}<pre>{{ detail.block.__dict__ | json_pretty }}</pre>{% else %}<p class="muted">مسدودی فعال ندارد.</p>{% endif %}</div>
+  <div class="card">
+    <h3>پروفایل</h3>
+    <table>
+      <tr><th>key</th><th>value</th></tr>
+      <tr><td>telegram_id</td><td class="ltr">{{ detail.user.telegram_id }}</td></tr>
+      <tr><td>username</td><td>{{ detail.user.username or "-" }}</td></tr>
+      <tr><td>first_name</td><td>{{ detail.user.first_name or "-" }}</td></tr>
+      <tr><td>last_name</td><td>{{ detail.user.last_name or "-" }}</td></tr>
+      <tr><td>display_name</td><td>{{ detail.user.display_name or "-" }}</td></tr>
+      <tr><td>gender</td><td>{{ detail.user.gender or "-" }}</td></tr>
+      <tr><td>language_code</td><td>{{ detail.user.language_code or "-" }}</td></tr>
+      <tr><td>onboarding_state</td><td>{{ detail.user.onboarding_state }}</td></tr>
+      <tr><td>plan</td><td>{{ detail.user.plan }}</td></tr>
+      <tr><td>phone_number</td><td>{{ "ثبت شده" if detail.user.phone_number else "-" }}</td></tr>
+      <tr><td>created_at</td><td>{{ detail.user.created_at|dt }}</td></tr>
+      <tr><td>updated_at</td><td>{{ detail.user.updated_at|dt }}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>مسدودی</h3>
+    {% if detail.block %}
+    <table><tr><th>key</th><th>value</th></tr><tr><td>warning_count</td><td>{{ detail.block.warning_count }}</td></tr><tr><td>blocked_until</td><td>{{ detail.block.blocked_until|dt }}</td></tr><tr><td>reason</td><td>{{ detail.block.reason }}</td></tr></table>
+    {% else %}
+    <p class="muted">مسدودی فعال ندارد.</p>
+    {% endif %}
+  </div>
 </div>
-<div class="card"><h3>آخرین پیام‌ها</h3><table><tr><th>نقش</th><th>نوع</th><th>متن</th><th>provider</th><th>زمان</th></tr>{% for m in detail.messages %}<tr><td>{{ m.role }}</td><td>{{ m.message_type }}</td><td>{{ m.text }}</td><td>{{ m.provider or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table></div>
-<div class="card"><h3>حافظه‌ها</h3><table><tr><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>آخرین بروزرسانی</th></tr>{% for m in detail.memories %}<tr><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{{ m.updated_at|dt }}</td></tr>{% endfor %}</table></div>
-<div class="grid two"><div class="card"><h3>Usage</h3><table><tr><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>{% for u in detail.usage %}<tr><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div><div class="card"><h3>اخطارها</h3><table><tr><th>دلیل</th><th>تعداد</th><th>زمان</th></tr>{% for w in detail.warnings %}<tr><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>{% endfor %}</table></div></div>
+<div class="card"><h3>آخرین پیام‌ها</h3><table><tr><th>نقش</th><th>نوع</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr>{% for m in detail.messages %}<tr><td>{{ m.role }}</td><td>{{ m.message_type }}</td><td>{{ m.text }}</td><td>{{ m.provider or "-" }}</td><td>{{ m.total_tokens or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table></div>
+<div class="card"><h3>حافظه‌های این کاربر</h3><p class="muted">این همان حافظه‌ای است که در هر پیام، فقط برای همین کاربر و با سقف توکن وارد context مدل می‌شود.</p><table><tr><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>آخرین استفاده</th><th>آخرین بروزرسانی</th></tr>{% for m in detail.memories %}<tr><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{{ m.last_seen_at|dt }}</td><td>{{ m.updated_at|dt }}</td></tr>{% endfor %}</table></div>
+<div class="grid two">
+  <div class="card"><h3>Usage</h3><table><tr><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr>{% for u in detail.usage %}<tr><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.prompt_tokens or "-" }}</td><td>{{ u.completion_tokens or "-" }}</td><td>{{ u.total_tokens or "-" }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card"><h3>اخطارها</h3><table><tr><th>دلیل</th><th>تعداد</th><th>زمان</th></tr>{% for w in detail.warnings %}<tr><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>{% endfor %}</table></div>
+</div>
+<div class="card"><h3>Audit حافظه</h3><table><tr><th>action</th><th>decision</th><th>reason</th><th>after</th><th>زمان</th></tr>{% for a in detail.memory_audits %}<tr><td>{{ a.action }}</td><td>{{ a.decision }}</td><td>{{ a.reason or "-" }}</td><td><pre>{{ a.after_payload or "" }}</pre></td><td>{{ a.created_at|dt }}</td></tr>{% endfor %}</table></div>
 {% endblock %}

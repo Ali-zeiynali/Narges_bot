@@ -10,6 +10,7 @@ from bot.models.memory import MemoryItem, MemoryKind
 from bot.services.debug_service import DebugService
 from bot.storage.database import Database
 from bot.storage.orm import MemoryAuditLogORM, MemoryORM
+from bot.utils.tokens import estimate_tokens
 
 
 SENSITIVE_WORDS = [
@@ -37,9 +38,16 @@ LOW_VALUE_PATTERNS = [
 
 
 class MemoryService:
-    def __init__(self, database: Database, max_active_memories: int = 80, debug_service: DebugService | None = None) -> None:
+    def __init__(
+        self,
+        database: Database,
+        max_active_memories: int = 80,
+        max_context_tokens: int = 700,
+        debug_service: DebugService | None = None,
+    ) -> None:
         self.database = database
         self.max_active_memories = max_active_memories
+        self.max_context_tokens = max_context_tokens
         self.debug_service = debug_service
 
     def list_active(self, user_id: int, limit: int = 20) -> list[MemoryItem]:
@@ -68,7 +76,16 @@ class MemoryService:
             return (overlap + memory.importance, similarity, memory.updated_at)
 
         ranked = sorted(memories, key=score, reverse=True)
-        selected = ranked[:limit]
+        selected: list[MemoryItem] = []
+        used_tokens = 0
+        for item in ranked:
+            item_tokens = estimate_tokens(f"{item.kind.value}: {item.summary}")
+            if selected and used_tokens + item_tokens > self.max_context_tokens:
+                continue
+            selected.append(item)
+            used_tokens += item_tokens
+            if len(selected) >= limit:
+                break
         for item in selected:
             self._touch(item.id)
         return selected
@@ -121,6 +138,14 @@ class MemoryService:
                 self._replace_similar(user_id, source_message_id, suggestion)
             else:
                 self._save(user_id, source_message_id, suggestion, "create")
+
+    def apply_obvious_user_facts(self, user_id: int, source_message_id: int | None, source_text: str) -> None:
+        for suggestion in self._extract_obvious_suggestions(source_text):
+            allowed, reason = self._is_allowed(user_id, source_text, suggestion)
+            if not allowed:
+                self._audit(user_id, None, suggestion.action, "rejected", reason, None, suggestion.model_dump(), source_message_id)
+                continue
+            self._save(user_id, source_message_id, suggestion, "heuristic")
 
     def _replace_identity_name(
         self,
@@ -351,6 +376,37 @@ class MemoryService:
 
     def _keywords(self, text: str) -> set[str]:
         return {word.lower() for word in re.findall(r"[\w\u0600-\u06FF]{3,}", text or "")}
+
+    def _extract_obvious_suggestions(self, text: str) -> list[MemorySuggestion]:
+        text = (text or "").strip()
+        if not text or len(text) > 220:
+            return []
+        patterns = [
+            r"(?:من\s+)?(?P<thing>[\w\u0600-\u06FF\s‌-]{2,50})\s+را\s+دوست\s+دارم",
+            r"(?:من\s+)?(?P<thing>[\w\u0600-\u06FF\s‌-]{2,50})\s+دوست\s+دارم",
+            r"از\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,50})\s+خوشم\s+می(?:اد|آید)",
+            r"\bi\s+(?:like|love|prefer)\s+(?P<thing>[a-zA-Z0-9\s-]{2,50})",
+        ]
+        suggestions: list[MemorySuggestion] = []
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            thing = re.sub(r"\s+", " ", match.group("thing")).strip(" .،,!؟")
+            if not thing or thing in {"من", "i"}:
+                continue
+            summary = f"کاربر {thing} را دوست دارد."
+            suggestions.append(
+                MemorySuggestion(
+                    action="create",
+                    kind="preference",
+                    summary=summary,
+                    confidence=0.86,
+                    importance=3,
+                )
+            )
+            break
+        return suggestions
 
     def _row_to_memory(self, row) -> MemoryItem:
         return MemoryItem(

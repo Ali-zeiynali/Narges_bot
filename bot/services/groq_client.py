@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -63,9 +64,17 @@ class GroqChatClient:
 
     def complete(self, messages: list[dict[str, str]]) -> GroqResult:
         raw_text, usage, provider, model = self._complete_json(messages, NargesReply.model_json_schema(), "chat")
-        payload = self._loads_json(raw_text)
+        payload = self._try_loads_json(raw_text)
+        if payload is None:
+            reply = NargesReply.from_text(self._clean_text_reply(raw_text))
+        else:
+            try:
+                reply = NargesReply.validate_provider_payload(payload)
+            except Exception:
+                logger.exception("provider_payload_validation_failed raw_text=%s", raw_text[:1000])
+                reply = NargesReply.from_text(self._clean_text_reply(raw_text, payload))
         return GroqResult(
-            reply=NargesReply.validate_provider_payload(payload),
+            reply=reply,
             raw_text=raw_text,
             usage=usage,
             provider=provider,
@@ -99,6 +108,7 @@ class GroqChatClient:
             keys = self._resolve_keys(provider)
             if not keys:
                 continue
+            provider_failures = 0
             for key_index, api_key in enumerate(keys):
                 if self._key_is_temporarily_disabled(provider.name, key_index):
                     continue
@@ -115,8 +125,9 @@ class GroqChatClient:
                     )
                 except ProviderRequestError as exc:
                     last_error = exc
+                    provider_failures += 1
                     self._record_key_failure(provider.name, key_index, exc)
-                    if not exc.retryable:
+                    if not exc.retryable or provider_failures >= 2:
                         break
                     logger.warning("ai_provider_failed provider=%s retryable=%s error=%s", provider.name, exc.retryable, exc)
         if last_error:
@@ -136,13 +147,14 @@ class GroqChatClient:
         temperature: float | None,
     ) -> tuple[str, dict[str, int | None], str, str]:
         if provider.kind == "gemini_interactions":
-            url, headers, payload = self._gemini_request(provider, api_key, messages, schema, max_completion_tokens, temperature)
+            url, headers, payload = self._gemini_request(provider, api_key, messages, schema, purpose, max_completion_tokens, temperature)
         else:
             url, headers, payload = self._openai_compatible_request(
                 provider,
                 api_key,
                 messages,
                 schema,
+                purpose,
                 max_completion_tokens,
                 temperature,
             )
@@ -169,6 +181,7 @@ class GroqChatClient:
         api_key: str,
         messages: list[dict[str, str]],
         schema: dict[str, Any],
+        purpose: str,
         max_completion_tokens: int | None,
         temperature: float | None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -188,16 +201,7 @@ class GroqChatClient:
             "stream": False,
             **(provider.extra_body or {}),
         }
-        if provider.response_format == "json_schema":
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "narges_structured_response",
-                    "strict": True,
-                    "schema": schema,
-                },
-            }
-        elif provider.response_format == "json_object":
+        if purpose != "chat" and provider.response_format in {"json_object", "json_schema"}:
             payload["response_format"] = {"type": "json_object"}
         return f"{base_url}/chat/completions", headers, payload
 
@@ -248,6 +252,7 @@ class GroqChatClient:
         api_key: str,
         messages: list[dict[str, str]],
         schema: dict[str, Any],
+        purpose: str,
         max_completion_tokens: int | None,
         temperature: float | None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -261,13 +266,14 @@ class GroqChatClient:
                 "temperature": provider.temperature if temperature is None else temperature,
                 "max_output_tokens": max_completion_tokens or provider.max_completion_tokens,
             },
-            "response_format": {
+            **(provider.extra_body or {}),
+        }
+        if purpose != "chat":
+            payload["response_format"] = {
                 "type": "text",
                 "mime_type": "application/json",
                 "schema": schema,
-            },
-            **(provider.extra_body or {}),
-        }
+            }
         headers = {"x-goog-api-key": api_key, "Content-Type": "application/json", **(provider.extra_headers or {})}
         return provider.base_url or "https://generativelanguage.googleapis.com/v1beta/interactions", headers, payload
 
@@ -300,10 +306,15 @@ class GroqChatClient:
 
     def _extract_usage(self, data: dict[str, Any]) -> dict[str, int | None]:
         usage = data.get("usage") or data.get("usageMetadata") or {}
+        prompt_tokens = self._usage_value(usage, "prompt_tokens", "promptTokenCount")
+        completion_tokens = self._usage_value(usage, "completion_tokens", "candidatesTokenCount", "output_tokens")
+        total_tokens = self._usage_value(usage, "total_tokens", "totalTokenCount")
+        if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+            total_tokens = prompt_tokens + completion_tokens
         return {
-            "prompt_tokens": self._usage_value(usage, "prompt_tokens", "promptTokenCount"),
-            "completion_tokens": self._usage_value(usage, "completion_tokens", "candidatesTokenCount"),
-            "total_tokens": self._usage_value(usage, "total_tokens", "totalTokenCount"),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
         }
 
     def _usage_value(self, usage: dict[str, Any], *keys: str) -> int | None:
@@ -331,24 +342,48 @@ class GroqChatClient:
                 return json.loads(text[start : end + 1])
             raise
 
+    def _try_loads_json(self, raw_text: str) -> dict[str, Any] | None:
+        try:
+            payload = self._loads_json(raw_text)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _clean_text_reply(self, raw_text: str, payload: dict[str, Any] | None = None) -> str:
+        if payload:
+            for key in ("text", "answer", "message", "content"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            messages = payload.get("messages")
+            if isinstance(messages, list) and messages:
+                first = messages[0]
+                if isinstance(first, dict):
+                    value = first.get("text") or first.get("content")
+                    if value:
+                        return str(value).strip()
+                if isinstance(first, str):
+                    return first.strip()
+        text = raw_text.strip()
+        text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+        match = re.search(r'"(?:text|answer|message|content)"\s*:\s*"([^"]+)"', text, flags=re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        if text.startswith("{") and text.endswith("}"):
+            text = text.strip("{}").replace('"', "").strip()
+        return text or "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست."
+
     def _load_providers(self, settings: Settings) -> list[ProviderConfig]:
         path = Path(settings.ai_providers_config)
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8-sig"))
-            providers = raw.get("providers", raw if isinstance(raw, list) else [])
-            return [self._provider_from_dict(item) for item in providers if isinstance(item, dict)]
-        return [
-            ProviderConfig(
-                name="groq",
-                kind="openai_compatible",
-                base_url="https://api.groq.com/openai/v1",
-                api_keys=("env:GROQ_API_KEY",),
-                model=settings.groq_model,
-                temperature=settings.groq_temperature,
-                max_completion_tokens=settings.groq_max_completion_tokens,
-                response_format="json_object",
-            )
-        ]
+        if not path.exists():
+            raise RuntimeError(f"AI providers config not found: {path}")
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        providers = raw.get("providers", raw if isinstance(raw, list) else [])
+        configured = [self._provider_from_dict(item) for item in providers if isinstance(item, dict)]
+        if not configured:
+            raise RuntimeError(f"AI providers config has no providers: {path}")
+        return configured
 
     def _provider_from_dict(self, item: dict[str, Any]) -> ProviderConfig:
         return ProviderConfig(

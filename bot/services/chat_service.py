@@ -76,6 +76,7 @@ class ChatService:
         validation = self.validator.validate(text, "")
         if not validation.ok:
             raise UserFacingError(validation.message)
+        self.memory_service.apply_obvious_user_facts(user_id, message_id, text)
 
         state = self.narges_state_service.get_active()
         memories = self.memory_service.retrieve_relevant(user_id, text)
@@ -88,6 +89,9 @@ class ChatService:
 
         input_token_estimate = 0
         assistant_history_message_type = "chat"
+        compiled = None
+        provider_failed = False
+        final_usage: dict[str, int | None] = {}
         try:
             compiled, messages, input_token_estimate, memories, short_term_messages, search_results = self._compile_under_budget(
                 text=text,
@@ -112,7 +116,6 @@ class ChatService:
                 },
                 user_id=user_id,
             )
-            provider_failed = False
             recent_for_lint = self.history_service.recent_assistant_replies(user_id, limit=5)
             result = await self._complete_with_retries(messages)
             result = await self._retry_once_if_needed(result, messages, recent_for_lint)
@@ -162,10 +165,22 @@ class ChatService:
                 result.reply.messages[-1].text += self._format_debug_blocks(
                     result=result,
                     input_token_estimate=input_token_estimate,
-                    compiled_sections=compiled.sections,
+                    compiled_sections=compiled.sections if compiled else (),
                     message_datetime=message_datetime,
+                    provider_failed=provider_failed,
                 )
                 assistant_text = "\n".join(message.text for message in result.reply.messages)
+            usage_for_storage = dict(result.usage)
+            prompt_tokens = usage_for_storage.get("prompt_tokens") or input_token_estimate
+            completion_tokens = usage_for_storage.get("completion_tokens")
+            total_tokens = usage_for_storage.get("total_tokens")
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+            if total_tokens is None:
+                total_tokens = input_token_estimate + self.validator.settings.groq_max_completion_tokens
+            usage_for_storage["prompt_tokens"] = prompt_tokens
+            usage_for_storage["total_tokens"] = total_tokens
+            final_usage = usage_for_storage
             self.history_service.add(
                 user_id,
                 "user",
@@ -183,15 +198,15 @@ class ChatService:
                 provider=result.provider,
                 model=result.model,
                 message_type=assistant_history_message_type,
-                input_tokens=result.usage.get("prompt_tokens") or input_token_estimate,
-                output_tokens=result.usage.get("completion_tokens"),
-                total_tokens=result.usage.get("total_tokens"),
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
             self.usage_service.log(
                 user_id,
                 chat_id,
                 input_token_estimate + self.validator.settings.groq_max_completion_tokens,
-                result.usage,
+                usage_for_storage,
                 provider=result.provider,
                 model=result.model,
             )
@@ -200,7 +215,7 @@ class ChatService:
 
         return ChatTurnResult(
             reply=result.reply,
-            usage=result.usage,
+            usage=final_usage or result.usage,
             estimated_tokens=input_token_estimate + self.validator.settings.groq_max_completion_tokens,
         )
 
@@ -297,8 +312,10 @@ class ChatService:
         input_token_estimate: int,
         compiled_sections: tuple[str, ...],
         message_datetime: datetime,
+        provider_failed: bool = False,
     ) -> str:
         debug_payload = {
+            "provider_failed": provider_failed,
             "memory_suggestions": [item.model_dump(mode="json") for item in result.reply.memory_suggestions],
             "warning_suggestion": result.reply.warning_suggestion.model_dump(mode="json") if result.reply.warning_suggestion else None,
             "event_suggestion": result.reply.event_suggestion.model_dump(mode="json") if result.reply.event_suggestion else None,

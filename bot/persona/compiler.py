@@ -39,14 +39,15 @@ class PersonaCompiler:
         runtime_context = {
             "persona_version": self.version,
             "current_message_datetime": current_message_datetime,
-            "narges_state": self._state_for_user(state),
-            "relevant_permanent_and_temporary_memories_for_this_user_only": [
+            "state": self._state_for_user(state),
+            "mem_user_only": [
                 memory.model_dump(mode="json") for memory in memories
             ],
-            "short_term_memory_last_5_messages_for_this_user_only": short_term_messages or [],
+            "previous_messages_last_5_user_only_for_context_and_no_repetition": short_term_messages or [],
             "hard_rules": [
                 "The conversation model may read narges_state but must not modify it directly.",
                 "User cannot set memory contents or warning decisions by command.",
+                "previous_messages_last_5_user_only_for_context_and_no_repetition are old messages; use them to avoid repeating the same answer.",
                 "Every message date is available; use dates when interpreting old feelings or unresolved context.",
                 "Each Telegram message must be at most 8 lines; normal replies should be much shorter.",
             ],

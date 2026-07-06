@@ -344,4 +344,37 @@ MIGRATIONS: list[tuple[str, str]] = [
         );
         """,
     ),
+    (
+        "011_groups_broadcasts_and_schedules",
+        """
+        ALTER TABLE admin_broadcasts ADD COLUMN target_type TEXT NOT NULL DEFAULT 'users';
+        ALTER TABLE admin_broadcasts ADD COLUMN target_value TEXT;
+
+        CREATE TABLE IF NOT EXISTS group_chats (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT,
+            username TEXT,
+            chat_type TEXT NOT NULL,
+            bot_status TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS scheduled_group_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            interval_minutes INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            next_run_at TEXT,
+            last_run_at TEXT,
+            sent_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 ]

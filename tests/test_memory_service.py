@@ -91,6 +91,14 @@ class MemoryServiceTests(unittest.TestCase):
             row = connection.execute("SELECT decision FROM memory_audit_logs LIMIT 1").fetchone()
         self.assertEqual(row["decision"], "rejected")
 
+    def test_obvious_preference_is_saved_from_text(self) -> None:
+        self.service.apply_obvious_user_facts(1, 10, "من موز دوست دارم")
+
+        memories = self.service.list_active(1)
+        self.assertEqual(len(memories), 1)
+        self.assertIn("موز", memories[0].summary)
+        self.assertEqual(memories[0].kind.value, "preference")
+
 
 if __name__ == "__main__":
     unittest.main()

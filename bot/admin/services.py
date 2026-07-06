@@ -12,6 +12,7 @@ from bot.config import Settings
 from bot.models.state import NargesSelfStateCandidate
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
+from bot.services.required_channel_service import RequiredChannelService
 from bot.storage.database import Database
 from bot.storage.orm import (
     AdminBroadcastORM,
@@ -20,7 +21,9 @@ from bot.storage.orm import (
     ConversationMessageORM,
     DailyEventORM,
     DebugLogORM,
+    GroupChatORM,
     MemoryORM,
+    MemoryAuditLogORM,
     NargesSelfStateORM,
     NargesStateAuditLogORM,
     NargesStateSchedulerRunORM,
@@ -29,6 +32,8 @@ from bot.storage.orm import (
     UserBlockORM,
     UserORM,
     UserWarningEventORM,
+    RequiredChannelORM,
+    ScheduledGroupMessageORM,
 )
 
 
@@ -74,6 +79,7 @@ class AdminDataService:
         self.settings = settings
         self.quota_service = QuotaService(database, settings)
         self.state_service = NargesStateService(database)
+        self.channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
 
     def dashboard(self) -> DashboardSnapshot:
         today = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -172,6 +178,7 @@ class AdminDataService:
             usage = session.scalars(select(UsageLogORM).where(UsageLogORM.user_id == user_id).order_by(desc(UsageLogORM.id)).limit(30)).all()
             quota_events = session.scalars(select(QuotaEventORM).where(QuotaEventORM.user_id == user_id).order_by(desc(QuotaEventORM.id)).limit(40)).all()
             invoices = session.scalars(select(BillingInvoiceORM).where(BillingInvoiceORM.user_id == user_id).order_by(desc(BillingInvoiceORM.created_at)).limit(20)).all()
+            memory_audits = session.scalars(select(MemoryAuditLogORM).where(MemoryAuditLogORM.user_id == user_id).order_by(desc(MemoryAuditLogORM.id)).limit(40)).all()
         return {
             "user": user,
             "quota": self.quota_service.account_quota(user_id),
@@ -182,7 +189,19 @@ class AdminDataService:
             "usage": usage,
             "quota_events": quota_events,
             "invoices": invoices,
+            "memory_audits": memory_audits,
         }
+
+    def memories(self, user_id: int | None = None, limit: int = 200) -> dict[str, Any]:
+        with self.database.orm.session() as session:
+            memory_statement = select(MemoryORM).order_by(desc(MemoryORM.updated_at)).limit(limit)
+            audit_statement = select(MemoryAuditLogORM).order_by(desc(MemoryAuditLogORM.id)).limit(limit)
+            if user_id is not None:
+                memory_statement = memory_statement.where(MemoryORM.user_id == user_id)
+                audit_statement = audit_statement.where(MemoryAuditLogORM.user_id == user_id)
+            memories = session.scalars(memory_statement).all()
+            audits = session.scalars(audit_statement).all()
+        return {"memories": memories, "audits": audits, "user_id": user_id}
 
     def model_state(self) -> dict[str, Any]:
         with self.database.orm.session() as session:
@@ -290,9 +309,16 @@ class AdminDataService:
             broadcasts = session.scalars(select(AdminBroadcastORM).order_by(desc(AdminBroadcastORM.id)).limit(30)).all()
         return {"kind": kind, "debug": debug_rows, "usage": usage_rows, "warnings": warning_rows, "broadcasts": broadcasts}
 
-    def create_broadcast(self, text: str, target_count: int) -> int:
+    def create_broadcast(self, text: str, target_count: int, target_type: str = "users", target_value: str | None = None) -> int:
         with self.database.orm.session() as session:
-            row = AdminBroadcastORM(text=text.strip(), target_count=target_count, status="running", created_at=utc_now())
+            row = AdminBroadcastORM(
+                text=text.strip(),
+                target_count=target_count,
+                target_type=target_type,
+                target_value=target_value,
+                status="running",
+                created_at=utc_now(),
+            )
             session.add(row)
             session.flush()
             return int(row.id)
@@ -314,6 +340,75 @@ class AdminDataService:
             if only_ready:
                 statement = statement.where(UserORM.onboarding_state == "ready")
             return [int(value) for value in session.scalars(statement).all()]
+
+    def target_group_ids(self) -> list[int]:
+        with self.database.orm.session() as session:
+            return [
+                int(value)
+                for value in session.scalars(
+                    select(GroupChatORM.chat_id).where(GroupChatORM.active.is_(True)).order_by(GroupChatORM.chat_id)
+                ).all()
+            ]
+
+    def group_chats(self) -> list[GroupChatORM]:
+        with self.database.orm.session() as session:
+            return list(session.scalars(select(GroupChatORM).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)).all())
+
+    def scheduled_group_messages(self) -> list[ScheduledGroupMessageORM]:
+        with self.database.orm.session() as session:
+            return list(session.scalars(select(ScheduledGroupMessageORM).order_by(desc(ScheduledGroupMessageORM.id))).all())
+
+    def create_scheduled_group_message(self, text: str, interval_minutes: int, enabled: bool) -> None:
+        from bot.services.group_service import GroupService
+
+        GroupService(self.database).create_schedule(text, interval_minutes, enabled)
+
+    def update_scheduled_group_message(self, schedule_id: int, text: str, interval_minutes: int, enabled: bool) -> bool:
+        from bot.services.group_service import GroupService
+
+        return GroupService(self.database).update_schedule(schedule_id, text, interval_minutes, enabled)
+
+    def delete_scheduled_group_message(self, schedule_id: int) -> bool:
+        from bot.services.group_service import GroupService
+
+        return GroupService(self.database).delete_schedule(schedule_id)
+
+    def channels(self) -> list[RequiredChannelORM]:
+        with self.database.orm.session() as session:
+            return list(session.scalars(select(RequiredChannelORM).order_by(RequiredChannelORM.position, RequiredChannelORM.id)).all())
+
+    def save_channel_from_form(self, form: dict[str, Any]) -> None:
+        channel_id = str(form.get("channel_id", "")).strip()
+        title = str(form.get("title", "")).strip()
+        if not channel_id or not title:
+            return
+        position_raw = str(form.get("position", "")).strip()
+        position = int(position_raw) if position_raw.isdigit() else None
+        self.channel_service.add_channel(
+            admin_id=0,
+            chat_id=channel_id,
+            title=title,
+            join_url=str(form.get("join_url", "")).strip() or None,
+            is_private=str(form.get("is_private", "")).lower() in {"on", "true", "1", "yes"},
+            position=position,
+        )
+
+    def update_channel_from_form(self, channel_id: int, form: dict[str, Any]) -> None:
+        current = self.channel_service.get(channel_id)
+        if current is None:
+            return
+        position_raw = str(form.get("position", current.position)).strip()
+        self.channel_service.add_channel(
+            admin_id=0,
+            chat_id=str(form.get("chat_id", current.chat_id)).strip(),
+            title=str(form.get("title", current.title)).strip(),
+            join_url=str(form.get("join_url", current.join_url or "")).strip() or None,
+            is_private=str(form.get("is_private", "")).lower() in {"on", "true", "1", "yes"},
+            position=int(position_raw) if position_raw.isdigit() else current.position,
+        )
+        active = str(form.get("active", "")).lower() in {"on", "true", "1", "yes"}
+        if not active:
+            self.channel_service.remove_channel(0, channel_id)
 
     def _read_provider_config(self) -> dict[str, Any]:
         path = Path(self.settings.ai_providers_config)

@@ -12,6 +12,7 @@ from bot.persona.compiler import PersonaCompiler
 from bot.services.chat_service import ChatService
 from bot.services.billing_service import BillingService
 from bot.services.groq_client import GroqChatClient
+from bot.services.group_service import GroupMessageScheduler, GroupService
 from bot.services.history_service import HistoryService
 from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
@@ -47,6 +48,7 @@ async def main() -> None:
     quota_service = QuotaService(database, settings, debug_service=debug_service)
     menu_service = MenuService(settings)
     channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
+    group_service = GroupService(database)
     user_service = UserService(database)
     name_service = NameService(settings.name_transliteration_map)
     groq_client = GroqChatClient(settings, database)
@@ -83,6 +85,7 @@ async def main() -> None:
         history_service=history_service,
         narges_state_service=narges_state_service,
         debug_service=debug_service,
+        group_service=group_service,
         settings=settings,
     )
 
@@ -90,6 +93,7 @@ async def main() -> None:
     bot = Bot(token=settings.telegram_token, session=session)
     await menu_service.setup_commands(bot)
     scheduler_task = asyncio.create_task(narges_state_scheduler.run_forever())
+    group_scheduler_task = asyncio.create_task(GroupMessageScheduler(group_service, bot).run_forever())
 
     logger.info(
         "bot_started model=%s persona_version=%s proxy_enabled=%s",
@@ -101,8 +105,11 @@ async def main() -> None:
         await dispatcher.start_polling(bot)
     finally:
         scheduler_task.cancel()
+        group_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
+        with suppress(asyncio.CancelledError):
+            await group_scheduler_task
         await bot.session.close()
         logger.info("bot_stopped")
 

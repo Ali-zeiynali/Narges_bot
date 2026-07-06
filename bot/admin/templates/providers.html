@@ -1,11 +1,24 @@
 {% extends "base.html" %}{% block title %}Providerها{% endblock %}
 {% block content %}
-<h2>توکن‌ها و Providerها</h2><p class="muted">کلیدها mask شده‌اند. برای تغییر کلید اصلی، ترتیب لیست را در فایل config یا با حذف/افزودن تنظیم کن.</p>
+<h2>وضعیت Providerها</h2>
+<p class="muted">تنظیم providerها فعلا فقط از فایل config/ai_providers.json انجام می‌شود. این صفحه فقط وضعیت و محدودیت کلیدها را نشان می‌دهد.</p>
 {% for p in providers %}
-<div class="card"><h3>{{ p.name }} <span class="pill">{{ "فعال" if p.enabled else "غیرفعال" }}</span></h3>
-<form method="post" action="/admin/providers/{{ p.name }}" class="grid two"><label>enabled <input style="width:auto" type="checkbox" name="enabled" {% if p.enabled %}checked{% endif %}></label><label>model<input name="model" value="{{ p.model }}"></label><label>base_url<input name="base_url" value="{{ p.base_url or "" }}"></label><label>response_format<input name="response_format" value="{{ p.response_format }}"></label><label>timeout_seconds<input name="timeout_seconds" value="{{ p.timeout_seconds }}"></label><label>max_completion_tokens<input name="max_completion_tokens" value="{{ p.max_completion_tokens }}"></label><div><button>ذخیره</button></div></form>
-<h4>کلیدها</h4><table><tr><th>#</th><th>کلید</th><th>وضعیت</th><th>خطا</th><th>غیرفعال تا</th><th></th></tr>{% for key in p.masked_keys %}{% set st = p.key_statuses[loop.index0] %}<tr><td>{{ loop.index0 }}</td><td class="ltr">{{ key }}</td><td>{{ st.status or "unknown" }}</td><td>{{ st.last_error or "-" }}</td><td>{{ st.disabled_until|dt }}</td><td><form method="post" action="/admin/providers/{{ p.name }}/keys/{{ loop.index0 }}/delete"><button class="bad">حذف</button></form></td></tr>{% endfor %}</table>
-<form method="post" action="/admin/providers/{{ p.name }}/keys" class="row"><input name="key" placeholder="کلید جدید یا env:NAME"><button>افزودن کلید پشتیبان</button></form>
+<div class="card">
+  <h3>{{ p.name }} <span class="pill">{{ "فعال" if p.enabled else "غیرفعال" }}</span></h3>
+  <div class="grid two">
+    <div><b>model:</b> <span class="ltr">{{ p.model }}</span></div>
+    <div><b>base_url:</b> <span class="ltr">{{ p.base_url or "-" }}</span></div>
+    <div><b>response_format:</b> {{ p.response_format }}</div>
+    <div><b>timeout:</b> {{ p.timeout_seconds }}s</div>
+  </div>
+  <h4>کلیدها</h4>
+  <table>
+    <tr><th>#</th><th>کلید</th><th>وضعیت</th><th>خطا</th><th>غیرفعال تا</th><th>آخرین موفق</th></tr>
+    {% for key in p.masked_keys %}
+    {% set st = p.key_statuses[loop.index0] %}
+    <tr><td>{{ loop.index0 }}</td><td class="ltr">{{ key }}</td><td>{{ st.status or "unknown" }}</td><td>{{ st.last_error or "-" }}</td><td>{{ st.disabled_until|dt }}</td><td>{{ st.last_success_at|dt }}</td></tr>
+    {% endfor %}
+  </table>
 </div>
 {% endfor %}
 {% endblock %}

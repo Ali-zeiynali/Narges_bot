@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from bot.admin.services import AdminDataService, dt_iso, mask_key
 from bot.config import Settings, load_settings
 from bot.logging_config import setup_logging
+from bot.services.group_service import send_messages
 from bot.storage.database import Database
 
 
@@ -109,42 +110,114 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     @app.post("/admin/providers/{provider_name}")
     async def update_provider(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
-        service.update_provider(provider_name, dict(await request.form()))
-        return RedirectResponse("/admin/providers?flash=تنظیمات provider ذخیره شد", status_code=303)
+        return RedirectResponse("/admin/providers?flash=ویرایش provider از پنل غیرفعال است", status_code=303)
 
     @app.post("/admin/providers/{provider_name}/keys")
     async def add_provider_key(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
-        form = await request.form()
-        key = str(form.get("key", "")).strip()
-        if key:
-            service.add_provider_key(provider_name, key)
-        return RedirectResponse("/admin/providers?flash=کلید اضافه شد", status_code=303)
+        return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
 
     @app.post("/admin/providers/{provider_name}/keys/{key_index}/delete")
     async def delete_provider_key(request: Request, provider_name: str, key_index: int) -> RedirectResponse:
         require_admin(request)
-        service.delete_provider_key(provider_name, key_index)
-        return RedirectResponse("/admin/providers?flash=کلید حذف شد", status_code=303)
+        return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
 
     @app.get("/admin/broadcast", response_class=HTMLResponse)
     async def broadcast_page(request: Request) -> HTMLResponse:
         require_admin(request)
-        return render(request, "broadcast.html", {"logs": service.logs()["broadcasts"]})
+        return render(
+            request,
+            "broadcast.html",
+            {
+                "logs": service.logs()["broadcasts"],
+                "groups": service.group_chats(),
+                "schedules": service.scheduled_group_messages(),
+            },
+        )
 
     @app.post("/admin/broadcast")
     async def broadcast_send(request: Request) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
         text = str(form.get("text", "")).strip()
+        target_type = str(form.get("target_type", "users")).strip()
+        target_value = str(form.get("target_value", "")).strip() or None
         only_ready = str(form.get("only_ready", "on")).lower() in {"on", "true", "1"}
         if not text:
             return RedirectResponse("/admin/broadcast?flash=متن پیام خالی است", status_code=303)
-        target_ids = service.target_user_ids(only_ready=only_ready)
-        broadcast_id = service.create_broadcast(text, len(target_ids))
-        sent, failed, error = await send_broadcast(settings.telegram_token, target_ids, text)
+        if target_type == "groups":
+            target_ids = service.target_group_ids()
+        elif target_type == "user":
+            if not target_value or not target_value.lstrip("-").isdigit():
+                return RedirectResponse("/admin/broadcast?flash=شناسه کاربر معتبر نیست", status_code=303)
+            target_ids = [int(target_value)]
+        else:
+            target_type = "users"
+            target_ids = service.target_user_ids(only_ready=only_ready)
+        broadcast_id = service.create_broadcast(text, len(target_ids), target_type=target_type, target_value=target_value)
+        sent, failed, error = await send_broadcast(settings, target_ids, text)
         service.finish_broadcast(broadcast_id, sent, failed, error)
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
+
+    @app.post("/admin/broadcast/schedules")
+    async def create_group_schedule(request: Request) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        text = str(form.get("text", "")).strip()
+        if not text:
+            return RedirectResponse("/admin/broadcast?flash=متن زمان‌بندی خالی است", status_code=303)
+        service.create_scheduled_group_message(
+            text=text,
+            interval_minutes=int(str(form.get("interval_minutes", "180")).strip() or "180"),
+            enabled=str(form.get("enabled", "on")).lower() in {"on", "true", "1"},
+        )
+        return RedirectResponse("/admin/broadcast?flash=زمان‌بندی گروهی ذخیره شد", status_code=303)
+
+    @app.post("/admin/broadcast/schedules/{schedule_id}")
+    async def update_group_schedule(request: Request, schedule_id: int) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        service.update_scheduled_group_message(
+            schedule_id,
+            str(form.get("text", "")).strip(),
+            int(str(form.get("interval_minutes", "180")).strip() or "180"),
+            str(form.get("enabled", "")).lower() in {"on", "true", "1"},
+        )
+        return RedirectResponse("/admin/broadcast?flash=زمان‌بندی بروزرسانی شد", status_code=303)
+
+    @app.post("/admin/broadcast/schedules/{schedule_id}/delete")
+    async def delete_group_schedule(request: Request, schedule_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.delete_scheduled_group_message(schedule_id)
+        return RedirectResponse("/admin/broadcast?flash=زمان‌بندی حذف شد", status_code=303)
+
+    @app.get("/admin/channels", response_class=HTMLResponse)
+    async def channels_page(request: Request) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "channels.html", {"channels": service.channels()})
+
+    @app.post("/admin/channels")
+    async def create_channel(request: Request) -> RedirectResponse:
+        require_admin(request)
+        service.save_channel_from_form(dict(await request.form()))
+        return RedirectResponse("/admin/channels?flash=کانال ذخیره شد", status_code=303)
+
+    @app.post("/admin/channels/{channel_id}")
+    async def update_channel(request: Request, channel_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.update_channel_from_form(channel_id, dict(await request.form()))
+        return RedirectResponse("/admin/channels?flash=کانال بروزرسانی شد", status_code=303)
+
+    @app.post("/admin/channels/{channel_id}/delete")
+    async def delete_channel(request: Request, channel_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.channel_service.remove_channel(0, channel_id)
+        return RedirectResponse("/admin/channels?flash=کانال حذف شد", status_code=303)
+
+    @app.get("/admin/memories", response_class=HTMLResponse)
+    async def memories_page(request: Request, user_id: int | None = None) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "memories.html", service.memories(user_id=user_id))
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def logs(request: Request, kind: str = "debug") -> HTMLResponse:
@@ -154,24 +227,13 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     return app
 
 
-async def send_broadcast(token: str, user_ids: list[int], text: str) -> tuple[int, int, str | None]:
-    bot = Bot(token=token)
-    sent = 0
-    failed = 0
-    first_error: str | None = None
+async def send_broadcast(settings: Settings, user_ids: list[int], text: str) -> tuple[int, int, str | None]:
+    session = AiohttpSession(proxy=settings.telegram_proxy)
+    bot = Bot(token=settings.telegram_token, session=session)
     try:
-        for user_id in user_ids:
-            try:
-                await bot.send_message(user_id, text)
-                sent += 1
-                await asyncio.sleep(0.04)
-            except Exception as exc:
-                failed += 1
-                if first_error is None:
-                    first_error = f"{exc.__class__.__name__}: {exc}"
+        return await send_messages(bot, user_ids, text)
     finally:
         await bot.session.close()
-    return sent, failed, first_error
 
 
 app = create_admin_app()

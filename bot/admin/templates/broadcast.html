@@ -1,6 +1,71 @@
 {% extends "base.html" %}{% block title %}ارسال همگانی{% endblock %}
 {% block content %}
-<h2>ارسال پیام همگانی</h2>
-<form class="card" method="post"><label>متن پیام از طرف بات<textarea name="text" required></textarea></label><label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label><button>ارسال برای همه</button></form>
-<div class="card"><h3>ارسال‌های قبلی</h3><table><tr><th>متن</th><th>هدف</th><th>موفق</th><th>ناموفق</th><th>وضعیت</th><th>زمان</th></tr>{% for b in logs %}<tr><td>{{ b.text }}</td><td>{{ b.target_count }}</td><td>{{ b.sent_count }}</td><td>{{ b.failed_count }}</td><td>{{ b.status }}</td><td>{{ b.created_at|dt }}</td></tr>{% endfor %}</table></div>
+<h2>ارسال پیام</h2>
+<form class="card" method="post">
+  <div class="grid two">
+    <label>هدف
+      <select name="target_type">
+        <option value="users">همه کاربران</option>
+        <option value="groups">همه گروه‌ها</option>
+        <option value="user">یک کاربر خاص</option>
+      </select>
+    </label>
+    <label>شناسه کاربر خاص
+      <input name="target_value" class="ltr" placeholder="مثلا 8482032584">
+    </label>
+  </div>
+  <label>متن پیام<textarea name="text" required></textarea></label>
+  <label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label>
+  <button>ارسال</button>
+</form>
+
+<h2>زمان‌بندی پیام گروهی</h2>
+<form class="card" method="post" action="/admin/broadcast/schedules">
+  <div class="grid two">
+    <label>هر چند دقیقه؟
+      <input name="interval_minutes" type="number" min="5" value="180">
+    </label>
+    <label><input style="width:auto" type="checkbox" name="enabled" checked> فعال</label>
+  </div>
+  <label>متن پیام گروهی<textarea name="text" required></textarea></label>
+  <button>ذخیره زمان‌بندی</button>
+</form>
+
+<div class="card">
+  <h3>زمان‌بندی‌های فعال</h3>
+  <table>
+    <tr><th>متن</th><th>فاصله</th><th>فعال</th><th>اجرای بعدی</th><th>ارسال/خطا</th><th>عملیات</th></tr>
+    {% for s in schedules %}
+    <tr>
+      <form method="post" action="/admin/broadcast/schedules/{{ s.id }}">
+        <td><textarea name="text">{{ s.text }}</textarea></td>
+        <td><input name="interval_minutes" type="number" min="5" value="{{ s.interval_minutes }}"></td>
+        <td><input style="width:auto" type="checkbox" name="enabled" {% if s.enabled %}checked{% endif %}></td>
+        <td>{{ s.next_run_at|dt }}</td>
+        <td>{{ s.sent_count }} / {{ s.failed_count }}<div class="muted">{{ s.last_error or "" }}</div></td>
+        <td class="row"><button>ذخیره</button></form><form method="post" action="/admin/broadcast/schedules/{{ s.id }}/delete"><button class="bad">حذف</button></form></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>گروه‌های ثبت‌شده</h3>
+  <table>
+    <tr><th>شناسه</th><th>عنوان</th><th>نوع</th><th>وضعیت بات</th><th>فعال</th><th>آخرین مشاهده</th></tr>
+    {% for g in groups %}
+    <tr><td class="ltr">{{ g.chat_id }}</td><td>{{ g.title or "-" }}</td><td>{{ g.chat_type }}</td><td>{{ g.bot_status or "-" }}</td><td>{{ "بله" if g.active else "نه" }}</td><td>{{ g.last_seen_at|dt }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>ارسال‌های قبلی</h3>
+  <table>
+    <tr><th>متن</th><th>هدف</th><th>تعداد</th><th>موفق</th><th>ناموفق</th><th>وضعیت</th><th>خطا</th><th>زمان</th></tr>
+    {% for b in logs %}
+    <tr><td>{{ b.text }}</td><td>{{ b.target_type }} {{ b.target_value or "" }}</td><td>{{ b.target_count }}</td><td>{{ b.sent_count }}</td><td>{{ b.failed_count }}</td><td>{{ b.status }}</td><td>{{ b.error or "-" }}</td><td>{{ b.created_at|dt }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
 {% endblock %}

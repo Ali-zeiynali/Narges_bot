@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block title %}کانال‌های اجباری{% endblock %}
+{% block content %}
+<h2>کانال‌های اجباری</h2>
+<form class="card" method="post">
+  <div class="grid two">
+    <label>chat_id<input name="channel_id" class="ltr" placeholder="@channel یا -100..."></label>
+    <label>عنوان<input name="title" required></label>
+    <label>لینک عضویت<input name="join_url" class="ltr" placeholder="https://t.me/..."></label>
+    <label>ترتیب<input name="position" type="number" placeholder="10"></label>
+  </div>
+  <label><input style="width:auto" type="checkbox" name="is_private"> کانال خصوصی است</label>
+  <button>افزودن/فعال‌سازی</button>
+</form>
+<div class="card">
+  <table>
+    <tr><th>id</th><th>chat_id</th><th>عنوان</th><th>لینک</th><th>ترتیب</th><th>خصوصی</th><th>فعال</th><th>عملیات</th></tr>
+    {% for c in channels %}
+    <tr>
+      <form method="post" action="/admin/channels/{{ c.id }}">
+        <td>{{ c.id }}</td>
+        <td><input name="chat_id" class="ltr" value="{{ c.chat_id }}"></td>
+        <td><input name="title" value="{{ c.title }}"></td>
+        <td><input name="join_url" class="ltr" value="{{ c.join_url or "" }}"></td>
+        <td><input name="position" type="number" value="{{ c.position }}"></td>
+        <td><input style="width:auto" type="checkbox" name="is_private" {% if c.is_private %}checked{% endif %}></td>
+        <td><input style="width:auto" type="checkbox" name="active" {% if c.active %}checked{% endif %}></td>
+        <td class="row"><button>ذخیره</button></form><form method="post" action="/admin/channels/{{ c.id }}/delete"><button class="bad">حذف</button></form></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

@@ -36,6 +36,7 @@ class RequiredChannelServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(removed)
         self.assertEqual(len(self.service.list_active()), 0)
+        self.assertEqual(len(self.service.list_all()), 0)
 
 
 if __name__ == "__main__":

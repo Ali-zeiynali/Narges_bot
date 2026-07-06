@@ -49,6 +49,7 @@ class RequiredChannelService:
             item = cached or await self._fetch_membership(bot, user_id, channel)
             if item.error:
                 errors.append(item)
+                missing.append(item)
             elif not item.is_member:
                 missing.append(item)
         return MembershipCheck(ok=not missing and not errors, missing=missing, errors=errors)
@@ -97,8 +98,8 @@ class RequiredChannelService:
         with self.database.orm.session() as session:
             row = session.get(RequiredChannelORM, channel_id)
             if row:
-                row.active = False
-                row.updated_at = datetime.now(UTC)
+                session.query(MembershipCacheORM).filter(MembershipCacheORM.channel_id == channel_id).delete()
+                session.delete(row)
         self._audit(admin_id, "remove_channel", channel_id, before, None)
         return True
 
