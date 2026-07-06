@@ -63,6 +63,25 @@ Start command: python -m bot.main
 Health check path: /health
 ```
 
+For SQLite persistence on Render, attach a persistent disk and keep all mutable files under the disk mount. The included `render.yaml` uses:
+
+```text
+Disk mount path: /var/data
+DATABASE_PATH=/var/data/narges.sqlite3
+LOG_FILE=/var/data/logs/bot.log
+AI_PROVIDERS_CONFIG=/var/data/config/ai_providers.json
+```
+
+Without a Render disk, `data/narges.sqlite3` is stored on the service filesystem and can reset on redeploy. If you stay on a plan without disks, move the storage layer to an external database instead.
+
+The admin panel is mounted on the same FastAPI service:
+
+```text
+https://your-service.onrender.com/admin
+```
+
+If `/admin` returns 404 on Render, verify the deployed commit includes `bot.webhook:app` with `Mount('/admin')` and that the service was redeployed from the updated `render.yaml`.
+
 Required environment variables:
 
 ```text

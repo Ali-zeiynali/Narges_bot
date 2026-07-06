@@ -2,10 +2,14 @@ services:
   - type: web
     name: narges-telegram-bot
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python -m bot.main
     healthCheckPath: /health
+    disk:
+      name: narges-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
@@ -22,8 +26,10 @@ services:
       - key: TELEGRAM_PROXY
         value: ""
       - key: DATABASE_PATH
-        value: data/narges.sqlite3
+        value: /var/data/narges.sqlite3
       - key: LOG_FILE
-        value: logs/bot.log
+        value: /var/data/logs/bot.log
+      - key: AI_PROVIDERS_CONFIG
+        value: /var/data/config/ai_providers.json
       - key: LOG_LEVEL
         value: INFO

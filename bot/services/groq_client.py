@@ -437,7 +437,13 @@ class GroqChatClient:
     def _load_providers(self, settings: Settings) -> list[ProviderConfig]:
         path = Path(settings.ai_providers_config)
         if not path.exists():
-            raise RuntimeError(f"AI providers config not found: {path}")
+            seed_path = Path("config/ai_providers.json")
+            if seed_path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(seed_path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+                logger.info("ai_provider_config_seeded source=%s target=%s", seed_path, path)
+            else:
+                raise RuntimeError(f"AI providers config not found: {path}")
         raw_text = path.read_text(encoding="utf-8-sig")
         stat = path.stat()
         self._providers_fingerprint = (stat.st_mtime_ns, hash(raw_text))

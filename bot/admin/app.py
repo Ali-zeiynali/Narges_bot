@@ -7,7 +7,7 @@ from typing import Any
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from bot.admin.services import AdminDataService, compact_number, dt_iso, mask_key
@@ -25,7 +25,7 @@ templates.env.filters["compact_number"] = compact_number
 templates.env.filters["json_pretty"] = lambda value: json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
-def create_admin_app(settings: Settings | None = None, database: Database | None = None) -> FastAPI:
+def create_admin_app(settings: Settings | None = None, database: Database | None = None, route_prefix: str = "/admin") -> FastAPI:
     settings = settings or load_settings()
     setup_logging(settings.log_file, settings.log_level)
     database = database or Database(settings.database_path)
@@ -33,10 +33,12 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     service = AdminDataService(database, settings)
     app = FastAPI(title="Narges Admin", docs_url=None, redoc_url=None)
 
-    @app.on_event("startup")
-    async def debug_routes():
-        for route in app.routes:
-            print(route.path)
+    route_prefix = route_prefix.rstrip("/")
+
+    def route(path: str) -> str:
+        if not path:
+            return route_prefix or "/"
+        return f"{route_prefix}{path}" if route_prefix else path
 
     def render(request: Request, template: str, context: dict[str, Any] | None = None) -> HTMLResponse:
         context = context or {}
@@ -55,14 +57,17 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
 
     @app.get("/", include_in_schema=False)
-    async def root() -> RedirectResponse:
-        return RedirectResponse("/admin")
+    async def root(request: Request) -> Response:
+        if route_prefix:
+            return RedirectResponse(route_prefix)
+        require_admin(request)
+        return render(request, "dashboard.html", {"snapshot": service.dashboard()})
 
-    @app.get("/admin/login", response_class=HTMLResponse)
+    @app.get(route("/login"), response_class=HTMLResponse)
     async def login_page(request: Request) -> HTMLResponse:
         return render(request, "login.html", {"local_bypass": not settings.admin_panel_token})
 
-    @app.post("/admin/login")
+    @app.post(route("/login"))
     async def login(request: Request) -> RedirectResponse:
         form = await request.form()
         token = str(form.get("token", ""))
@@ -72,23 +77,23 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         response.set_cookie("admin_token", token, httponly=True, samesite="lax")
         return response
 
-    @app.get("/admin/logout")
+    @app.get(route("/logout"))
     async def logout() -> RedirectResponse:
         response = RedirectResponse("/admin/login", status_code=303)
         response.delete_cookie("admin_token")
         return response
 
-    @app.get("/admin", response_class=HTMLResponse)
+    @app.get(route(""), response_class=HTMLResponse)
     async def dashboard(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(request, "dashboard.html", {"snapshot": service.dashboard()})
 
-    @app.get("/admin/users", response_class=HTMLResponse)
+    @app.get(route("/users"), response_class=HTMLResponse)
     async def users(request: Request, sort: str = "last_seen", q: str = "") -> HTMLResponse:
         require_admin(request)
         return render(request, "users.html", {"users": service.users(sort=sort, query=q), "sort": sort, "q": q})
 
-    @app.get("/admin/users/{user_id}", response_class=HTMLResponse)
+    @app.get(route("/users/{user_id}"), response_class=HTMLResponse)
     async def user_detail(request: Request, user_id: int) -> HTMLResponse:
         require_admin(request)
         detail = service.user_detail(user_id)
@@ -96,13 +101,13 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             return render(request, "message.html", {"title": "کاربر پیدا نشد", "message": "این کاربر در دیتابیس وجود ندارد."})
         return render(request, "user_detail.html", {"detail": detail, "user_id": user_id})
 
-    @app.get("/admin/messages", response_class=HTMLResponse)
+    @app.get(route("/messages"), response_class=HTMLResponse)
     async def messages(request: Request, user_id: str | None = None, limit: int = 300) -> HTMLResponse:
         require_admin(request)
         parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
         return render(request, "messages.html", service.messages(user_id=parsed_user_id, limit=limit))
 
-    @app.post("/admin/users/{user_id}/extra")
+    @app.post(route("/users/{user_id}/extra"))
     async def add_user_extra(request: Request, user_id: int) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
@@ -111,32 +116,32 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         service.add_user_extra_credit(user_id, amount, reason)
         return RedirectResponse(f"/admin/users/{user_id}?flash=extra اضافه شد", status_code=303)
 
-    @app.post("/admin/users/{user_id}/memories")
+    @app.post(route("/users/{user_id}/memories"))
     async def add_user_memory(request: Request, user_id: int) -> RedirectResponse:
         require_admin(request)
         service.add_memory_from_form(user_id, dict(await request.form()))
         return RedirectResponse(f"/admin/users/{user_id}?flash=حافظه اضافه شد", status_code=303)
 
-    @app.post("/admin/users/{user_id}/memories/{memory_id}/delete")
+    @app.post(route("/users/{user_id}/memories/{memory_id}/delete"))
     async def delete_user_memory(request: Request, user_id: int, memory_id: int) -> RedirectResponse:
         require_admin(request)
         service.delete_memory(user_id, memory_id)
         return RedirectResponse(f"/admin/users/{user_id}?flash=حافظه حذف شد", status_code=303)
 
-    @app.post("/admin/users/{user_id}/warnings")
+    @app.post(route("/users/{user_id}/warnings"))
     async def add_user_warning(request: Request, user_id: int) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
         service.add_user_warning(user_id, str(form.get("reason", "")).strip())
         return RedirectResponse(f"/admin/users/{user_id}?flash=اخطار اضافه شد", status_code=303)
 
-    @app.post("/admin/users/{user_id}/warnings/{warning_id}/delete")
+    @app.post(route("/users/{user_id}/warnings/{warning_id}/delete"))
     async def delete_user_warning(request: Request, user_id: int, warning_id: int) -> RedirectResponse:
         require_admin(request)
         service.delete_user_warning(user_id, warning_id)
         return RedirectResponse(f"/admin/users/{user_id}?flash=اخطار حذف شد", status_code=303)
 
-    @app.post("/admin/users/{user_id}/delete")
+    @app.post(route("/users/{user_id}/delete"))
     async def delete_user(request: Request, user_id: int) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
@@ -145,56 +150,56 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             return RedirectResponse(f"/admin/users/{user_id}?flash=برای حذف کامل، آیدی کاربر را دقیق وارد کن", status_code=303)
         return RedirectResponse("/admin/users?flash=کاربر کامل حذف شد", status_code=303)
 
-    @app.get("/admin/messages/{message_id}", response_class=HTMLResponse)
+    @app.get(route("/messages/{message_id}"), response_class=HTMLResponse)
     async def message_detail(request: Request, message_id: int) -> HTMLResponse:
         require_admin(request)
         return render(request, "message_detail.html", service.message_detail(message_id))
 
-    @app.get("/admin/invoices", response_class=HTMLResponse)
+    @app.get(route("/invoices"), response_class=HTMLResponse)
     async def invoices(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(request, "invoices.html", service.invoices())
 
-    @app.get("/admin/model", response_class=HTMLResponse)
+    @app.get(route("/model"), response_class=HTMLResponse)
     async def model_state(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(request, "model.html", service.model_state())
 
-    @app.post("/admin/model/state")
+    @app.post(route("/model/state"))
     async def save_model_state(request: Request) -> RedirectResponse:
         require_admin(request)
         form = dict(await request.form())
         ok, message = service.save_state_from_form(form)
         return RedirectResponse(f"/admin/model?flash={message}", status_code=303)
 
-    @app.post("/admin/model/ai")
+    @app.post(route("/model/ai"))
     async def save_ai_toggle(request: Request) -> RedirectResponse:
         require_admin(request)
         service.save_ai_toggle_from_form(dict(await request.form()))
         return RedirectResponse("/admin/model?flash=وضعیت اتصال هوش مصنوعی ذخیره شد", status_code=303)
 
-    @app.get("/admin/providers", response_class=HTMLResponse)
+    @app.get(route("/providers"), response_class=HTMLResponse)
     async def providers(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(request, "providers.html", {"providers": service.provider_config(), "statuses": service.provider_statuses()})
 
-    @app.post("/admin/providers/{provider_name}")
+    @app.post(route("/providers/{provider_name}"))
     async def update_provider(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
         service.update_provider(provider_name, dict(await request.form()))
         return RedirectResponse("/admin/providers?flash=provider ذخیره شد", status_code=303)
 
-    @app.post("/admin/providers/{provider_name}/keys")
+    @app.post(route("/providers/{provider_name}/keys"))
     async def add_provider_key(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
         return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
 
-    @app.post("/admin/providers/{provider_name}/keys/{key_index}/delete")
+    @app.post(route("/providers/{provider_name}/keys/{key_index}/delete"))
     async def delete_provider_key(request: Request, provider_name: str, key_index: int) -> RedirectResponse:
         require_admin(request)
         return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
 
-    @app.get("/admin/broadcast", response_class=HTMLResponse)
+    @app.get(route("/broadcast"), response_class=HTMLResponse)
     async def broadcast_page(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(
@@ -207,7 +212,7 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             },
         )
 
-    @app.post("/admin/broadcast")
+    @app.post(route("/broadcast"))
     async def broadcast_send(request: Request) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
@@ -243,12 +248,12 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         service.finish_broadcast(broadcast_id, sent, failed, error, deliveries=deliveries)
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
 
-    @app.get("/admin/broadcast/{broadcast_id}", response_class=HTMLResponse)
+    @app.get(route("/broadcast/{broadcast_id}"), response_class=HTMLResponse)
     async def broadcast_detail(request: Request, broadcast_id: int) -> HTMLResponse:
         require_admin(request)
         return render(request, "broadcast_detail.html", service.broadcast_detail(broadcast_id))
 
-    @app.post("/admin/broadcast/schedules")
+    @app.post(route("/broadcast/schedules"))
     async def create_group_schedule(request: Request) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
@@ -262,7 +267,7 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         )
         return RedirectResponse("/admin/broadcast?flash=زمان‌بندی گروهی ذخیره شد", status_code=303)
 
-    @app.post("/admin/broadcast/schedules/{schedule_id}")
+    @app.post(route("/broadcast/schedules/{schedule_id}"))
     async def update_group_schedule(request: Request, schedule_id: int) -> RedirectResponse:
         require_admin(request)
         form = await request.form()
@@ -274,41 +279,41 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         )
         return RedirectResponse("/admin/broadcast?flash=زمان‌بندی بروزرسانی شد", status_code=303)
 
-    @app.post("/admin/broadcast/schedules/{schedule_id}/delete")
+    @app.post(route("/broadcast/schedules/{schedule_id}/delete"))
     async def delete_group_schedule(request: Request, schedule_id: int) -> RedirectResponse:
         require_admin(request)
         service.delete_scheduled_group_message(schedule_id)
         return RedirectResponse("/admin/broadcast?flash=زمان‌بندی حذف شد", status_code=303)
 
-    @app.get("/admin/channels", response_class=HTMLResponse)
+    @app.get(route("/channels"), response_class=HTMLResponse)
     async def channels_page(request: Request) -> HTMLResponse:
         require_admin(request)
         return render(request, "channels.html", {"channels": service.channels()})
 
-    @app.post("/admin/channels")
+    @app.post(route("/channels"))
     async def create_channel(request: Request) -> RedirectResponse:
         require_admin(request)
         service.save_channel_from_form(dict(await request.form()))
         return RedirectResponse("/admin/channels?flash=کانال ذخیره شد", status_code=303)
 
-    @app.post("/admin/channels/{channel_id}")
+    @app.post(route("/channels/{channel_id}"))
     async def update_channel(request: Request, channel_id: int) -> RedirectResponse:
         require_admin(request)
         service.update_channel_from_form(channel_id, dict(await request.form()))
         return RedirectResponse("/admin/channels?flash=کانال بروزرسانی شد", status_code=303)
 
-    @app.post("/admin/channels/{channel_id}/delete")
+    @app.post(route("/channels/{channel_id}/delete"))
     async def delete_channel(request: Request, channel_id: int) -> RedirectResponse:
         require_admin(request)
         service.channel_service.remove_channel(0, channel_id)
         return RedirectResponse("/admin/channels?flash=کانال حذف شد", status_code=303)
 
-    @app.get("/admin/memories", response_class=HTMLResponse)
+    @app.get(route("/memories"), response_class=HTMLResponse)
     async def memories_page(request: Request, user_id: int | None = None) -> HTMLResponse:
         require_admin(request)
         return render(request, "memories.html", service.memories(user_id=user_id))
 
-    @app.get("/admin/logs", response_class=HTMLResponse)
+    @app.get(route("/logs"), response_class=HTMLResponse)
     async def logs(request: Request, kind: str = "debug") -> HTMLResponse:
         require_admin(request)
         return render(request, "logs.html", service.logs(kind=kind))
