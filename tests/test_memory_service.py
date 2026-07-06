@@ -32,7 +32,7 @@ class MemoryServiceTests(unittest.TestCase):
         self.assertEqual(memories[0].summary, "User likes bitter coffee.")
         self.assertNotIn("every morning", memories[0].summary)
 
-    def test_rejects_sensitive_memory(self) -> None:
+    def test_backend_accepts_model_memory_content_without_content_gate(self) -> None:
         suggestion = MemorySuggestion(
             action="save",
             kind="identity",
@@ -41,7 +41,9 @@ class MemoryServiceTests(unittest.TestCase):
         )
         self.service.apply_candidates(1, 10, "my password is 1234", [suggestion], assistant_sourced=False)
 
-        self.assertEqual(self.service.list_active(1), [])
+        memories = self.service.list_active(1)
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0].summary, "User password is 1234.")
 
     def test_retrieval_is_user_scoped_and_relevant(self) -> None:
         self.service.apply_candidates(
@@ -80,14 +82,15 @@ class MemoryServiceTests(unittest.TestCase):
         self.assertEqual(len(memories), 1)
         self.assertIn("black tea", memories[0].summary)
 
-    def test_rejected_memory_is_audited(self) -> None:
+    def test_oversized_memory_is_audited_as_rejected(self) -> None:
         suggestion = MemorySuggestion(
             action="create",
-            kind="identity",
-            summary="api key is secret",
+            kind="fact",
+            summary="x" * 600,
             confidence=0.9,
         )
-        self.service.apply_candidates(1, 10, "api key is secret", [suggestion], assistant_sourced=False)
+        too_long = suggestion.model_copy(update={"summary": "x" * 601})
+        self.service.apply_candidates(1, 10, "long memory", [too_long], assistant_sourced=False)
 
         with closing(self.database.connect()) as connection:
             row = connection.execute("SELECT decision FROM memory_audit_logs LIMIT 1").fetchone()
@@ -101,13 +104,13 @@ class MemoryServiceTests(unittest.TestCase):
         self.assertIn("bananas", memories[0].summary)
         self.assertEqual(memories[0].kind.value, "preference")
 
-    def test_rejects_unstable_or_low_value_user_text(self) -> None:
+    def test_user_text_extractor_still_avoids_low_value_text(self) -> None:
         self.service.process_user_message(1, 10, "I am sad today")
         self.service.process_user_message(1, 11, "thanks")
 
         self.assertEqual(self.service.list_active(1), [])
 
-    def test_assistant_sourced_candidates_are_rejected(self) -> None:
+    def test_assistant_sourced_candidates_are_allowed_by_size_gate(self) -> None:
         suggestion = MemorySuggestion(
             action="create",
             kind="preference",
@@ -117,7 +120,7 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.service.apply_candidates(1, 10, "assistant said so", [suggestion], assistant_sourced=True)
 
-        self.assertEqual(self.service.list_active(1), [])
+        self.assertEqual(len(self.service.list_active(1)), 1)
 
     def test_persian_user_facts_and_style_are_saved(self) -> None:
         self.service.process_user_message(1, 10, "اسمم آرمان است و دوست دارم باهام شوخی کنی")
@@ -135,6 +138,67 @@ class MemoryServiceTests(unittest.TestCase):
         memories = self.service.list_active(1, limit=10)
         self.assertEqual(len(memories), 1)
         self.assertIn("bananas", memories[0].summary)
+
+    def test_model_can_crud_memory_by_id(self) -> None:
+        self.service.apply_candidates(
+            1,
+            10,
+            "save",
+            [
+                MemorySuggestion(
+                    action="create",
+                    kind="fact",
+                    summary="User works on a Telegram bot.",
+                    confidence=1,
+                    importance=4,
+                )
+            ],
+            assistant_sourced=False,
+            model_sourced=True,
+        )
+        memory = self.service.list_active(1)[0]
+
+        self.service.apply_candidates(
+            1,
+            11,
+            "edit",
+            [
+                MemorySuggestion(
+                    action="replace",
+                    memory_id=memory.id,
+                    kind="project",
+                    summary="User is building the Narges Telegram bot.",
+                    confidence=1,
+                    importance=5,
+                )
+            ],
+            assistant_sourced=False,
+            model_sourced=True,
+        )
+
+        updated = self.service.list_active(1)[0]
+        self.assertEqual(updated.id, memory.id)
+        self.assertEqual(updated.kind.value, "project")
+        self.assertIn("Narges", updated.summary)
+
+        self.service.apply_candidates(
+            1,
+            12,
+            "delete",
+            [
+                MemorySuggestion(
+                    action="delete",
+                    memory_id=memory.id,
+                    kind="project",
+                    summary="User is building the Narges Telegram bot.",
+                    confidence=1,
+                )
+            ],
+            assistant_sourced=False,
+            model_sourced=True,
+        )
+
+        self.assertEqual(self.service.list_active(1), [])
 
 
 if __name__ == "__main__":

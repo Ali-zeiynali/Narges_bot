@@ -30,7 +30,7 @@ class ContextBuilder:
         summary = self._summary(user_id)
         row = self._state_row(user_id)
         inferred_intent = self.infer_intent(user_text)
-        mode = self._mode_for_intent(inferred_intent)
+        mode = self._conversation_state(row.mode if row else None)
         relationship_stage = row.relationship_stage if row else "new"
         familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
@@ -60,13 +60,14 @@ class ContextBuilder:
         user_text: str,
         assistant_text: str,
         assistant_intent: str,
+        conversation_state: str = "normal",
         message_datetime: datetime | None = None,
     ) -> None:
         now = (message_datetime or datetime.now(UTC)).astimezone(UTC)
         user_hash = self.history_service.message_hash(user_text)
         assistant_hash = self.history_service.message_hash(assistant_text)
         user_intent = self.infer_intent(user_text)
-        mode = self._mode_for_intent(user_intent)
+        mode = self._conversation_state(conversation_state)
         with self.database.orm.session() as session:
             row = session.get(ConversationContextStateORM, user_id)
             if row is None:
@@ -152,7 +153,10 @@ class ContextBuilder:
             return session.get(ConversationContextStateORM, user_id)
 
     def _memory_lines(self, memories: list[MemoryItem]) -> list[str]:
-        return [f"{memory.kind.value}: {memory.summary}" for memory in memories[:10]]
+        return [f"#{memory.id} | {memory.kind.value}: {memory.summary}" for memory in memories[:40]]
+
+    def _conversation_state(self, value: str | None) -> str:
+        return value if value in {"normal", "sexual"} else "normal"
 
     def _mode_for_intent(self, intent: str) -> str:
         if intent in {"technical", "bug_report"}:

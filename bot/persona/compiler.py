@@ -34,12 +34,13 @@ class PersonaCompiler:
         current_message_datetime: str | None = None,
         user_gender: str | None = None,
     ) -> CompiledPersona:
-        persona_gender = user_gender if user_gender in {"male", "female"} else None
-        section_name = f"static:{persona_gender or 'base'}"
+        conversation_state = self._conversation_state(context)
+        sexual_gender = user_gender if conversation_state == "sexual" and user_gender in {"male", "female"} else None
+        section_name = f"static:{conversation_state}:{sexual_gender or 'base'}"
         cache_version = f"{self.version}:{self._persona_fingerprint()}"
         cached = self.cache.get(cache_version, section_name)
         if cached is None:
-            cached = self._build_static_prompt(persona_gender)
+            cached = self._build_static_prompt(sexual_gender)
             self.cache.set(cache_version, section_name, cached)
 
         runtime_context = {
@@ -48,16 +49,21 @@ class PersonaCompiler:
             "narges_state": self._state_for_user(state),
             "conversation_context": context.for_prompt() if context else self._fallback_context(memories),
             "gender_style": self._gender_style(user_gender),
+            "state_rules": {
+                "allowed_values": ["normal", "sexual"],
+                "previous_state": conversation_state,
+                "instruction": "Every structured reply must set conversation_state to either normal or sexual. The next request receives the value you choose now.",
+            },
             "hard_rules": [
-                "The conversation model reads context only; it must not write memory.",
-                "Raw previous messages are intentionally absent by default.",
-                "Use selected memories once; do not duplicate them as separate facts.",
+                "The conversation model may manage user memory with memory_suggestions.",
+                "Raw previous messages are intentionally absent by default unless supplied in a dedicated history/search section.",
+                "Use active memories naturally; do not repeat them as a list in the reply.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
                 "Each Telegram message must be at most 8 lines; normal replies should be much shorter.",
             ],
         }
         prompt = cached + f"\n\n{RUNTIME_CONTEXT_TITLE}\n" + json.dumps(runtime_context, ensure_ascii=False)
-        sections = ("core_base",) if persona_gender is None else ("core_base", f"core_{persona_gender}")
+        sections = ("core_base",) if sexual_gender is None else ("core_base", f"core_{sexual_gender}_sex")
         return CompiledPersona(system_prompt=prompt, sections=sections)
 
     def _fallback_context(self, memories: list[MemoryItem]) -> dict:
@@ -69,11 +75,11 @@ class PersonaCompiler:
             "anti_loop": {"forbidden_reuse": False},
         }
 
-    def _build_static_prompt(self, gender: str | None = None) -> str:
+    def _build_static_prompt(self, sexual_gender: str | None = None) -> str:
         try:
-            persona = build_persona_prompt(include_core=True, gender=gender)
+            persona = build_persona_prompt(include_core=True, gender=sexual_gender)
         except TypeError:
-            persona = build_persona_prompt(include_base=True, gender=gender)
+            persona = build_persona_prompt(include_base=True, gender=sexual_gender)
         return f"{STABLE_SYSTEM_PREFIX}\n\n{persona}\n\n{ENGINE_RULES}"
 
     def _gender_style(self, gender: str | None) -> dict:
@@ -90,6 +96,11 @@ class PersonaCompiler:
                 "instruction": "Use the male-user style section only when it is relevant and natural. Do not include female-user assumptions.",
             }
         return {"enabled": False, "target": None, "instruction": "No gender-specific section is active."}
+
+    def _conversation_state(self, context: BuiltContext | None) -> str:
+        if context and context.state.mode == "sexual":
+            return "sexual"
+        return "normal"
 
     def _persona_fingerprint(self) -> str:
         root = Path(__file__).resolve().parents[2]

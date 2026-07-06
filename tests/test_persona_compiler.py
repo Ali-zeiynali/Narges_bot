@@ -21,6 +21,7 @@ class PersonaCompilerTests(unittest.TestCase):
         self.assertEqual(compiled.sections, ("core_base",))
         self.assertIn("JSON", compiled.system_prompt)
         self.assertIn("current_message_datetime", compiled.system_prompt)
+        self.assertIn("سن: ۱۹ سال", compiled.system_prompt)
 
     def test_cache_clears_when_version_changes(self) -> None:
         cache = PersonaCache()
@@ -52,17 +53,47 @@ class PersonaCompilerTests(unittest.TestCase):
 
         self.assertEqual(compiled.sections, ("core_base",))
 
-    def test_gender_sections_are_compiled_into_static_prompt(self) -> None:
+    def test_gender_sections_require_sexual_state(self) -> None:
         compiler = PersonaCompiler("v1")
         base = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender=None)
         male = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender="male")
         female = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender="female")
+        sexual_context = BuiltContext(
+            state=ContextState(mode="sexual", topic=None, relationship_stage="new", familiarity_score=0),
+            summary="",
+            facts=[],
+            recent_intent="casual",
+            relevant_memories=[],
+            last_user_message="",
+            anti_loop=AntiLoopContext(last_assistant_text_hash=None, last_assistant_intent=None, forbidden_reuse=False),
+        )
+        male_sexual = compiler.compile(
+            "hello",
+            NargesSelfState(updated_at=datetime.now(UTC)),
+            [],
+            [],
+            context=sexual_context,
+            user_gender="male",
+        )
+        female_sexual = compiler.compile(
+            "hello",
+            NargesSelfState(updated_at=datetime.now(UTC)),
+            [],
+            [],
+            context=sexual_context,
+            user_gender="female",
+        )
 
         self.assertEqual(base.sections, ("core_base",))
-        self.assertEqual(male.sections, ("core_base", "core_male"))
-        self.assertEqual(female.sections, ("core_base", "core_female"))
+        self.assertEqual(male.sections, ("core_base",))
+        self.assertEqual(female.sections, ("core_base",))
+        self.assertEqual(male_sexual.sections, ("core_base", "core_male_sex"))
+        self.assertEqual(female_sexual.sections, ("core_base", "core_female_sex"))
         self.assertNotEqual(base.system_prompt, male.system_prompt)
         self.assertNotEqual(base.system_prompt, female.system_prompt)
+        self.assertIn('"target": "male_user"', male.system_prompt)
+        self.assertIn('"target": "female_user"', female.system_prompt)
+        self.assertIn('"previous_state": "sexual"', male_sexual.system_prompt)
 
     def test_runtime_context_does_not_include_raw_history(self) -> None:
         context = BuiltContext(

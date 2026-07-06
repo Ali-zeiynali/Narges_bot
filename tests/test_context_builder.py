@@ -46,9 +46,26 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(prompt_context["recent_intent"], "quota")
         self.assertEqual(prompt_context["facts"], [])
-        self.assertIn("preference: User prefers black tea.", prompt_context["relevant_memories"])
+        self.assertTrue(any("preference: User prefers black tea." in item for item in prompt_context["relevant_memories"]))
+        self.assertEqual(prompt_context["state"]["mode"], "normal")
+        self.assertNotIn("relationship_stage", prompt_context["state"])
+        self.assertNotIn("familiarity_score", prompt_context["state"])
         self.assertNotIn("This raw old assistant reply", str(prompt_context))
         self.assertTrue(prompt_context["anti_loop"]["forbidden_reuse"])
+
+    def test_conversation_state_persists_for_next_turn(self) -> None:
+        self.builder.observe_turn(
+            user_id=1,
+            user_text="state change",
+            assistant_text="done",
+            assistant_intent="casual",
+            conversation_state="sexual",
+            message_datetime=datetime.now(UTC),
+        )
+
+        context = self.builder.build(1, "next message", [])
+
+        self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
 
 
 if __name__ == "__main__":

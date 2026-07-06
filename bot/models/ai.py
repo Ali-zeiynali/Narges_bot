@@ -16,6 +16,11 @@ class ResponseMode(str, Enum):
     COLD = "cold"
 
 
+class ConversationState(str, Enum):
+    NORMAL = "normal"
+    SEXUAL = "sexual"
+
+
 class TelegramOutboundMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -37,18 +42,22 @@ class MemorySuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["create", "save", "edit", "merge", "replace", "delete", "forget"]
+    memory_id: int | None = Field(default=None, ge=1)
     kind: Literal[
         "identity",
+        "fact",
         "preference",
         "project",
         "goal",
         "constraint",
+        "user_state",
+        "interaction_style",
         "inside_joke",
         "boundary",
         "unresolved_topic",
         "temporary_event",
     ]
-    summary: str = Field(min_length=3, max_length=240)
+    summary: str = Field(min_length=1, max_length=600)
     confidence: float = Field(ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
     expires_in_days: int | None = Field(default=None, ge=1, le=365)
@@ -73,8 +82,9 @@ class NargesReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: ResponseMode
+    conversation_state: ConversationState = ConversationState.NORMAL
     messages: list[TelegramOutboundMessage] = Field(min_length=1, max_length=4)
-    memory_suggestions: list[MemorySuggestion] = Field(default_factory=list, max_length=5)
+    memory_suggestions: list[MemorySuggestion] = Field(default_factory=list, max_length=12)
     warning_suggestion: WarningSuggestion | None = None
     event_suggestion: EventSuggestion | None = None
 
@@ -92,6 +102,7 @@ class NargesReply(BaseModel):
         return cls.model_validate(
             {
                 "mode": "normal",
+                "conversation_state": "normal",
                 "messages": [{"text": cls._trim_message_text(text), "delay_seconds": 0.4}],
                 "memory_suggestions": [],
                 "warning_suggestion": None,
@@ -115,6 +126,8 @@ class NargesReply(BaseModel):
             normalized["mode"] = tone if tone in ResponseMode._value2member_map_ else depth or "normal"
         if normalized.get("mode") not in ResponseMode._value2member_map_:
             normalized["mode"] = "normal"
+        if normalized.get("conversation_state") not in ConversationState._value2member_map_:
+            normalized["conversation_state"] = "normal"
 
         messages = normalized.get("messages")
         if not messages:
@@ -165,10 +178,13 @@ class NargesReply(BaseModel):
         cleaned: list[dict[str, Any]] = []
         allowed_kinds = {
             "identity",
+            "fact",
             "preference",
             "project",
             "goal",
             "constraint",
+            "user_state",
+            "interaction_style",
             "inside_joke",
             "boundary",
             "unresolved_topic",
@@ -194,10 +210,17 @@ class NargesReply(BaseModel):
             suggestion: dict[str, Any] = {
                 "action": action if action in allowed_actions else "create",
                 "kind": kind if kind in allowed_kinds else "preference",
-                "summary": summary[:240],
+                "summary": summary[:600],
                 "confidence": max(0, min(confidence, 1)),
                 "importance": max(1, min(importance, 5)),
             }
+            if item.get("memory_id") is not None or item.get("id") is not None:
+                try:
+                    memory_id = int(item.get("memory_id") or item.get("id"))
+                except (TypeError, ValueError):
+                    memory_id = None
+                if memory_id and memory_id > 0:
+                    suggestion["memory_id"] = memory_id
             if item.get("expires_in_days") is not None:
                 try:
                     expires_in_days = int(item.get("expires_in_days"))

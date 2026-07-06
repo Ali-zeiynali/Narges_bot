@@ -106,6 +106,7 @@ class MemoryRepository:
             row.confidence = suggestion.confidence
             row.importance = suggestion.importance
             row.updated_at = datetime.now(UTC)
+            row.active = True
             session.flush()
             return self.row_to_memory(row)
 
@@ -415,27 +416,12 @@ class MemoryPolicyGate:
     ) -> MemoryDecision:
         action = self.normalize_action(suggestion.action)
         summary = suggestion.summary.strip()
-        lowered = f"{summary} {source_text}".lower()
-        if assistant_sourced:
-            return MemoryDecision(False, "assistant sourced memory is not allowed")
         if action == "create" and self.repository.active_count(user_id) >= self.max_active_memories:
             return MemoryDecision(False, "memory limit reached")
-        if suggestion.confidence < 0.7:
-            return MemoryDecision(False, "low confidence")
-        if len(summary) < 10:
-            return MemoryDecision(False, "too short")
-        if any(word in lowered for word in SENSITIVE_WORDS):
-            return MemoryDecision(False, "sensitive content")
-        if any(word in lowered for word in INJECTION_WORDS):
-            return MemoryDecision(False, "prompt injection content")
-        if any(re.search(pattern, summary, re.IGNORECASE) for pattern in LOW_VALUE_PATTERNS):
-            return MemoryDecision(False, "low value memory")
-        if suggestion.kind == "temporary_event" or any(word in lowered for word in TEMPORARY_WORDS):
-            return MemoryDecision(False, "temporary or mood-only content")
-        if self._looks_like_raw_dialogue(summary):
-            return MemoryDecision(False, "raw dialogue")
-        if model_sourced and not self._source_or_existing_supports(source_text, suggestion, existing, action):
-            return MemoryDecision(False, "not supported by current user message or active memory")
+        if action in {"create", "edit", "merge", "replace"} and not summary:
+            return MemoryDecision(False, "empty memory")
+        if len(summary) > 600:
+            return MemoryDecision(False, "memory too long")
         return MemoryDecision(True, "accepted")
 
     def normalize_action(self, action: str) -> str:
@@ -562,20 +548,14 @@ class MemoryRetriever:
         self.max_context_tokens = max_context_tokens
 
     def retrieve(self, user_id: int, text: str, limit: int = 10) -> list[MemoryItem]:
+        return self.retrieve_all_for_context(user_id, limit=limit)
+
+    def retrieve_all_for_context(self, user_id: int, limit: int = 40) -> list[MemoryItem]:
         memories = self.repository.list_active(user_id, limit=80)
-        query_words = self._keywords(text)
-
-        def score(memory: MemoryItem) -> tuple[int, float, datetime]:
-            memory_words = self._keywords(f"{memory.kind.value} {memory.summary}")
-            overlap = len(query_words & memory_words)
-            similarity = SequenceMatcher(None, text.lower(), memory.summary.lower()).ratio()
-            return (overlap + memory.importance, similarity, memory.updated_at)
-
-        ranked = sorted(memories, key=score, reverse=True)
         selected: list[MemoryItem] = []
         used_tokens = 0
-        for item in ranked:
-            item_tokens = estimate_tokens(f"{item.kind.value}: {item.summary}")
+        for item in memories:
+            item_tokens = estimate_tokens(f"#{item.id} | {item.kind.value}: {item.summary}")
             if selected and used_tokens + item_tokens > self.max_context_tokens:
                 continue
             selected.append(item)
@@ -594,8 +574,8 @@ class MemoryService:
     def __init__(
         self,
         database: Database,
-        max_active_memories: int = 80,
-        max_context_tokens: int = 520,
+        max_active_memories: int = 160,
+        max_context_tokens: int = 1400,
         debug_service: DebugService | None = None,
     ) -> None:
         self.repository = MemoryRepository(database)
@@ -610,6 +590,9 @@ class MemoryService:
 
     def retrieve_relevant(self, user_id: int, text: str, limit: int = 10) -> list[MemoryItem]:
         return self.retriever.retrieve(user_id, text, limit)
+
+    def retrieve_for_context(self, user_id: int, limit: int = 40) -> list[MemoryItem]:
+        return self.retriever.retrieve_all_for_context(user_id, limit)
 
     def process_user_message(
         self,
@@ -714,7 +697,9 @@ class MemoryService:
         existing: list[MemoryItem],
         action: str,
     ) -> None:
-        target = self.deduplicator.find_target(existing, suggestion)
+        target = self.repository.get(user_id, suggestion.memory_id) if suggestion.memory_id else None
+        if target is None:
+            target = self.deduplicator.find_target(existing, suggestion)
         if target is None:
             memory_id = self.repository.save(user_id, source_message_id, suggestion, "create")
             self.audit.log(user_id, memory_id, "create", "accepted", f"{action} target not found; created", None, suggestion.model_dump(), source_message_id)
@@ -730,7 +715,9 @@ class MemoryService:
         suggestion: MemorySuggestion,
         existing: list[MemoryItem],
     ) -> None:
-        target = self.deduplicator.find_target(existing, suggestion)
+        target = self.repository.get(user_id, suggestion.memory_id) if suggestion.memory_id else None
+        if target is None:
+            target = self.deduplicator.find_target(existing, suggestion)
         if target is None:
             self.audit.log(user_id, None, "delete", "rejected", "matching memory not found", None, suggestion.model_dump(), source_message_id)
             return

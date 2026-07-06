@@ -33,8 +33,6 @@ class BuiltContext:
             "state": {
                 "mode": self.state.mode,
                 "topic": self.state.topic,
-                "relationship_stage": self.state.relationship_stage,
-                "familiarity_score": round(self.state.familiarity_score, 3),
             },
             "summary": self.summary,
             "facts": self.facts,

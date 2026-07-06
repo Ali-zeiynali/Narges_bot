@@ -65,6 +65,27 @@ class NargesReplyModelTests(unittest.TestCase):
         self.assertEqual(reply.memory_suggestions[0].kind, "preference")
         self.assertEqual(reply.memory_suggestions[0].confidence, 0.75)
 
+    def test_conversation_state_and_memory_id_are_normalized(self) -> None:
+        reply = NargesReply.validate_provider_payload(
+            {
+                "text": "noted",
+                "conversation_state": "sexual",
+                "memory_suggestions": [
+                    {
+                        "id": 9,
+                        "action": "replace",
+                        "kind": "user_state",
+                        "summary": "User feels calmer when replies are warm.",
+                        "confidence": 0.8,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(reply.conversation_state, "sexual")
+        self.assertEqual(reply.memory_suggestions[0].memory_id, 9)
+        self.assertEqual(reply.memory_suggestions[0].kind, "user_state")
+
 
 if __name__ == "__main__":
     unittest.main()

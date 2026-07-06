@@ -6,10 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class MemoryKind(str, Enum):
     IDENTITY = "identity"
+    FACT = "fact"
     PREFERENCE = "preference"
     PROJECT = "project"
     GOAL = "goal"
     CONSTRAINT = "constraint"
+    USER_STATE = "user_state"
+    INTERACTION_STYLE = "interaction_style"
     INSIDE_JOKE = "inside_joke"
     BOUNDARY = "boundary"
     UNRESOLVED_TOPIC = "unresolved_topic"
@@ -22,7 +25,7 @@ class MemoryItem(BaseModel):
     id: int
     user_id: int
     kind: MemoryKind
-    summary: str = Field(min_length=3, max_length=240)
+    summary: str = Field(min_length=1, max_length=600)
     confidence: float = Field(ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
     source_message_id: int | None = None
