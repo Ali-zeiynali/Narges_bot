@@ -62,6 +62,7 @@ class Settings:
     debug_mode: bool
     debug_user_ids: tuple[int, ...]
     name_transliteration_map: dict[str, str]
+    database_url: str | None = None
     max_api_input_tokens: int = 3000
     ai_providers_config: str = "config/ai_providers.json"
     admin_panel_token: str | None = None
@@ -79,6 +80,9 @@ class Settings:
     webhook_rate_limit_count: int = 30
     webhook_rate_limit_window_seconds: int = 60
     webhook_idempotency_max_items: int = 10_000
+    telegram_backlog_latest_only: bool = True
+    telegram_backlog_grace_seconds: int = 30
+    telegram_backlog_debounce_seconds: float = 2.0
 
 
 def csv_int_env(name: str) -> tuple[int, ...]:
@@ -137,6 +141,10 @@ def load_settings() -> Settings:
         max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 2400, 128, 131072), 2400),
         max_message_chars=int_env("MAX_MESSAGE_CHARS", 1800, 1, 4096),
         persona_version=os.getenv("PERSONA_VERSION", "2026-07-05.1").strip(),
+        database_url=(
+            os.getenv("DATABASE_URL", "").strip()
+            or os.getenv("DATABASE_PATH", "data/narges.sqlite3").strip()
+        ),
         database_path=os.getenv("DATABASE_PATH", "data/narges.sqlite3").strip(),
         log_file=os.getenv("LOG_FILE", "logs/bot.log").strip(),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
@@ -173,4 +181,7 @@ def load_settings() -> Settings:
         webhook_rate_limit_count=int_env("WEBHOOK_RATE_LIMIT_COUNT", 30, 1, 1000),
         webhook_rate_limit_window_seconds=int_env("WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),
         webhook_idempotency_max_items=int_env("WEBHOOK_IDEMPOTENCY_MAX_ITEMS", 10000, 100, 1000000),
+        telegram_backlog_latest_only=bool_env("TELEGRAM_BACKLOG_LATEST_ONLY", True),
+        telegram_backlog_grace_seconds=int_env("TELEGRAM_BACKLOG_GRACE_SECONDS", 30, 0, 3600),
+        telegram_backlog_debounce_seconds=float_env("TELEGRAM_BACKLOG_DEBOUNCE_SECONDS", 2.0, 0, 30),
     )

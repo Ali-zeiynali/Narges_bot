@@ -4,22 +4,36 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
+from sqlalchemy.engine import make_url
+
 from bot.storage.migrations import MIGRATIONS
-from bot.storage.orm import DatabaseSessionManager
+from bot.storage.orm import DatabaseSessionManager, normalize_database_url
 
 
 class Database:
-    def __init__(self, path: str) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.orm = DatabaseSessionManager(path)
+    def __init__(self, database_url: str) -> None:
+        self.url = normalize_database_url(database_url)
+        parsed = make_url(self.url)
+        self.path = Path(parsed.database) if parsed.drivername.startswith("sqlite") and parsed.database else None
+        if self.path and str(self.path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.orm = DatabaseSessionManager(self.url)
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.orm.is_sqlite
 
     def connect(self) -> sqlite3.Connection:
+        if not self.path:
+            raise RuntimeError("Raw sqlite connections are only available for SQLite databases.")
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         return connection
 
     def migrate(self) -> None:
+        if not self.is_sqlite:
+            self.orm.ensure_schema()
+            return
         with closing(self.connect()) as connection:
             connection.execute(
                 """
@@ -42,7 +56,7 @@ class Database:
                     (version, datetime.now(UTC).isoformat()),
                 )
             connection.commit()
-        self.orm.create_all()
+        self.orm.ensure_schema()
 
     def execute(self, sql: str, params: Iterable[object] = ()) -> None:
         with closing(self.connect()) as connection:

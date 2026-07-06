@@ -18,6 +18,15 @@ venv\Scripts\pip.exe install -r requirements.txt
 venv\Scripts\python.exe -m bot.main
 ```
 
+Local polling mode, without a public webhook URL:
+
+```powershell
+venv\Scripts\python.exe -m bot.polling
+```
+
+Use `DATABASE_URL` for production Postgres/Supabase. Leave it empty locally to use `DATABASE_PATH`.
+When using Supabase, URL-encode the database password before putting it in `DATABASE_URL`.
+
 در شروع برنامه، migrationهای SQLite روی `DATABASE_PATH` اجرا می‌شوند.
 
 ## ساختار

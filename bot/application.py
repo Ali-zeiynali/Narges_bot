@@ -81,7 +81,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     settings = settings or load_settings()
     setup_logging(settings.log_file, settings.log_level)
 
-    database = Database(settings.database_path)
+    database = Database(settings.database_url or settings.database_path)
     database.migrate()
 
     debug_service = DebugService(database, settings)

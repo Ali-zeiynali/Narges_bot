@@ -8,3 +8,5 @@ fastapi
 jinja2
 uvicorn
 python-multipart
+aiohttp-socks
+psycopg[binary]

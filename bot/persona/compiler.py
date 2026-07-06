@@ -56,7 +56,8 @@ class PersonaCompiler:
             },
             "hard_rules": [
                 "The conversation model may manage user memory with memory_suggestions.",
-                "Raw previous messages are intentionally absent by default unless supplied in a dedicated history/search section.",
+                "If previous_messages is present, treat it as compact prior context: user text/date plus model answer/date only.",
+                "The user may ask about previous_messages, but do not copy their wording or generate a near-duplicate answer.",
                 "Use active memories naturally; do not repeat them as a list in the reply.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
                 "Each Telegram message must be at most 8 lines; normal replies should be much shorter.",
@@ -72,6 +73,7 @@ class PersonaCompiler:
             "facts": [],
             "recent_intent": None,
             "relevant_memories": [memory.summary for memory in memories],
+            "previous_messages": [],
             "anti_loop": {"forbidden_reuse": False},
         }
 

@@ -92,6 +92,39 @@ class HistoryService:
             for row in reversed(rows)
         ]
 
+    def recent_previous_turns(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(ConversationMessageORM)
+                .where(
+                    ConversationMessageORM.user_id == user_id,
+                    ConversationMessageORM.message_type == "chat",
+                    ConversationMessageORM.role.in_(("user", "assistant")),
+                )
+                .order_by(ConversationMessageORM.id.desc())
+                .limit(max(limit * 4, 12))
+            ).all()
+
+        pairs: list[dict[str, str]] = []
+        pending_assistant: ConversationMessageORM | None = None
+        for row in rows:
+            if row.role == "assistant":
+                pending_assistant = row
+                continue
+            if row.role == "user" and pending_assistant is not None:
+                pairs.append(
+                    {
+                        "user_text": self._compact(row.text, 220),
+                        "user_created_at": self._iso(row.created_at),
+                        "model_answer": self._compact(pending_assistant.text, 220),
+                        "model_answer_created_at": self._iso(pending_assistant.created_at),
+                    }
+                )
+                pending_assistant = None
+            if len(pairs) >= limit:
+                break
+        return list(reversed(pairs))
+
     def last_assistant_reply(self, user_id: int) -> dict[str, str] | None:
         with self.database.orm.session() as session:
             row = session.scalar(
@@ -162,6 +195,21 @@ class HistoryService:
         query = self._sanitize_fts_query(query)
         if not query:
             return []
+        if not self.database.is_sqlite:
+            pattern = f"%{query.split()[0]}%"
+            with self.database.orm.session() as session:
+                rows = session.scalars(
+                    select(ConversationMessageORM)
+                    .where(
+                        ConversationMessageORM.user_id == user_id,
+                        ConversationMessageORM.message_type == "chat",
+                        ConversationMessageORM.role.in_(("user", "assistant")),
+                        ConversationMessageORM.text.ilike(pattern),
+                    )
+                    .order_by(ConversationMessageORM.id.desc())
+                    .limit(limit)
+                ).all()
+            return [{"text": row.text, "created_at": self._iso(row.created_at)} for row in rows]
         with self.database.orm.session() as session:
             rows = session.execute(
                 text(
@@ -185,6 +233,12 @@ class HistoryService:
         words = [word.strip('"*():-') for word in (query or "").split()]
         words = [word for word in words if len(word) >= 2]
         return " OR ".join(words[:8])
+
+    def _compact(self, value: str, limit: int) -> str:
+        value = " ".join((value or "").split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
 
     def _iso(self, value: datetime | str) -> str:
         if isinstance(value, datetime):

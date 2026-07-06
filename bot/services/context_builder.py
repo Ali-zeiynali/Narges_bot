@@ -34,6 +34,7 @@ class ContextBuilder:
         relationship_stage = row.relationship_stage if row else "new"
         familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
+        previous_messages = self.history_service.recent_previous_turns(user_id, limit=5)
         relevant_memories = self._memory_lines(memories)
         return BuiltContext(
             state=ContextState(
@@ -46,6 +47,7 @@ class ContextBuilder:
             facts=[],
             recent_intent=inferred_intent,
             relevant_memories=relevant_memories,
+            previous_messages=previous_messages,
             last_user_message=user_text,
             anti_loop=AntiLoopContext(
                 last_assistant_text_hash=last_assistant["text_hash"] if last_assistant else None,

@@ -35,12 +35,15 @@ async def lifespan(_: FastAPI):
             limit=settings.webhook_rate_limit_count,
             window_seconds=settings.webhook_rate_limit_window_seconds,
         ),
+        backlog_latest_only=settings.telegram_backlog_latest_only,
+        backlog_grace_seconds=settings.telegram_backlog_grace_seconds,
     )
     worker = TelegramUpdateWorker(
         queue=queue,
         dispatcher=bot_app.dispatcher,
         bot=bot_app.bot,
         workers=settings.webhook_worker_count,
+        backlog_debounce_seconds=settings.telegram_backlog_debounce_seconds,
     )
 
     state.app = bot_app

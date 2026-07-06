@@ -28,7 +28,7 @@ templates.env.filters["json_pretty"] = lambda value: json.dumps(value, ensure_as
 def create_admin_app(settings: Settings | None = None, database: Database | None = None, route_prefix: str = "/admin") -> FastAPI:
     settings = settings or load_settings()
     setup_logging(settings.log_file, settings.log_level)
-    database = database or Database(settings.database_path)
+    database = database or Database(settings.database_url or settings.database_path)
     database.migrate()
     service = AdminDataService(database, settings)
     app = FastAPI(title="Narges Admin", docs_url=None, redoc_url=None)

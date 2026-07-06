@@ -25,11 +25,17 @@ services:
         value: "200"
       - key: TELEGRAM_PROXY
         value: ""
-      - key: DATABASE_PATH
-        value: /var/data/narges.sqlite3
+      - key: DATABASE_URL
+        sync: false
       - key: LOG_FILE
         value: /var/data/logs/bot.log
       - key: AI_PROVIDERS_CONFIG
         value: /var/data/config/ai_providers.json
       - key: LOG_LEVEL
         value: INFO
+      - key: TELEGRAM_BACKLOG_LATEST_ONLY
+        value: "true"
+      - key: TELEGRAM_BACKLOG_GRACE_SECONDS
+        value: "30"
+      - key: TELEGRAM_BACKLOG_DEBOUNCE_SECONDS
+        value: "2"
