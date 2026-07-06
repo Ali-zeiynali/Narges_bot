@@ -33,6 +33,11 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     service = AdminDataService(database, settings)
     app = FastAPI(title="Narges Admin", docs_url=None, redoc_url=None)
 
+    @app.on_event("startup")
+    async def debug_routes():
+        for route in app.routes:
+            print(route.path)
+
     def render(request: Request, template: str, context: dict[str, Any] | None = None) -> HTMLResponse:
         context = context or {}
         context.update({"request": request, "settings": settings, "flash": request.query_params.get("flash")})
