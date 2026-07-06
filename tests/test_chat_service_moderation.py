@@ -15,7 +15,6 @@ from bot.services.memory_service import MemoryService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QuotaService
-from bot.services.relationship_service import RelationshipService
 from bot.services.style_linter import StyleLinter
 from bot.services.usage_service import UsageService
 from bot.services.validation import MessageValidator
@@ -60,7 +59,6 @@ class FakeWarningGroqClient:
                 "mode": "serious",
                 "messages": [{"text": "ignored", "delay_seconds": 0}],
                 "memory_suggestions": [],
-                "relationship_delta": {"current_chat_feeling": "annoyed"},
                 "warning_suggestion": {"level": "firm", "reason": "database access attempt"},
                 "event_suggestion": None,
             }
@@ -84,7 +82,6 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
             groq_client=FakeWarningGroqClient(),  # type: ignore[arg-type]
             narges_state_service=NargesStateService(self.database),
             memory_service=MemoryService(self.database),
-            relationship_service=RelationshipService(self.database),
             history_service=self.history,
             conversation_search_tool=ConversationSearchTool(self.history),
             moderation_service=self.moderation,

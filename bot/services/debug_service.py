@@ -30,7 +30,6 @@ class DebugService:
         if not self.enabled:
             return
         text = json.dumps(payload, ensure_ascii=False, default=str)
-        print(f"[DEBUG] {event} user_id={user_id} {text}")
         logger.info("debug_event event=%s user_id=%s payload=%s", event, user_id, text)
         with self.database.orm.session() as session:
             session.add(

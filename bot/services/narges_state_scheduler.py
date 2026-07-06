@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 from bot.persona.texts.state_prompts import STATE_PERSONA
 from bot.services.groq_client import GroqChatClient
@@ -16,6 +16,7 @@ STATE_SLOTS = {
     "afternoon": time(15, 0),
     "night": time(22, 0),
 }
+STATE_SLOT_WINDOW_MINUTES = 7
 
 
 class NargesStateScheduler:
@@ -26,7 +27,8 @@ class NargesStateScheduler:
     async def run_due_once(self, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
         for slot, slot_time in STATE_SLOTS.items():
-            if now.time() < slot_time:
+            slot_at = datetime.combine(now.date(), slot_time, tzinfo=UTC)
+            if now < slot_at or now > slot_at + timedelta(minutes=STATE_SLOT_WINDOW_MINUTES):
                 continue
             run_date = now.date().isoformat()
             if self.state_service.has_scheduler_run(run_date, slot):

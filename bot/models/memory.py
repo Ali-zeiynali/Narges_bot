@@ -10,7 +10,6 @@ class MemoryKind(str, Enum):
     PROJECT = "project"
     GOAL = "goal"
     CONSTRAINT = "constraint"
-    RELATIONSHIP_NOTE = "relationship_note"
     INSIDE_JOKE = "inside_joke"
     BOUNDARY = "boundary"
     UNRESOLVED_TOPIC = "unresolved_topic"

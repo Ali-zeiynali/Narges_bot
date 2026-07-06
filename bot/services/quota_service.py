@@ -11,6 +11,9 @@ from bot.storage.database import Database
 from bot.storage.orm import QuotaEventORM
 
 
+QUOTA_UNIT_SCALE = 5
+
+
 @dataclass(frozen=True)
 class QuotaCheck:
     ok: bool
@@ -47,10 +50,12 @@ class QuotaService:
 
     async def begin_generation(self, user_id: int) -> QuotaCheck:
         async with self._lock:
+            if self._debug_bypass(user_id):
+                return QuotaCheck(True, "", 10**9)
             if user_id in self._active_generations:
                 return QuotaCheck(
                     False,
-                    "هنوز دارم جواب پیام قبلی‌ات را آماده می‌کنم. چند ثانیه صبر کن و دوباره بفرست.",
+                    "⏳ هنوز دارم جواب پیام قبلی‌ات رو آماده می‌کنم.\nچند ثانیه صبر کن.",
                     self.account_quota(user_id).effective_remaining,
                 )
             check = self.check_limits(user_id)
@@ -65,51 +70,59 @@ class QuotaService:
             self._active_generations.discard(user_id)
 
     def check_limits(self, user_id: int) -> QuotaCheck:
+        if self._debug_bypass(user_id):
+            return QuotaCheck(True, "", 10**9)
         account = self.account_quota(user_id)
         if not account.can_send:
             return QuotaCheck(
                 False,
                 (
-                    "سهمیه پیام‌هایت تمام شده.\n"
-                    f"باقی‌مانده روزانه: {account.daily_remaining}\n"
-                    f"باقی‌مانده ماهانه: {account.monthly_remaining}\n"
-                    f"ظرفیت اضافه: {account.extra_remaining}"
+                    "⚡ ظرفیت پیام‌هات تموم شده.\n\n"
+                    f"روزانه: {account.daily_remaining / QUOTA_UNIT_SCALE:g}\n"
+                    f"ماهانه: {account.monthly_remaining / QUOTA_UNIT_SCALE:g}\n"
+                    f"اضافه: {account.extra_remaining / QUOTA_UNIT_SCALE:g}"
                 ),
                 0,
             )
-        short_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_short_window_seconds)
-        if short_count >= self.settings.rate_limit_short_count:
-            return QuotaCheck(
-                False,
-                "کمی تند شد. در پلن فعلی حداکثر ۶ نوبت در ۲ دقیقه مجاز است. چند لحظه بعد دوباره بفرست.",
-                account.effective_remaining,
-            )
-        long_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_long_window_seconds)
-        if long_count >= self.settings.rate_limit_long_count:
-            return QuotaCheck(
-                False,
-                "برای جلوگیری از فشار زیاد، فعلاً سقف ۱۵ نوبت در ۱۰ دقیقه فعال است. چند دقیقه دیگر امتحان کن.",
-                account.effective_remaining,
-            )
+
+        if account.extra_remaining <= 0:
+            short_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_short_window_seconds)
+            if short_count >= self.settings.rate_limit_short_count:
+                return QuotaCheck(
+                    False,
+                    "⚠️ کمی تند شد.\nچند لحظه صبر کن یا ظرفیت اضافه بگیر تا محدودیت سرعت برداشته بشه.",
+                    account.effective_remaining,
+                )
+            long_count = self._count_since(user_id, "turn_start", self.settings.rate_limit_long_window_seconds)
+            if long_count >= self.settings.rate_limit_long_count:
+                return QuotaCheck(
+                    False,
+                    "⚠️ سقف چند دقیقه اخیر پر شده.\nبا ظرفیت اضافه محدودیت‌ها برداشته می‌شن.",
+                    account.effective_remaining,
+                )
         return QuotaCheck(True, "", account.effective_remaining)
 
     def consume_successful_reply(self, user_id: int, reply: NargesReply) -> int:
+        if self._debug_bypass(user_id):
+            return 0
         cost = self.reply_cost(reply)
         account = self.account_quota(user_id)
         kind = "quota_consume" if account.daily_remaining >= cost and account.monthly_remaining >= cost else "extra_consume"
         self._record_event(user_id, kind, cost)
-        self._debug("quota_consumed", user_id, {"kind": kind, "cost": cost, "remaining": self.account_quota(user_id)})
+        self._debug("quota_consumed", user_id, {"kind": kind, "cost_units": cost, "remaining": self.account_quota(user_id)})
         return cost
 
     def can_consume_reply(self, user_id: int, reply: NargesReply) -> bool:
+        if self._debug_bypass(user_id):
+            return True
         return self.account_quota(user_id).effective_remaining >= self.reply_cost(reply)
 
     def add_extra_credit(self, user_id: int, amount: int, reason: str = "manual") -> None:
-        self._record_event(user_id, f"extra_grant:{reason}", amount)
-        self._debug("extra_credit_granted", user_id, {"amount": amount, "reason": reason})
+        self._record_event(user_id, f"extra_grant:{reason}", amount * QUOTA_UNIT_SCALE)
+        self._debug("extra_credit_granted", user_id, {"amount_messages": amount, "reason": reason})
 
     def remaining_today(self, user_id: int) -> int:
-        return self.account_quota(user_id).daily_remaining
+        return self.account_quota(user_id).daily_remaining // QUOTA_UNIT_SCALE
 
     def account_quota(self, user_id: int) -> AccountQuota:
         daily_used = self._used_since(user_id, "quota_consume", self._start_of_day())
@@ -119,20 +132,23 @@ class QuotaService:
         total_sent = self._sum_kind_prefix(user_id, "quota_consume") + extra_used
         return AccountQuota(
             total_sent=total_sent,
-            daily_remaining=max(0, self.settings.free_daily_quota - daily_used),
-            monthly_remaining=max(0, self.settings.free_monthly_quota - monthly_used),
+            daily_remaining=max(0, (self.settings.free_daily_quota * QUOTA_UNIT_SCALE) - daily_used),
+            monthly_remaining=max(0, (self.settings.free_monthly_quota * QUOTA_UNIT_SCALE) - monthly_used),
             extra_remaining=max(0, extra_granted - extra_used),
             daily_limit=self.settings.free_daily_quota,
             monthly_limit=self.settings.free_monthly_quota,
         )
 
     def reply_cost(self, reply: NargesReply) -> int:
+        words = " ".join(message.text for message in reply.messages).split()
+        if len(words) <= 1:
+            return 1
         if reply.mode == ResponseMode.DEEP:
-            return 3
+            return 3 * QUOTA_UNIT_SCALE
         total_chars = sum(len(message.text) for message in reply.messages)
         if reply.mode == ResponseMode.DETAILED or total_chars > 1200 or len(reply.messages) >= 3:
-            return 2
-        return 1
+            return 2 * QUOTA_UNIT_SCALE
+        return QUOTA_UNIT_SCALE
 
     def _used_since(self, user_id: int, kind: str, since: datetime) -> int:
         with self.database.orm.session() as session:
@@ -169,18 +185,14 @@ class QuotaService:
 
     def _record_event(self, user_id: int, kind: str, cost: int) -> None:
         with self.database.orm.session() as session:
-            session.add(
-                QuotaEventORM(
-                    user_id=user_id,
-                    kind=kind,
-                    cost=cost,
-                    created_at=datetime.now(UTC),
-                )
-            )
+            session.add(QuotaEventORM(user_id=user_id, kind=kind, cost=cost, created_at=datetime.now(UTC)))
 
     def _debug(self, event: str, user_id: int, payload: dict) -> None:
         if self.debug_service:
             self.debug_service.log(event, payload, user_id=user_id)
+
+    def _debug_bypass(self, user_id: int) -> bool:
+        return bool(self.debug_service and self.debug_service.can_debug(user_id))
 
     def _start_of_day(self) -> datetime:
         return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

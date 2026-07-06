@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}پنل نرگس{% endblock %}</title>
+  <style>
+    :root{--bg:#f6f7fb;--panel:#fff;--text:#1f2937;--muted:#6b7280;--line:#e5e7eb;--brand:#2563eb;--bad:#dc2626;--ok:#16a34a;--warn:#d97706}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Tahoma,Arial,sans-serif;font-size:14px}
+    a{color:var(--brand);text-decoration:none}.shell{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+    aside{background:#111827;color:#e5e7eb;padding:22px 16px;position:sticky;top:0;height:100vh}
+    aside h1{font-size:20px;margin:0 0 24px}.nav a{display:block;color:#d1d5db;padding:10px 12px;border-radius:8px;margin:4px 0}.nav a:hover{background:#1f2937;color:#fff}
+    main{padding:24px;max-width:1500px;width:100%}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+    h2{font-size:24px;margin:0 0 8px}.muted{color:var(--muted)}.flash{background:#ecfeff;border:1px solid #67e8f9;color:#155e75;padding:10px 12px;border-radius:8px;margin-bottom:16px}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:14px}.metric b{font-size:26px;display:block;margin-top:8px}
+    table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}th{background:#f9fafb;color:#374151}.ltr{direction:ltr;text-align:left}
+    input,textarea,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:#fff}textarea{min-height:110px;resize:vertical}
+    button,.btn{display:inline-block;border:0;background:var(--brand);color:#fff;padding:9px 13px;border-radius:8px;cursor:pointer}.btn.secondary,button.secondary{background:#374151}.btn.bad,button.bad{background:var(--bad)}
+    .row{display:flex;gap:10px;align-items:center}.row>*{flex:1}.pill{display:inline-block;padding:3px 8px;border-radius:99px;background:#eef2ff;color:#3730a3}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+    pre{white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e5e7eb;padding:12px;border-radius:8px;direction:ltr;text-align:left;max-height:360px;overflow:auto}
+    @media(max-width:900px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.grid,.grid.two{grid-template-columns:1fr}main{padding:14px}.row{display:block}.row>*{margin-bottom:8px}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <h1>پنل نرگس</h1>
+    <nav class="nav">
+      <a href="/admin">داشبورد</a>
+      <a href="/admin/users">کاربران</a>
+      <a href="/admin/model">مدل، وضعیت و رویدادها</a>
+      <a href="/admin/providers">توکن‌ها و Providerها</a>
+      <a href="/admin/broadcast">ارسال همگانی</a>
+      <a href="/admin/logs">لاگ‌ها</a>
+      <a href="/admin/logout">خروج</a>
+    </nav>
+  </aside>
+  <main>
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

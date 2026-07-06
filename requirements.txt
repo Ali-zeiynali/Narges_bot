@@ -4,3 +4,7 @@ python-dotenv
 SQLAlchemy
 alembic
 httpx
+fastapi
+jinja2
+uvicorn
+python-multipart

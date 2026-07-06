@@ -62,6 +62,11 @@ class Settings:
     debug_mode: bool
     debug_user_ids: tuple[int, ...]
     name_transliteration_map: dict[str, str]
+    max_api_input_tokens: int = 3000
+    ai_providers_config: str = "data/ai_providers.json"
+    admin_panel_token: str | None = None
+    admin_panel_host: str = "127.0.0.1"
+    admin_panel_port: int = 8080
 
 
 def csv_int_env(name: str) -> tuple[int, ...]:
@@ -116,7 +121,8 @@ def load_settings() -> Settings:
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
         groq_temperature=float_env("GROQ_TEMPERATURE", 0.7, 0, 2),
         groq_max_completion_tokens=int_env("GROQ_MAX_COMPLETION_TOKENS", 512, 1, 4096),
-        max_request_tokens=int_env("MAX_REQUEST_TOKENS", 4096, 128, 131072),
+        max_request_tokens=min(int_env("MAX_REQUEST_TOKENS", 3000, 128, 131072), 3000),
+        max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 3000, 128, 131072), 3000),
         max_message_chars=int_env("MAX_MESSAGE_CHARS", 4000, 1, 4096),
         persona_version=os.getenv("PERSONA_VERSION", "2026-07-05.1").strip(),
         database_path=os.getenv("DATABASE_PATH", "data/narges.sqlite3").strip(),
@@ -135,4 +141,8 @@ def load_settings() -> Settings:
         debug_mode=bool_env("DEBUG_MODE", False),
         debug_user_ids=csv_int_env("DEBUG_USER_IDS"),
         name_transliteration_map=json_map_env("NAME_TRANSLITERATION_MAP", default_name_map),
+        ai_providers_config=os.getenv("AI_PROVIDERS_CONFIG", "data/ai_providers.json").strip(),
+        admin_panel_token=os.getenv("ADMIN_PANEL_TOKEN", "").strip() or None,
+        admin_panel_host=os.getenv("ADMIN_PANEL_HOST", "127.0.0.1").strip(),
+        admin_panel_port=int_env("ADMIN_PANEL_PORT", 8080, 1, 65535),
     )

@@ -21,7 +21,6 @@ from bot.services.moderation_service import ModerationService
 from bot.services.name_service import NameService
 from bot.services.quota_service import QuotaService
 from bot.services.required_channel_service import RequiredChannelService
-from bot.services.relationship_service import RelationshipService
 from bot.services.narges_state_scheduler import NargesStateScheduler
 from bot.services.narges_state_service import NargesStateService
 from bot.services.style_linter import StyleLinter
@@ -50,18 +49,16 @@ async def main() -> None:
     channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
     user_service = UserService(database)
     name_service = NameService(settings.name_transliteration_map)
-    groq_client = GroqChatClient(settings)
+    groq_client = GroqChatClient(settings, database)
     narges_state_service = NargesStateService(database)
     narges_state_scheduler = NargesStateScheduler(narges_state_service, groq_client)
     history_service = HistoryService(database)
-    relationship_service = RelationshipService(database)
     chat_service = ChatService(
         validator=MessageValidator(settings),
         persona_compiler=PersonaCompiler(settings.persona_version),
         groq_client=groq_client,
         narges_state_service=narges_state_service,
         memory_service=memory_service,
-        relationship_service=relationship_service,
         history_service=history_service,
         conversation_search_tool=ConversationSearchTool(history_service),
         moderation_service=moderation_service,
@@ -83,7 +80,6 @@ async def main() -> None:
         quota_service=quota_service,
         billing_service=billing_service,
         moderation_service=moderation_service,
-        relationship_service=relationship_service,
         history_service=history_service,
         narges_state_service=narges_state_service,
         debug_service=debug_service,

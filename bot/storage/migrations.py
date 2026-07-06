@@ -38,18 +38,6 @@ MIGRATIONS: list[tuple[str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_memories_user_active
             ON memories(user_id, active, kind);
 
-        CREATE TABLE IF NOT EXISTS relationships (
-            user_id INTEGER PRIMARY KEY,
-            familiarity INTEGER NOT NULL,
-            trust INTEGER NOT NULL,
-            respect INTEGER NOT NULL,
-            comfort INTEGER NOT NULL,
-            joke_permission INTEGER NOT NULL,
-            nickname TEXT,
-            boundary_warnings INTEGER NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS conversation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -154,9 +142,6 @@ MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE memories ADD COLUMN importance INTEGER NOT NULL DEFAULT 3;
         ALTER TABLE memories ADD COLUMN metadata TEXT;
         ALTER TABLE memories ADD COLUMN last_seen_at TEXT;
-
-        ALTER TABLE relationships ADD COLUMN intimacy_level INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE relationships ADD COLUMN current_chat_feeling TEXT NOT NULL DEFAULT 'neutral';
 
         CREATE TABLE IF NOT EXISTS memory_audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,6 +282,66 @@ MIGRATIONS: list[tuple[str, str]] = [
 
         CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
             ON billing_invoices(status);
+        """,
+    ),
+    (
+        "007_provider_usage_and_message_types",
+        """
+        ALTER TABLE conversation_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'chat';
+        ALTER TABLE conversation_messages ADD COLUMN provider TEXT;
+        ALTER TABLE conversation_messages ADD COLUMN model TEXT;
+        ALTER TABLE conversation_messages ADD COLUMN input_tokens INTEGER;
+        ALTER TABLE conversation_messages ADD COLUMN output_tokens INTEGER;
+        ALTER TABLE conversation_messages ADD COLUMN total_tokens INTEGER;
+
+        ALTER TABLE usage_logs ADD COLUMN provider TEXT NOT NULL DEFAULT 'groq';
+        """,
+    ),
+    (
+        "008_user_gender",
+        """
+        ALTER TABLE users ADD COLUMN gender TEXT;
+        """,
+    ),
+    (
+        "009_scale_quota_cost_units",
+        """
+        UPDATE quota_events
+        SET cost = cost * 5
+        WHERE cost > 0
+          AND (
+            kind = 'quota_consume'
+            OR kind = 'extra_consume'
+            OR kind LIKE 'extra_grant%'
+          );
+        """,
+    ),
+    (
+        "010_admin_panel_and_ai_provider_status",
+        """
+        CREATE TABLE IF NOT EXISTS ai_provider_key_statuses (
+            provider TEXT NOT NULL,
+            key_index INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            error_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            disabled_until TEXT,
+            last_success_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(provider, key_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            target_count INTEGER NOT NULL DEFAULT 0,
+            sent_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'created',
+            error TEXT,
+            created_at TEXT NOT NULL,
+            finished_at TEXT
+        );
         """,
     ),
 ]

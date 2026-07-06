@@ -53,6 +53,14 @@ class UserService:
             user_id,
             display_name=name,
             pending_name=None,
+            suggested_name=None,
+            onboarding_state=OnboardingState.ASK_GENDER.value,
+        )
+
+    def save_gender(self, user_id: int, gender: str | None) -> None:
+        self._update(
+            user_id,
+            gender=gender,
             onboarding_state=OnboardingState.READY.value,
         )
 
@@ -86,6 +94,7 @@ class UserService:
             last_name=row.last_name,
             language_code=row.language_code,
             display_name=row.display_name,
+            gender=row.gender,
             suggested_name=row.suggested_name,
             pending_name=row.pending_name,
             onboarding_state=OnboardingState(row.onboarding_state),

@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ورود پنل</title>
+<style>body{font-family:Tahoma,Arial,sans-serif;background:#f6f7fb;display:grid;place-items:center;min-height:100vh}.box{background:white;border:1px solid #e5e7eb;border-radius:10px;padding:24px;width:min(420px,92vw)}input,button{width:100%;padding:10px;border-radius:8px;border:1px solid #e5e7eb;margin-top:10px}button{background:#2563eb;color:white;border:0}.flash{color:#b91c1c}</style></head>
+<body><form class="box" method="post"><h2>ورود به پنل مدیریت</h2>{% if flash %}<p class="flash">{{ flash }}</p>{% endif %}{% if local_bypass %}<p>توکن تنظیم نشده؛ دسترسی فقط از localhost آزاد است.</p>{% endif %}<input name="token" type="password" placeholder="ADMIN_PANEL_TOKEN"><button>ورود</button></form></body></html>

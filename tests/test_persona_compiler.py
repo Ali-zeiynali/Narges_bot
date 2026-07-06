@@ -1,7 +1,6 @@
 import unittest
 from datetime import UTC, datetime
 
-from bot.models.relationship import RelationshipState
 from bot.models.state import NargesSelfState
 from bot.persona.cache import PersonaCache
 from bot.persona.compiler import PersonaCompiler
@@ -11,9 +10,8 @@ class PersonaCompilerTests(unittest.TestCase):
     def test_selects_relevant_memory_context_and_core(self) -> None:
         compiler = PersonaCompiler("v1")
         compiled = compiler.compile(
-            "یادت باشه من قهوه تلخ دوست دارم",
+            "remember that I like bitter coffee",
             NargesSelfState(updated_at=datetime.now(UTC)),
-            RelationshipState(user_id=1, updated_at=datetime.now(UTC)),
             [],
             [],
             current_message_datetime="2026-07-05T18:00:00+00:00",
@@ -26,12 +24,11 @@ class PersonaCompilerTests(unittest.TestCase):
 
     def test_cache_clears_when_version_changes(self) -> None:
         cache = PersonaCache()
-        key = "core|intimacy:1|affect:NEUTRAL|engine_rules"
+        key = "core|engine_rules"
         compiler_v1 = PersonaCompiler("v1", cache)
         compiler_v1.compile(
-            "سلام",
+            "hello",
             NargesSelfState(updated_at=datetime.now(UTC)),
-            RelationshipState(user_id=1, updated_at=datetime.now(UTC)),
             [],
             [],
         )
@@ -39,31 +36,22 @@ class PersonaCompilerTests(unittest.TestCase):
 
         compiler_v2 = PersonaCompiler("v2", cache)
         compiler_v2.compile(
-            "سلام",
+            "hello",
             NargesSelfState(updated_at=datetime.now(UTC)),
-            RelationshipState(user_id=1, updated_at=datetime.now(UTC)),
             [],
             [],
         )
         self.assertIsNone(cache.get("v1", key))
 
-    def test_uses_relationship_intimacy_and_affect(self) -> None:
-        relationship = RelationshipState(
-            user_id=1,
-            intimacy_level=4,
-            current_chat_feeling="upset",
-            updated_at=datetime.now(UTC),
-        )
+    def test_runtime_context_uses_only_core_sections(self) -> None:
         compiled = PersonaCompiler("v1").compile(
-            "سلام",
+            "hello",
             NargesSelfState(updated_at=datetime.now(UTC)),
-            relationship,
             [],
             [],
         )
 
-        self.assertIn("intimacy:4", compiled.sections)
-        self.assertIn("affect:ANNOYED", compiled.sections)
+        self.assertEqual(compiled.sections, ("core", "engine_rules"))
 
 
 if __name__ == "__main__":

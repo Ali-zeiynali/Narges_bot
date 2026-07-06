@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block title %}کاربر {{ user_id }}{% endblock %}
+{% block content %}
+<h2>کاربر {{ detail.user.display_name or detail.user.first_name or user_id }}</h2>
+<div class="grid">
+  <div class="card metric">روزانه باقی‌مانده<b>{{ detail.quota.daily_remaining // 5 }}</b></div>
+  <div class="card metric">ماهانه باقی‌مانده<b>{{ detail.quota.monthly_remaining // 5 }}</b></div>
+  <div class="card metric">اضافی<b>{{ detail.quota.extra_remaining // 5 }}</b></div>
+  <div class="card metric">اخطار<b>{{ detail.warnings|length }}</b></div>
+</div>
+<div class="grid two">
+  <div class="card"><h3>پروفایل</h3><pre>{{ detail.user.__dict__ | json_pretty }}</pre></div>
+  <div class="card"><h3>مسدودی</h3>{% if detail.block %}<pre>{{ detail.block.__dict__ | json_pretty }}</pre>{% else %}<p class="muted">مسدودی فعال ندارد.</p>{% endif %}</div>
+</div>
+<div class="card"><h3>آخرین پیام‌ها</h3><table><tr><th>نقش</th><th>نوع</th><th>متن</th><th>provider</th><th>زمان</th></tr>{% for m in detail.messages %}<tr><td>{{ m.role }}</td><td>{{ m.message_type }}</td><td>{{ m.text }}</td><td>{{ m.provider or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table></div>
+<div class="card"><h3>حافظه‌ها</h3><table><tr><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>آخرین بروزرسانی</th></tr>{% for m in detail.memories %}<tr><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{{ m.updated_at|dt }}</td></tr>{% endfor %}</table></div>
+<div class="grid two"><div class="card"><h3>Usage</h3><table><tr><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>{% for u in detail.usage %}<tr><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div><div class="card"><h3>اخطارها</h3><table><tr><th>دلیل</th><th>تعداد</th><th>زمان</th></tr>{% for w in detail.warnings %}<tr><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>{% endfor %}</table></div></div>
+{% endblock %}

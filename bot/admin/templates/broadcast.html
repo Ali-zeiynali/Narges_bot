@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}ارسال همگانی{% endblock %}
+{% block content %}
+<h2>ارسال پیام همگانی</h2>
+<form class="card" method="post"><label>متن پیام از طرف بات<textarea name="text" required></textarea></label><label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label><button>ارسال برای همه</button></form>
+<div class="card"><h3>ارسال‌های قبلی</h3><table><tr><th>متن</th><th>هدف</th><th>موفق</th><th>ناموفق</th><th>وضعیت</th><th>زمان</th></tr>{% for b in logs %}<tr><td>{{ b.text }}</td><td>{{ b.target_count }}</td><td>{{ b.sent_count }}</td><td>{{ b.failed_count }}</td><td>{{ b.status }}</td><td>{{ b.created_at|dt }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

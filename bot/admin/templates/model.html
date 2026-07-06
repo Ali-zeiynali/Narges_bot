@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}مدل و رویدادها{% endblock %}
+{% block content %}
+<h2>وضعیت مدل و رویدادها</h2>
+<div class="grid two">
+<form class="card" method="post" action="/admin/model/state"><h3>ویرایش وضعیت فعلی</h3>
+<label>mood<input name="mood" value="{{ active.mood }}"></label><label>energy<input name="energy" type="number" min="0" max="100" value="{{ active.energy }}"></label><label>activity<input name="activity" value="{{ active.activity }}"></label><label>location<input name="location" value="{{ active.location }}"></label><label><input style="width:auto" type="checkbox" name="is_alone" {% if active.is_alone %}checked{% endif %}> تنهاست</label><label>companions<textarea name="companions">{{ "\n".join(active.companions) }}</textarea></label><label>mind_topics<textarea name="mind_topics">{{ "\n".join(active.mind_topics) }}</textarea></label><label>note<textarea name="note">{{ active.note or "" }}</textarea></label><button>ذخیره وضعیت</button></form>
+<div class="card"><h3>وضعیت فعال</h3><pre>{{ active.model_dump(mode="json") | json_pretty }}</pre></div>
+</div>
+<div class="card"><h3>رویدادهای قدیمی و آینده</h3><table><tr><th>عنوان</th><th>روز</th><th>شروع</th><th>پایان</th><th>payload</th></tr>{% for e in events %}<tr><td>{{ e.id }}</td><td>{{ e.event_date }}</td><td>{{ e.start_at|dt }}</td><td>{{ e.end_at|dt }}</td><td><pre>{{ e.payload }}</pre></td></tr>{% endfor %}</table></div>
+<div class="grid two"><div class="card"><h3>تاریخچه وضعیت</h3><table><tr><th>source</th><th>فعال</th><th>mood</th><th>energy</th><th>زمان</th></tr>{% for s in states %}<tr><td>{{ s.source }}</td><td>{{ s.is_active }}</td><td>{{ s.mood }}</td><td>{{ s.energy }}</td><td>{{ s.created_at|dt }}</td></tr>{% endfor %}</table></div><div class="card"><h3>اجرای scheduler</h3><table><tr><th>روز</th><th>slot</th><th>status</th><th>error</th></tr>{% for r in scheduler_runs %}<tr><td>{{ r.run_date }}</td><td>{{ r.slot }}</td><td>{{ r.status }}</td><td>{{ r.error or "-" }}</td></tr>{% endfor %}</table></div></div>
+{% endblock %}

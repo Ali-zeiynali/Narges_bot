@@ -43,7 +43,6 @@ class MemorySuggestion(BaseModel):
         "project",
         "goal",
         "constraint",
-        "relationship_note",
         "inside_joke",
         "boundary",
         "unresolved_topic",
@@ -53,20 +52,6 @@ class MemorySuggestion(BaseModel):
     confidence: float = Field(ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
     expires_in_days: int | None = Field(default=None, ge=1, le=365)
-
-
-class RelationshipDelta(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    familiarity: int = Field(default=0, ge=-3, le=3)
-    trust: int = Field(default=0, ge=-3, le=3)
-    respect: int = Field(default=0, ge=-3, le=3)
-    comfort: int = Field(default=0, ge=-3, le=3)
-    joke_permission: bool | None = None
-    nickname: str | None = Field(default=None, max_length=32)
-    boundary_warning: str | None = Field(default=None, max_length=160)
-    intimacy_delta: int = Field(default=0, ge=-1, le=1)
-    current_chat_feeling: str | None = Field(default=None, max_length=40)
 
 
 class WarningSuggestion(BaseModel):
@@ -90,7 +75,6 @@ class NargesReply(BaseModel):
     mode: ResponseMode
     messages: list[TelegramOutboundMessage] = Field(min_length=1, max_length=4)
     memory_suggestions: list[MemorySuggestion] = Field(default_factory=list, max_length=5)
-    relationship_delta: RelationshipDelta = Field(default_factory=RelationshipDelta)
     warning_suggestion: WarningSuggestion | None = None
     event_suggestion: EventSuggestion | None = None
 
@@ -102,3 +86,57 @@ class NargesReply(BaseModel):
         if len(texts) > 2 and sum(len(text) < 12 for text in texts) >= 2:
             raise ValueError("dramatic short message sequences are not allowed")
         return self
+
+    @classmethod
+    def validate_provider_payload(cls, payload: dict) -> "NargesReply":
+        normalized = cls._normalize_payload(payload)
+        return cls.model_validate(normalized)
+
+    @classmethod
+    def _normalize_payload(cls, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            payload = {}
+        normalized = dict(payload)
+        if "mode" not in normalized:
+            tone = str(normalized.get("tone") or "").lower()
+            depth = str(normalized.get("depth") or "").lower()
+            normalized["mode"] = tone if tone in ResponseMode._value2member_map_ else depth or "normal"
+        if normalized.get("mode") not in ResponseMode._value2member_map_:
+            normalized["mode"] = "normal"
+
+        messages = normalized.get("messages")
+        if not isinstance(messages, list) or not messages:
+            normalized["messages"] = [{"text": "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست.", "delay_seconds": 0.2}]
+        else:
+            cleaned_messages = []
+            for item in messages[:4]:
+                if isinstance(item, dict):
+                    cleaned_messages.append(
+                        {
+                            "text": str(item.get("text") or item.get("content") or "").strip(),
+                            "delay_seconds": item.get("delay_seconds", 0.4),
+                        }
+                    )
+                else:
+                    cleaned_messages.append({"text": str(item).strip(), "delay_seconds": 0.4})
+            normalized["messages"] = [item for item in cleaned_messages if item["text"]] or [
+                {"text": "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست.", "delay_seconds": 0.2}
+            ]
+
+        warning = normalized.get("warning_suggestion")
+        if isinstance(warning, dict):
+            normalized["warning_suggestion"] = {
+                "level": warning.get("level", "none"),
+                "reason": warning.get("reason") or warning.get("text"),
+            }
+        elif warning:
+            normalized["warning_suggestion"] = {"level": "soft", "reason": str(warning)[:160]}
+        else:
+            normalized["warning_suggestion"] = None
+
+        if not isinstance(normalized.get("memory_suggestions"), list):
+            normalized["memory_suggestions"] = []
+        if not isinstance(normalized.get("event_suggestion"), dict):
+            normalized["event_suggestion"] = None
+        allowed = set(cls.model_fields)
+        return {key: value for key, value in normalized.items() if key in allowed}

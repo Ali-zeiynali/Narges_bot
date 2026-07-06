@@ -62,13 +62,22 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
             {
                 "mode": "deep",
                 "messages": [{"text": "یک پاسخ عمیق", "delay_seconds": 0.1}],
-                "relationship_delta": {},
             }
         )
-        self.assertEqual(self.service.reply_cost(reply), 3)
+        self.assertEqual(self.service.reply_cost(reply), 15)
         self.service.consume_successful_reply(1, reply)
 
         self.assertEqual(self.service.remaining_today(1), 0)
+
+    async def test_one_word_reply_costs_one_fifth(self) -> None:
+        reply = NargesReply.model_validate(
+            {
+                "mode": "short",
+                "messages": [{"text": "باشه", "delay_seconds": 0.1}],
+            }
+        )
+
+        self.assertEqual(self.service.reply_cost(reply), 1)
 
     async def test_rate_limit_blocks_after_starts(self) -> None:
         first = await self.service.begin_generation(1)
@@ -80,6 +89,18 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first.ok)
         self.assertTrue(second.ok)
         self.assertFalse(third.ok)
+
+    async def test_extra_credit_bypasses_rate_limit(self) -> None:
+        self.service.add_extra_credit(1, 10, reason="test")
+        first = await self.service.begin_generation(1)
+        await self.service.finish_generation(1)
+        second = await self.service.begin_generation(1)
+        await self.service.finish_generation(1)
+        third = await self.service.begin_generation(1)
+
+        self.assertTrue(first.ok)
+        self.assertTrue(second.ok)
+        self.assertTrue(third.ok)
 
 
 if __name__ == "__main__":

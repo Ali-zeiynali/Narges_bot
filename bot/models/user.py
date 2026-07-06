@@ -9,6 +9,7 @@ class OnboardingState(str, Enum):
     ASK_NAME_CONFIRM = "ask_name_confirm"
     ASK_NAME_INPUT = "ask_name_input"
     NAME_AMBIGUOUS_CONFIRM = "name_ambiguous_confirm"
+    ASK_GENDER = "ask_gender"
     READY = "ready"
 
 
@@ -29,6 +30,7 @@ class UserProfile:
     last_name: str | None
     language_code: str | None
     display_name: str | None
+    gender: str | None
     suggested_name: str | None
     pending_name: str | None
     onboarding_state: OnboardingState

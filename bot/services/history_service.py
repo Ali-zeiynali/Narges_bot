@@ -19,6 +19,12 @@ class HistoryService:
         chat_id: int | None = None,
         telegram_message_id: int | None = None,
         created_at: datetime | None = None,
+        message_type: str = "chat",
+        provider: str | None = None,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> None:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         preview = text[:240]
@@ -31,8 +37,14 @@ class HistoryService:
                     chat_id=chat_id,
                     telegram_message_id=telegram_message_id,
                     role=role,
+                    message_type=message_type,
                     text=text,
                     text_hash=text_hash,
+                    provider=provider,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
                     created_at=now,
                 )
             )
@@ -47,16 +59,24 @@ class HistoryService:
             ).all()
         return list(rows)
 
-    def recent_turns(self, user_id: int, limit: int = 10) -> list[dict[str, str]]:
+    def recent_turns(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
         with self.database.orm.session() as session:
             rows = session.scalars(
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.user_id == user_id)
+                .where(
+                    ConversationMessageORM.user_id == user_id,
+                    ConversationMessageORM.message_type == "chat",
+                    ConversationMessageORM.role.in_(("user", "assistant")),
+                )
                 .order_by(ConversationMessageORM.id.desc())
                 .limit(limit)
             ).all()
         return [
-            {"role": row.role, "text": row.text, "created_at": self._iso(row.created_at)}
+            {
+                "role": row.role,
+                "text": row.text,
+                "created_at": self._iso(row.created_at),
+            }
             for row in reversed(rows)
         ]
 
@@ -68,17 +88,20 @@ class HistoryService:
             rows = session.execute(
                 text(
                     """
-                SELECT cm.role, cm.text, cm.created_at
+                SELECT cm.text, cm.created_at
                 FROM conversation_messages_fts fts
                 JOIN conversation_messages cm ON cm.id = fts.rowid
-                WHERE conversation_messages_fts MATCH :query AND cm.user_id = :user_id
+                WHERE conversation_messages_fts MATCH :query
+                  AND cm.user_id = :user_id
+                  AND cm.message_type = 'chat'
+                  AND cm.role IN ('user', 'assistant')
                 ORDER BY bm25(conversation_messages_fts)
                 LIMIT :limit
                 """,
                 ),
                 {"query": query, "user_id": user_id, "limit": limit},
             ).mappings().all()
-        return [{"role": row["role"], "text": row["text"], "created_at": row["created_at"]} for row in rows]
+        return [{"text": row["text"], "created_at": row["created_at"]} for row in rows]
 
     def _sanitize_fts_query(self, query: str) -> str:
         words = [word.strip('"*():-') for word in (query or "").split()]

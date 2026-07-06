@@ -27,6 +27,7 @@ class UserORM(Base):
     last_name: Mapped[str | None] = mapped_column(String(128))
     language_code: Mapped[str | None] = mapped_column(String(16))
     display_name: Mapped[str | None] = mapped_column(String(128))
+    gender: Mapped[str | None] = mapped_column(String(32))
     suggested_name: Mapped[str | None] = mapped_column(String(128))
     pending_name: Mapped[str | None] = mapped_column(String(128))
     onboarding_state: Mapped[str] = mapped_column(String(64), default="new")
@@ -74,22 +75,6 @@ class MemoryAuditLogORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
-class RelationshipORM(Base):
-    __tablename__ = "relationships"
-
-    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    familiarity: Mapped[int] = mapped_column(Integer)
-    trust: Mapped[int] = mapped_column(Integer)
-    respect: Mapped[int] = mapped_column(Integer)
-    comfort: Mapped[int] = mapped_column(Integer)
-    joke_permission: Mapped[bool] = mapped_column(Boolean)
-    nickname: Mapped[str | None] = mapped_column(String(64))
-    boundary_warnings: Mapped[int] = mapped_column(Integer)
-    intimacy_level: Mapped[int] = mapped_column(Integer, default=1)
-    current_chat_feeling: Mapped[str] = mapped_column(String(40), default="neutral")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-
-
 class ConversationHistoryORM(Base):
     __tablename__ = "conversation_history"
 
@@ -109,8 +94,14 @@ class ConversationMessageORM(Base):
     chat_id: Mapped[int | None] = mapped_column(Integer)
     telegram_message_id: Mapped[int | None] = mapped_column(Integer)
     role: Mapped[str] = mapped_column(String(32))
+    message_type: Mapped[str] = mapped_column(String(32), default="chat")
     text: Mapped[str] = mapped_column(Text)
     text_hash: Mapped[str] = mapped_column(String(128))
+    provider: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(128))
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -130,12 +121,40 @@ class UsageLogORM(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(Integer)
     chat_id: Mapped[int | None] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(64), default="groq")
     model: Mapped[str] = mapped_column(String(128))
     estimated_tokens: Mapped[int | None] = mapped_column(Integer)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AiProviderKeyStatusORM(Base):
+    __tablename__ = "ai_provider_key_statuses"
+
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="unknown")
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    disabled_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AdminBroadcastORM(Base):
+    __tablename__ = "admin_broadcasts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    text: Mapped[str] = mapped_column(Text)
+    target_count: Mapped[int] = mapped_column(Integer, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="created")
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UserWarningEventORM(Base):
