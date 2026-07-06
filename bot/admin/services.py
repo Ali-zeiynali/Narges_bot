@@ -11,6 +11,7 @@ from sqlalchemy import desc, func, select
 from bot.config import Settings
 from bot.models.state import NargesSelfStateCandidate
 from bot.services.global_state_service import GlobalStateService
+from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
 from bot.services.required_channel_service import RequiredChannelService
@@ -113,6 +114,8 @@ class DashboardSnapshot:
     tokens_today: int
     recent_messages: list[dict[str, Any]]
     recent_users: list[dict[str, Any]]
+    daily_chart: list[dict[str, Any]]
+    provider_token_chart: list[dict[str, Any]]
 
 
 class AdminDataService:
@@ -122,6 +125,7 @@ class AdminDataService:
         self.quota_service = QuotaService(database, settings)
         self.state_service = NargesStateService(database)
         self.global_state_service = GlobalStateService(database)
+        self.moderation_service = ModerationService(database)
         self.channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
 
     def dashboard(self) -> DashboardSnapshot:
@@ -144,6 +148,8 @@ class AdminDataService:
             tokens_today = session.scalar(select(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)).where(UsageLogORM.created_at >= today)) or 0
             recent_messages = session.scalars(select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(10)).all()
             recent_users = session.scalars(select(UserORM).order_by(desc(UserORM.created_at)).limit(10)).all()
+            daily_chart = self._daily_chart(session, days=14)
+            provider_token_chart = self._provider_token_chart(session, since=today - timedelta(days=13))
 
         return DashboardSnapshot(
             users_total=int(users_total),
@@ -161,6 +167,8 @@ class AdminDataService:
             tokens_today=int(tokens_today),
             recent_messages=[self._message_row(row) for row in recent_messages],
             recent_users=[self._user_row(row) for row in recent_users],
+            daily_chart=daily_chart,
+            provider_token_chart=provider_token_chart,
         )
 
     def users(self, sort: str = "last_seen", query: str = "") -> list[dict[str, Any]]:
@@ -282,6 +290,13 @@ class AdminDataService:
     def add_user_extra_credit(self, user_id: int, amount: int, reason: str) -> None:
         if amount > 0:
             self.quota_service.add_extra_credit(user_id, amount, reason=f"admin:{reason or 'manual'}")
+
+    def add_user_warning(self, user_id: int, reason: str) -> None:
+        reason = reason.strip() or "manual admin warning"
+        self.moderation_service.apply_manual_warning(user_id, reason)
+
+    def delete_user_warning(self, user_id: int, warning_id: int) -> bool:
+        return self.moderation_service.delete_warning(user_id, warning_id)
 
     def add_memory_from_form(self, user_id: int, form: dict[str, Any]) -> None:
         from bot.models.ai import MemorySuggestion
@@ -637,3 +652,48 @@ class AdminDataService:
             "total_tokens": row.total_tokens,
             "created_at": row.created_at,
         }
+
+    def _daily_chart(self, session, days: int = 14) -> list[dict[str, Any]]:
+        start_date = utc_now().date() - timedelta(days=days - 1)
+        buckets = {
+            (start_date + timedelta(days=offset)).isoformat(): {"date": (start_date + timedelta(days=offset)).isoformat(), "users": 0, "messages": 0, "tokens": 0}
+            for offset in range(days)
+        }
+        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+        user_rows = session.execute(
+            select(UserORM.created_at).where(UserORM.created_at >= start_dt)
+        ).all()
+        message_rows = session.execute(
+            select(ConversationMessageORM.created_at).where(ConversationMessageORM.created_at >= start_dt)
+        ).all()
+        usage_rows = session.execute(
+            select(UsageLogORM.created_at, UsageLogORM.total_tokens).where(UsageLogORM.created_at >= start_dt)
+        ).all()
+        for (created_at,) in user_rows:
+            key = self._date_key(created_at)
+            if key in buckets:
+                buckets[key]["users"] += 1
+        for (created_at,) in message_rows:
+            key = self._date_key(created_at)
+            if key in buckets:
+                buckets[key]["messages"] += 1
+        for created_at, total_tokens in usage_rows:
+            key = self._date_key(created_at)
+            if key in buckets:
+                buckets[key]["tokens"] += int(total_tokens or 0)
+        return list(buckets.values())
+
+    def _provider_token_chart(self, session, since: datetime) -> list[dict[str, Any]]:
+        rows = session.execute(
+            select(UsageLogORM.provider, func.coalesce(func.sum(UsageLogORM.total_tokens), 0))
+            .where(UsageLogORM.created_at >= since)
+            .group_by(UsageLogORM.provider)
+            .order_by(desc(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)))
+        ).all()
+        return [{"provider": provider or "unknown", "tokens": int(tokens or 0)} for provider, tokens in rows]
+
+    def _date_key(self, value: datetime | str) -> str:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).date().isoformat()

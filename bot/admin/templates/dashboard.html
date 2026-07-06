@@ -1,26 +1,166 @@
-{% extends "base.html" %}{% block title %}داشبورد{% endblock %}
+{% extends "base.html" %}
+{% block title %}داشبورد{% endblock %}
 {% block content %}
-<div class="top"><div><h2>داشبورد</h2><div class="muted">نمای دقیق سلامت ربات، مصرف مدل‌ها و رفتار کاربران</div></div></div>
+<div class="top">
+  <div>
+    <h2>داشبورد</h2>
+    <div class="muted">نمای دقیق سلامت ربات، رشد کاربران، مصرف توکن و فعالیت providerها.</div>
+  </div>
+</div>
+
 <div class="grid">
   <div class="card metric">کل کاربران<b>{{ snapshot.users_total }}</b></div>
   <div class="card metric">کاربران جدید امروز<b>{{ snapshot.users_today }}</b></div>
   <div class="card metric">کاربران فعال امروز<b>{{ snapshot.active_users_today }}</b></div>
   <div class="card metric">پیام‌های امروز<b>{{ snapshot.messages_today }}</b></div>
-  <div class="card metric">توکن مصرفی امروز<b>{{ snapshot.tokens_today|compact_number }}</b></div>
-  <div class="card metric">اخطارهای امروز<b>{{ snapshot.warnings_today }}</b></div>
-  <div class="card metric">خطاهای AI امروز<b>{{ snapshot.ai_errors_today }}</b></div>
-  <div class="card metric">رویدادهای سهمیه امروز<b>{{ snapshot.quota_events_today }}</b></div>
+  <div class="card metric">توکن امروز<b>{{ snapshot.tokens_today|compact_number }}</b></div>
+  <div class="card metric">اخطار امروز<b>{{ snapshot.warnings_today }}</b></div>
+  <div class="card metric">خطای AI امروز<b>{{ snapshot.ai_errors_today }}</b></div>
+  <div class="card metric">رویداد سهمیه امروز<b>{{ snapshot.quota_events_today }}</b></div>
 </div>
+
 <div class="grid two">
-  <div class="card"><h3>۱۰ پیام آخر</h3><table><tr><th>ID</th><th>کاربر</th><th>نقش</th><th>متن</th><th>توکن</th><th>زمان</th></tr>{% for m in snapshot.recent_messages %}<tr><td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td><td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td><td>{{ m.role }}</td><td>{{ m.text }}</td><td>{{ m.total_tokens or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table></div>
-  <div class="card"><h3>آخرین کاربران</h3><table><tr><th>کاربر</th><th>نام</th><th>username</th><th>ثبت‌نام</th></tr>{% for u in snapshot.recent_users %}<tr><td><a href="/admin/users/{{ u.telegram_id }}">{{ u.telegram_id }}</a></td><td>{{ u.name }}</td><td>{{ u.username or "-" }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card">
+    <h3>رشد و فعالیت ۱۴ روز اخیر</h3>
+    <canvas id="dailyChart"></canvas>
+  </div>
+  <div class="card">
+    <h3>سهم مصرف توکن providerها</h3>
+    <canvas id="providerChart"></canvas>
+  </div>
 </div>
+
 <div class="grid two">
-  <div class="card"><h3>آخرین usage</h3><table><tr><th>کاربر</th><th>provider</th><th>مدل</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr>{% for u in snapshot.recent_usage %}<tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.prompt_tokens|compact_number }}</td><td>{{ u.completion_tokens|compact_number }}</td><td>{{ u.total_tokens|compact_number }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
-  <div class="card"><h3>Providerها</h3><table><tr><th>Provider</th><th>کلید</th><th>وضعیت</th><th>آخرین خطا</th><th>غیرفعال تا</th></tr>{% for s in snapshot.provider_statuses %}<tr><td>{{ s.provider }}</td><td>{{ s.key_index }}</td><td>{{ s.status }}</td><td>{{ s.last_error or "-" }}</td><td>{{ s.disabled_until|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card">
+    <h3>۱۰ پیام آخر</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>ID</th><th>کاربر</th><th>نقش</th><th>متن</th><th>توکن</th><th>زمان</th></tr></thead>
+        <tbody>
+        {% for m in snapshot.recent_messages %}
+        <tr>
+          <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
+          <td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td>
+          <td>{{ m.role }}</td>
+          <td class="text-cell">{{ m.text }}</td>
+          <td class="ltr">{{ m.total_tokens or "-" }}</td>
+          <td>{{ m.created_at|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>آخرین کاربران</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>کاربر</th><th>نام</th><th>username</th><th>ثبت‌نام</th></tr></thead>
+        <tbody>
+        {% for u in snapshot.recent_users %}
+        <tr>
+          <td class="ltr"><a href="/admin/users/{{ u.telegram_id }}">{{ u.telegram_id }}</a></td>
+          <td>{{ u.name }}</td>
+          <td class="ltr">{{ u.username or "-" }}</td>
+          <td>{{ u.created_at|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
+
+<div class="grid two">
+  <div class="card">
+    <h3>آخرین usage</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>کاربر</th><th>provider</th><th>مدل</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr></thead>
+        <tbody>
+        {% for u in snapshot.recent_usage %}
+        <tr>
+          <td class="ltr"><a href="/admin/users/{{ u.user_id }}">{{ u.user_id }}</a></td>
+          <td>{{ u.provider }}</td>
+          <td>{{ u.model }}</td>
+          <td class="ltr">{{ u.prompt_tokens|compact_number }}</td>
+          <td class="ltr">{{ u.completion_tokens|compact_number }}</td>
+          <td class="ltr">{{ u.total_tokens|compact_number }}</td>
+          <td>{{ u.created_at|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Providerها</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>Provider</th><th>کلید</th><th>وضعیت</th><th>آخرین خطا</th><th>غیرفعال تا</th></tr></thead>
+        <tbody>
+        {% for s in snapshot.provider_statuses %}
+        <tr>
+          <td>{{ s.provider }}</td>
+          <td>{{ s.key_index }}</td>
+          <td><span class="pill">{{ s.status }}</span></td>
+          <td class="text-cell">{{ s.last_error or "-" }}</td>
+          <td>{{ s.disabled_until|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div class="grid two">
   <div class="card"><h3>وضعیت فعلی مدل</h3><pre>{{ snapshot.current_state | json_pretty }}</pre></div>
-  <div class="card"><h3>آخرین debug</h3><table><tr><th>event</th><th>کاربر</th><th>زمان</th></tr>{% for d in snapshot.recent_debug %}<tr><td>{{ d.event }}</td><td>{{ d.user_id }}</td><td>{{ d.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card">
+    <h3>آخرین debug</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>event</th><th>کاربر</th><th>زمان</th></tr></thead>
+        <tbody>
+        {% for d in snapshot.recent_debug %}
+        <tr><td>{{ d.event }}</td><td class="ltr">{{ d.user_id }}</td><td>{{ d.created_at|dt }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const dailyRows = {{ snapshot.daily_chart | tojson }};
+  const providerRows = {{ snapshot.provider_token_chart | tojson }};
+  const labels = dailyRows.map(row => row.date.slice(5));
+  if (window.Chart) {
+    new Chart(document.getElementById("dailyChart"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {label: "کاربر جدید", data: dailyRows.map(row => row.users), borderColor: "#2563eb", backgroundColor: "rgba(37,99,235,.12)", tension: .35, fill: true},
+          {label: "پیام", data: dailyRows.map(row => row.messages), borderColor: "#16a34a", backgroundColor: "rgba(22,163,74,.10)", tension: .35, fill: true},
+          {label: "توکن / 1000", data: dailyRows.map(row => Math.round((row.tokens || 0) / 1000)), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,.10)", tension: .35, fill: true}
+        ]
+      },
+      options: {responsive: true, interaction: {mode: "index", intersect: false}, plugins: {legend: {position: "bottom"}}}
+    });
+
+    new Chart(document.getElementById("providerChart"), {
+      type: "doughnut",
+      data: {
+        labels: providerRows.map(row => row.provider),
+        datasets: [{data: providerRows.map(row => row.tokens), backgroundColor: ["#2563eb","#7c3aed","#16a34a","#d97706","#dc2626","#0891b2"]}]
+      },
+      options: {responsive: true, plugins: {legend: {position: "bottom"}}}
+    });
+  }
+</script>
 {% endblock %}

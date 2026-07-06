@@ -411,6 +411,7 @@ class MemoryPolicyGate:
         existing: list[MemoryItem],
         *,
         assistant_sourced: bool = False,
+        model_sourced: bool = False,
     ) -> MemoryDecision:
         action = self.normalize_action(suggestion.action)
         summary = suggestion.summary.strip()
@@ -433,6 +434,8 @@ class MemoryPolicyGate:
             return MemoryDecision(False, "temporary or mood-only content")
         if self._looks_like_raw_dialogue(summary):
             return MemoryDecision(False, "raw dialogue")
+        if model_sourced and not self._source_or_existing_supports(source_text, suggestion, existing, action):
+            return MemoryDecision(False, "not supported by current user message or active memory")
         return MemoryDecision(True, "accepted")
 
     def normalize_action(self, action: str) -> str:
@@ -451,6 +454,68 @@ class MemoryPolicyGate:
 
     def _looks_like_raw_dialogue(self, summary: str) -> bool:
         return "\n" in summary or summary.count(":") >= 2 or len(summary.split()) > 34
+
+    def _source_or_existing_supports(
+        self,
+        source_text: str,
+        suggestion: MemorySuggestion,
+        existing: list[MemoryItem],
+        action: str,
+    ) -> bool:
+        source = (source_text or "").lower()
+        summary = (suggestion.summary or "").lower()
+        if action in {"delete", "forget"}:
+            forget_words = ("forget", "delete", "remove", "حذف", "فراموش", "یادت نماند", "دیگه یاد")
+            return any(word in source for word in forget_words)
+        if self._has_keyword_overlap(source, summary):
+            return True
+        if suggestion.kind == "identity" and any(word in source for word in ("اسم", "صدام", "صدا", "call me", "name")):
+            return True
+        if suggestion.kind == "inside_joke" and any(word in source for word in ("شوخی", "کل کل", "سر به سر", "joke", "banter", "tease")):
+            return True
+        if suggestion.kind == "project" and any(word in source for word in ("پروژه", "دارم می‌سازم", "دارم میسازم", "روی", "project", "working on")):
+            return True
+        if suggestion.kind in {"goal", "constraint", "unresolved_topic"} and any(
+            word in source for word in ("هدف", "می‌خوام", "میخوام", "نباید", "نمی‌خوام", "نمیخوام", "goal", "want", "do not", "don't")
+        ):
+            return True
+        if action in {"edit", "merge", "replace"}:
+            target = self._find_existing_target(existing, suggestion)
+            return target is not None and self._has_keyword_overlap(summary, target.summary.lower())
+        return False
+
+    def _find_existing_target(self, existing: list[MemoryItem], suggestion: MemorySuggestion) -> MemoryItem | None:
+        canonical = MemoryDeduplicator.canonical_key(suggestion.kind, suggestion.summary)
+        same_kind = [item for item in existing if item.kind.value == suggestion.kind]
+        for item in same_kind:
+            if MemoryDeduplicator.canonical_key(item.kind.value, item.summary) == canonical:
+                return item
+        scored = [(MemoryDeduplicator.similarity(item.summary, suggestion.summary), item) for item in same_kind]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return scored[0][1] if scored and scored[0][0] >= 0.88 else None
+
+    def _has_keyword_overlap(self, left: str, right: str) -> bool:
+        stop_words = {
+            "user",
+            "likes",
+            "like",
+            "prefers",
+            "wants",
+            "called",
+            "fact",
+            "the",
+            "and",
+            "with",
+            "برای",
+            "کاربر",
+            "دوست",
+            "دارد",
+            "میخواهد",
+            "می‌خواهد",
+        }
+        left_words = {word for word in re.findall(r"[\w\u0600-\u06FF‌]{3,}", left) if word not in stop_words}
+        right_words = {word for word in re.findall(r"[\w\u0600-\u06FF‌]{3,}", right) if word not in stop_words}
+        return bool(left_words & right_words)
 
 
 class MemoryDeduplicator:
@@ -557,6 +622,23 @@ class MemoryService:
         candidates = self.extractor.extract(user_text, existing, metadata)
         self.apply_candidates(user_id, source_message_id, user_text, candidates, assistant_sourced=False)
 
+    def process_model_suggestions(
+        self,
+        user_id: int,
+        source_message_id: int | None,
+        user_text: str,
+        suggestions: list[MemorySuggestion],
+        metadata: dict | None = None,
+    ) -> None:
+        self.apply_candidates(
+            user_id,
+            source_message_id,
+            user_text,
+            suggestions,
+            assistant_sourced=False,
+            model_sourced=True,
+        )
+
     def apply_candidates(
         self,
         user_id: int,
@@ -565,11 +647,19 @@ class MemoryService:
         suggestions: list[MemorySuggestion],
         *,
         assistant_sourced: bool,
+        model_sourced: bool = False,
     ) -> None:
         for suggestion in suggestions:
             existing = self.repository.list_active(user_id, limit=80)
             action = self.policy.normalize_action(suggestion.action)
-            decision = self.policy.decide(user_id, source_text, suggestion, existing, assistant_sourced=assistant_sourced)
+            decision = self.policy.decide(
+                user_id,
+                source_text,
+                suggestion,
+                existing,
+                assistant_sourced=assistant_sourced,
+                model_sourced=model_sourced,
+            )
             if not decision.accepted:
                 self.audit.log(user_id, None, action, "rejected", decision.reason, None, suggestion.model_dump(), source_message_id)
                 self.audit.debug("memory_rejected", user_id, {"reason": decision.reason, "suggestion": suggestion.model_dump()})

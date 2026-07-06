@@ -119,6 +119,19 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         service.delete_memory(user_id, memory_id)
         return RedirectResponse(f"/admin/users/{user_id}?flash=حافظه حذف شد", status_code=303)
 
+    @app.post("/admin/users/{user_id}/warnings")
+    async def add_user_warning(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        service.add_user_warning(user_id, str(form.get("reason", "")).strip())
+        return RedirectResponse(f"/admin/users/{user_id}?flash=اخطار اضافه شد", status_code=303)
+
+    @app.post("/admin/users/{user_id}/warnings/{warning_id}/delete")
+    async def delete_user_warning(request: Request, user_id: int, warning_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.delete_user_warning(user_id, warning_id)
+        return RedirectResponse(f"/admin/users/{user_id}?flash=اخطار حذف شد", status_code=303)
+
     @app.post("/admin/users/{user_id}/delete")
     async def delete_user(request: Request, user_id: int) -> RedirectResponse:
         require_admin(request)

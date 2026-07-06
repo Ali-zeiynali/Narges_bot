@@ -77,6 +77,28 @@ class FakeMemorySuggestionGroqClient:
                     {
                         "action": "create",
                         "kind": "preference",
+                        "summary": "User likes black tea.",
+                        "confidence": 1,
+                        "importance": 5,
+                    }
+                ],
+                "warning_suggestion": None,
+                "event_suggestion": None,
+            }
+        )
+        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+
+
+class FakeUnsupportedMemorySuggestionGroqClient:
+    def complete(self, messages):
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "noted", "delay_seconds": 0}],
+                "memory_suggestions": [
+                    {
+                        "action": "create",
+                        "kind": "preference",
                         "summary": "User likes model-invented duplicate memory.",
                         "confidence": 1,
                         "importance": 5,
@@ -131,7 +153,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.moderation.warning_count(1), 1)
         self.assertEqual(self.quota.remaining_today(1), 40)
 
-    async def test_chat_model_memory_suggestions_are_ignored_and_pipeline_writes_once(self) -> None:
+    async def test_chat_model_memory_suggestions_are_validated_and_saved_once(self) -> None:
         service = ChatService(
             validator=MessageValidator(self.settings),
             persona_compiler=PersonaCompiler("v"),
@@ -159,7 +181,34 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         memories = MemoryService(self.database).list_active(2)
         self.assertEqual(len(memories), 1)
         self.assertIn("black tea", memories[0].summary)
-        self.assertNotIn("model-invented", memories[0].summary)
+
+    async def test_unsupported_model_memory_suggestions_are_rejected(self) -> None:
+        service = ChatService(
+            validator=MessageValidator(self.settings),
+            persona_compiler=PersonaCompiler("v"),
+            groq_client=FakeUnsupportedMemorySuggestionGroqClient(),  # type: ignore[arg-type]
+            narges_state_service=NargesStateService(self.database),
+            memory_service=MemoryService(self.database),
+            history_service=self.history,
+            context_builder=ContextBuilder(self.database, self.history),
+            conversation_search_tool=ConversationSearchTool(self.history),
+            moderation_service=self.moderation,
+            debug_service=self.debug,
+            usage_service=UsageService(self.database, "m"),
+            style_linter=StyleLinter(),
+            quota_service=self.quota,
+        )
+
+        await service.answer(
+            user_id=3,
+            chat_id=1,
+            message_id=102,
+            text="I like black tea",
+            message_datetime=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
+        )
+
+        memories = MemoryService(self.database).list_active(3)
+        self.assertEqual(memories, [])
 
 
 if __name__ == "__main__":

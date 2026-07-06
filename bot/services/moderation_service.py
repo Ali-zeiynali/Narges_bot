@@ -56,6 +56,45 @@ class ModerationService:
         reason: str,
         source_message_id: int | None,
     ) -> WarningResult:
+        return self._apply_warning(user_id, reason, source="model_suggestion", source_message_id=source_message_id)
+
+    def apply_manual_warning(self, user_id: int, reason: str) -> WarningResult:
+        return self._apply_warning(user_id, reason, source="admin_panel", source_message_id=None)
+
+    def delete_warning(self, user_id: int, warning_id: int) -> bool:
+        with self.database.orm.session() as session:
+            row = session.get(UserWarningEventORM, warning_id)
+            if row is None or row.user_id != user_id:
+                return False
+            session.delete(row)
+            session.flush()
+            rows = session.scalars(
+                select(UserWarningEventORM)
+                .where(UserWarningEventORM.user_id == user_id)
+                .order_by(UserWarningEventORM.created_at, UserWarningEventORM.id)
+            ).all()
+            for index, item in enumerate(rows, start=1):
+                item.warning_count_after = index
+            block = session.get(UserBlockORM, user_id)
+            if block is not None:
+                if len(rows) < 3:
+                    session.delete(block)
+                else:
+                    block.warning_count = len(rows)
+                    block.reason = rows[-1].reason
+                    block.updated_at = datetime.now(UTC)
+        if self.debug_service:
+            self.debug_service.log("warning_deleted", {"warning_id": warning_id}, user_id=user_id)
+        return True
+
+    def _apply_warning(
+        self,
+        user_id: int,
+        reason: str,
+        *,
+        source: str,
+        source_message_id: int | None,
+    ) -> WarningResult:
         now = datetime.now(UTC)
         count = self.warning_count(user_id) + 1
         blocked_until = self._block_until_for_count(user_id, count, now)
@@ -64,7 +103,7 @@ class ModerationService:
                 UserWarningEventORM(
                     user_id=user_id,
                     reason=reason.strip()[:240],
-                    source="model_suggestion",
+                    source=source,
                     source_message_id=source_message_id,
                     warning_count_after=count,
                     created_at=now,
@@ -89,7 +128,7 @@ class ModerationService:
         if self.debug_service:
             self.debug_service.log(
                 "warning_applied",
-                {"reason": reason, "warning_count": count, "blocked_until": blocked_until},
+                {"reason": reason, "source": source, "warning_count": count, "blocked_until": blocked_until},
                 user_id=user_id,
             )
         return result

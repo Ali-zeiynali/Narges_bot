@@ -230,11 +230,16 @@ class ChatService:
                 intent=context.recent_intent,
             )
             if assistant_history_message_type == "chat":
-                self.memory_service.process_user_message(
+                self.memory_service.process_model_suggestions(
                     user_id,
                     message_id,
                     text,
-                    metadata={"intent": context.recent_intent, "mode": context.state.mode},
+                    result.reply.memory_suggestions,
+                    metadata={
+                        "intent": context.recent_intent,
+                        "mode": context.state.mode,
+                        "active_memory_count": len(memories),
+                    },
                 )
             self.context_builder.observe_turn(
                 user_id=user_id,
@@ -361,7 +366,7 @@ class ChatService:
     ) -> str:
         debug_payload = {
             "provider_failed": provider_failed,
-            "ignored_model_memory_suggestions_count": len(result.reply.memory_suggestions),
+            "model_memory_suggestions_count": len(result.reply.memory_suggestions),
             "warning_suggestion": result.reply.warning_suggestion.model_dump(mode="json") if result.reply.warning_suggestion else None,
             "event_suggestion": result.reply.event_suggestion.model_dump(mode="json") if result.reply.event_suggestion else None,
             "sections": list(compiled_sections),
