@@ -34,11 +34,13 @@ class PersonaCompiler:
         current_message_datetime: str | None = None,
         user_gender: str | None = None,
     ) -> CompiledPersona:
+        persona_gender = user_gender if user_gender in {"male", "female"} else None
+        section_name = f"static:{persona_gender or 'base'}"
         cache_version = f"{self.version}:{self._persona_fingerprint()}"
-        cached = self.cache.get(cache_version, "static")
+        cached = self.cache.get(cache_version, section_name)
         if cached is None:
-            cached = self._build_static_prompt()
-            self.cache.set(cache_version, "static", cached)
+            cached = self._build_static_prompt(persona_gender)
+            self.cache.set(cache_version, section_name, cached)
 
         runtime_context = {
             "persona_version": self.version,
@@ -55,7 +57,8 @@ class PersonaCompiler:
             ],
         }
         prompt = cached + f"\n\n{RUNTIME_CONTEXT_TITLE}\n" + json.dumps(runtime_context, ensure_ascii=False)
-        return CompiledPersona(system_prompt=prompt, sections=("static",))
+        sections = ("core_base",) if persona_gender is None else ("core_base", f"core_{persona_gender}")
+        return CompiledPersona(system_prompt=prompt, sections=sections)
 
     def _fallback_context(self, memories: list[MemoryItem]) -> dict:
         return {
@@ -66,11 +69,11 @@ class PersonaCompiler:
             "anti_loop": {"forbidden_reuse": False},
         }
 
-    def _build_static_prompt(self) -> str:
+    def _build_static_prompt(self, gender: str | None = None) -> str:
         try:
-            persona = build_persona_prompt(include_core=True)
+            persona = build_persona_prompt(include_core=True, gender=gender)
         except TypeError:
-            persona = build_persona_prompt(include_base=True)
+            persona = build_persona_prompt(include_base=True, gender=gender)
         return f"{STABLE_SYSTEM_PREFIX}\n\n{persona}\n\n{ENGINE_RULES}"
 
     def _gender_style(self, gender: str | None) -> dict:

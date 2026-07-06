@@ -1,75 +1,169 @@
-{% extends "base.html" %}{% block title %}کاربر {{ user_id }}{% endblock %}
+{% extends "base.html" %}
+{% block title %}کاربر {{ user_id }}{% endblock %}
 {% block content %}
-<h2>کاربر {{ detail.user.display_name or detail.user.first_name or user_id }}</h2>
+<div class="top">
+  <div>
+    <h2>{{ detail.user.display_name or detail.user.first_name or user_id }}</h2>
+    <div class="muted ltr">telegram_id: {{ detail.user.telegram_id }}</div>
+  </div>
+  <div class="actions">
+    <a class="btn secondary" href="/admin/messages?user_id={{ user_id }}&limit=300">همه پیام‌های کاربر</a>
+    <a class="btn secondary" href="/admin/memories?user_id={{ user_id }}">همه حافظه‌ها</a>
+  </div>
+</div>
+
 <div class="grid">
   <div class="card metric">روزانه باقی‌مانده<b>{{ detail.quota.daily_remaining // 5 }}</b></div>
   <div class="card metric">ماهانه باقی‌مانده<b>{{ detail.quota.monthly_remaining // 5 }}</b></div>
-  <div class="card metric">extra<b>{{ detail.quota.extra_remaining // 5 }}</b></div>
-  <div class="card metric">توکن کل کاربر<b>{{ detail.usage_total_tokens|compact_number }}</b></div>
+  <div class="card metric">Extra<b>{{ detail.quota.extra_remaining // 5 }}</b></div>
+  <div class="card metric">کل توکن کاربر<b>{{ detail.usage_total_tokens|compact_number }}</b></div>
 </div>
+
 <div class="grid two">
-  <div class="card">
+  <div class="card compact-table">
     <h3>پروفایل</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>کلید</th><th>مقدار</th></tr>
+        <tr><td>telegram_id</td><td class="ltr">{{ detail.user.telegram_id }}</td></tr>
+        <tr><td>username</td><td class="ltr">{{ detail.user.username or "-" }}</td></tr>
+        <tr><td>first_name</td><td>{{ detail.user.first_name or "-" }}</td></tr>
+        <tr><td>last_name</td><td>{{ detail.user.last_name or "-" }}</td></tr>
+        <tr><td>display_name</td><td>{{ detail.user.display_name or "-" }}</td></tr>
+        <tr><td>gender</td><td>{{ detail.user.gender or "-" }}</td></tr>
+        <tr><td>phone</td><td class="ltr">{{ detail.user.phone_number or "-" }}</td></tr>
+        <tr><td>phone_verified_at</td><td>{{ detail.user.phone_verified_at|dt }}</td></tr>
+        <tr><td>onboarding_state</td><td>{{ detail.user.onboarding_state }}</td></tr>
+        <tr><td>registration_state</td><td>{{ detail.user.registration_state }}</td></tr>
+        <tr><td>membership_state</td><td>{{ detail.user.membership_state }}</td></tr>
+        <tr><td>referral_code</td><td class="ltr">{{ detail.user.referral_code or "-" }}</td></tr>
+        <tr><td>referred_by</td><td class="ltr">{{ detail.user.referred_by_user_id or "-" }}</td></tr>
+        <tr><td>first_question_at</td><td>{{ detail.user.first_question_at|dt }}</td></tr>
+        <tr><td>created_at</td><td>{{ detail.user.created_at|dt }}</td></tr>
+        <tr><td>updated_at</td><td>{{ detail.user.updated_at|dt }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card compact-table">
+    <h3>ظرفیت و مصرف</h3>
+    <form method="post" action="/admin/users/{{ user_id }}/extra">
+      <div class="row">
+        <label>تعداد پیام<input name="amount" type="number" min="1" required></label>
+        <label>دلیل<input name="reason" value="manual"></label>
+        <button>افزودن extra</button>
+      </div>
+    </form>
+    <div class="table-wrap" style="margin-top:12px">
+      <table>
+        <tr><th>نوع</th><th>توکن</th></tr>
+        <tr><td>prompt</td><td class="ltr">{{ detail.usage_prompt_tokens|compact_number }}</td></tr>
+        <tr><td>completion</td><td class="ltr">{{ detail.usage_completion_tokens|compact_number }}</td></tr>
+        <tr><td>total</td><td class="ltr">{{ detail.usage_total_tokens|compact_number }}</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>۳۰ پیام آخر</h3>
+  <div class="muted">برای مشاهده کامل‌تر، از دکمه «همه پیام‌های کاربر» بالای صفحه استفاده کن.</div>
+  <div class="table-wrap">
     <table>
-      <tr><th>key</th><th>value</th></tr>
-      <tr><td>telegram_id</td><td class="ltr">{{ detail.user.telegram_id }}</td></tr>
-      <tr><td>username</td><td>{{ detail.user.username or "-" }}</td></tr>
-      <tr><td>display_name</td><td>{{ detail.user.display_name or "-" }}</td></tr>
-      <tr><td>gender</td><td>{{ detail.user.gender or "-" }}</td></tr>
-      <tr><td>onboarding_state</td><td>{{ detail.user.onboarding_state }}</td></tr>
-      <tr><td>phone</td><td class="ltr">{{ detail.user.phone_number or "-" }}</td></tr>
-      <tr><td>referral_code</td><td class="ltr">{{ detail.user.referral_code or "-" }}</td></tr>
-      <tr><td>referred_by</td><td>{{ detail.user.referred_by_user_id or "-" }}</td></tr>
-      <tr><td>first_question_at</td><td>{{ detail.user.first_question_at|dt }}</td></tr>
-      <tr><td>created_at</td><td>{{ detail.user.created_at|dt }}</td></tr>
-      <tr><td>updated_at</td><td>{{ detail.user.updated_at|dt }}</td></tr>
+      <tr><th>ID</th><th>نقش</th><th>نوع</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr>
+      {% for m in detail.messages %}
+      <tr>
+        <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
+        <td>{{ m.role }}</td>
+        <td>{{ m.message_type }}</td>
+        <td class="text-cell">{{ m.text }}</td>
+        <td>{{ m.provider or "-" }}</td>
+        <td class="ltr">{{ m.total_tokens or "-" }}</td>
+        <td>{{ m.created_at|dt }}</td>
+      </tr>
+      {% endfor %}
     </table>
   </div>
-  <div class="card">
-    <h3>افزودن ظرفیت extra</h3>
-    <form method="post" action="/admin/users/{{ user_id }}/extra">
-      <label>تعداد پیام<input name="amount" type="number" min="1" required></label>
-      <label>دلیل<input name="reason" value="manual"></label>
-      <button>افزودن extra</button>
-    </form>
-    <h3>مصرف توکن</h3>
-    <table><tr><td>prompt</td><td>{{ detail.usage_prompt_tokens|compact_number }}</td></tr><tr><td>completion</td><td>{{ detail.usage_completion_tokens|compact_number }}</td></tr><tr><td>total</td><td>{{ detail.usage_total_tokens|compact_number }}</td></tr></table>
-  </div>
 </div>
-<div class="card">
-  <h3>حذف کامل کاربر</h3>
-  <p class="muted">این عملیات پیام‌ها، حافظه، usage، quota، invoice، لاگ‌ها و پروفایل این کاربر را حذف می‌کند.</p>
-  <form method="post" action="/admin/users/{{ user_id }}/delete" onsubmit="return confirm('همه اطلاعات این کاربر حذف شود؟');">
-    <label>برای تایید، آیدی کاربر را وارد کن
-      <input name="confirm" class="ltr" placeholder="{{ user_id }}" required>
-    </label>
-    <button class="bad">حذف کامل کاربر</button>
-  </form>
-</div>
-<div class="card">
-  <h3>همه پیام‌های اخیر</h3>
-  <table><tr><th>ID</th><th>نقش</th><th>نوع</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr>{% for m in detail.messages %}<tr><td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td><td>{{ m.role }}</td><td>{{ m.message_type }}</td><td>{{ m.text }}</td><td>{{ m.provider or "-" }}</td><td>{{ m.total_tokens or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table>
-</div>
+
 <div class="grid two">
   <div class="card">
     <h3>حافظه‌ها</h3>
     <form method="post" action="/admin/users/{{ user_id }}/memories">
       <div class="grid two">
-        <label>نوع<select name="kind"><option>identity</option><option>preference</option><option>project</option><option>goal</option><option>constraint</option><option>boundary</option><option>unresolved_topic</option></select></label>
+        <label>نوع
+          <select name="kind">
+            <option>identity</option><option>preference</option><option>project</option><option>goal</option>
+            <option>constraint</option><option>inside_joke</option><option>boundary</option><option>unresolved_topic</option>
+          </select>
+        </label>
         <label>اهمیت<input name="importance" type="number" min="1" max="5" value="3"></label>
       </div>
       <label>متن حافظه<textarea name="summary" required></textarea></label>
       <button>افزودن حافظه</button>
     </form>
-    <table><tr><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>عملیات</th></tr>{% for m in detail.memories %}<tr><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{% if m.active %}<form method="post" action="/admin/users/{{ user_id }}/memories/{{ m.id }}/delete"><button class="bad">حذف</button></form>{% endif %}</td></tr>{% endfor %}</table>
+    <div class="table-wrap" style="margin-top:12px">
+      <table>
+        <tr><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>عملیات</th></tr>
+        {% for m in detail.memories %}
+        <tr>
+          <td>{{ "بله" if m.active else "نه" }}</td>
+          <td>{{ m.kind }}</td>
+          <td>{{ m.importance }}</td>
+          <td class="text-cell">{{ m.summary }}</td>
+          <td>{% if m.active %}<form method="post" action="/admin/users/{{ user_id }}/memories/{{ m.id }}/delete"><button class="bad">حذف</button></form>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
   </div>
+
   <div class="card">
     <h3>Invoiceها</h3>
-    <table><tr><th>invoice</th><th>plan</th><th>stars</th><th>quota</th><th>status</th><th>زمان</th></tr>{% for i in detail.invoices %}<tr><td class="ltr">{{ i.invoice_id }}</td><td>{{ i.plan_id }}</td><td>{{ i.stars_cost }}</td><td>{{ i.message_quota }}</td><td>{{ i.status }}</td><td>{{ i.created_at|dt }}</td></tr>{% endfor %}</table>
+    <div class="table-wrap">
+      <table>
+        <tr><th>invoice</th><th>plan</th><th>stars</th><th>quota</th><th>status</th><th>زمان</th></tr>
+        {% for i in detail.invoices %}
+        <tr><td class="ltr">{{ i.invoice_id }}</td><td>{{ i.plan_id }}</td><td>{{ i.stars_cost }}</td><td>{{ i.message_quota }}</td><td>{{ i.status }}</td><td>{{ i.created_at|dt }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
   </div>
 </div>
+
 <div class="grid two">
-  <div class="card"><h3>Usage</h3><table><tr><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr>{% for u in detail.usage %}<tr><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.prompt_tokens or "-" }}</td><td>{{ u.completion_tokens or "-" }}</td><td>{{ u.total_tokens or "-" }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
-  <div class="card"><h3>Audit حافظه</h3><table><tr><th>action</th><th>decision</th><th>reason</th><th>زمان</th></tr>{% for a in detail.memory_audits %}<tr><td>{{ a.action }}</td><td>{{ a.decision }}</td><td>{{ a.reason or "-" }}</td><td>{{ a.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card">
+    <h3>آخرین Usageها</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr>
+        {% for u in detail.usage %}
+        <tr><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.prompt_tokens or "-" }}</td><td>{{ u.completion_tokens or "-" }}</td><td>{{ u.total_tokens or "-" }}</td><td>{{ u.created_at|dt }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Audit حافظه</h3>
+    <div class="table-wrap">
+      <table>
+        <tr><th>action</th><th>decision</th><th>reason</th><th>زمان</th></tr>
+        {% for a in detail.memory_audits %}
+        <tr><td>{{ a.action }}</td><td>{{ a.decision }}</td><td>{{ a.reason or "-" }}</td><td>{{ a.created_at|dt }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>حذف کامل کاربر</h3>
+  <div class="notice">هشدار دسترسی دیتابیس: این عملیات مستقیماً رکوردهای دیتابیس این کاربر را حذف می‌کند و قابل برگشت نیست.</div>
+  <form method="post" action="/admin/users/{{ user_id }}/delete" onsubmit="return confirm('هشدار دیتابیس: همه اطلاعات این کاربر حذف شود؟');">
+    <label>برای تایید، telegram_id کاربر را دقیق وارد کن
+      <input name="confirm" class="ltr" placeholder="{{ user_id }}" required>
+    </label>
+    <button class="bad">حذف کامل کاربر</button>
+  </form>
 </div>
 {% endblock %}

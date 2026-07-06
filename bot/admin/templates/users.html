@@ -1,31 +1,47 @@
-{% extends "base.html" %}{% block title %}کاربران{% endblock %}
+{% extends "base.html" %}
+{% block title %}کاربران{% endblock %}
 {% block content %}
 <div class="top">
   <div>
     <h2>کاربران</h2>
-    <div class="muted">جستجو، وضعیت ثبت‌نام، ظرفیت و آخرین فعالیت کاربران.</div>
+    <div class="muted">جستجو، وضعیت ثبت‌نام، موبایل، ظرفیت و آخرین فعالیت کاربران.</div>
   </div>
 </div>
 
 <form class="card row" method="get">
-  <input name="q" value="{{ q }}" placeholder="جستجو نام، یوزرنیم، شماره یا آیدی">
-  <select name="sort">
-    <option value="last_seen" {% if sort=="last_seen" %}selected{% endif %}>آخرین استفاده</option>
-    <option value="warnings" {% if sort=="warnings" %}selected{% endif %}>اخطار</option>
-    <option value="quota" {% if sort=="quota" %}selected{% endif %}>ظرفیت باقی‌مانده</option>
-    <option value="created" {% if sort=="created" %}selected{% endif %}>تاریخ عضویت</option>
-  </select>
+  <label>جستجو
+    <input name="q" value="{{ q }}" placeholder="نام، username، شماره موبایل یا telegram id">
+  </label>
+  <label>مرتب‌سازی
+    <select name="sort">
+      <option value="last_seen" {% if sort=="last_seen" %}selected{% endif %}>آخرین استفاده</option>
+      <option value="warnings" {% if sort=="warnings" %}selected{% endif %}>اخطار</option>
+      <option value="quota" {% if sort=="quota" %}selected{% endif %}>ظرفیت باقی‌مانده</option>
+      <option value="created" {% if sort=="created" %}selected{% endif %}>تاریخ عضویت</option>
+    </select>
+  </label>
   <button>اعمال</button>
 </form>
 
 <div class="card">
   <div class="table-wrap">
     <table>
-      <tr><th>کاربر</th><th>یوزرنیم</th><th>موبایل</th><th>وضعیت</th><th>پلن</th><th>اخطار</th><th>ظرفیت</th><th>آخرین استفاده</th></tr>
+      <tr>
+        <th>کاربر</th>
+        <th>Telegram ID</th>
+        <th>Username</th>
+        <th>موبایل</th>
+        <th>وضعیت</th>
+        <th>پلن</th>
+        <th>اخطار</th>
+        <th>ظرفیت</th>
+        <th>آخرین استفاده</th>
+      </tr>
       {% for u in users %}
       <tr>
-        <td><a href="/admin/users/{{ u.telegram_id }}"><b>{{ u.name }}</b></a><div class="muted ltr">{{ u.telegram_id }}</div></td>
-        <td>{{ u.username or "-" }}</td>
+        <td><a href="/admin/users/{{ u.telegram_id }}"><b>{{ u.name }}</b></a></td>
+        <td class="ltr">{{ u.telegram_id }}</td>
+        <td class="ltr">{{ u.username or "-" }}</td>
         <td class="ltr">{{ u.phone_number or "-" }}</td>
         <td><span class="pill">{{ u.onboarding_state }}</span></td>
         <td>{{ u.plan }}</td>

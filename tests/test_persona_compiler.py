@@ -18,7 +18,7 @@ class PersonaCompilerTests(unittest.TestCase):
             current_message_datetime="2026-07-05T18:00:00+00:00",
         )
 
-        self.assertEqual(compiled.sections, ("static",))
+        self.assertEqual(compiled.sections, ("core_base",))
         self.assertIn("JSON", compiled.system_prompt)
         self.assertIn("current_message_datetime", compiled.system_prompt)
 
@@ -50,7 +50,19 @@ class PersonaCompilerTests(unittest.TestCase):
             [],
         )
 
-        self.assertEqual(compiled.sections, ("static",))
+        self.assertEqual(compiled.sections, ("core_base",))
+
+    def test_gender_sections_are_compiled_into_static_prompt(self) -> None:
+        compiler = PersonaCompiler("v1")
+        base = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender=None)
+        male = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender="male")
+        female = compiler.compile("hello", NargesSelfState(updated_at=datetime.now(UTC)), [], [], user_gender="female")
+
+        self.assertEqual(base.sections, ("core_base",))
+        self.assertEqual(male.sections, ("core_base", "core_male"))
+        self.assertEqual(female.sections, ("core_base", "core_female"))
+        self.assertNotEqual(base.system_prompt, male.system_prompt)
+        self.assertNotEqual(base.system_prompt, female.system_prompt)
 
     def test_runtime_context_does_not_include_raw_history(self) -> None:
         context = BuiltContext(

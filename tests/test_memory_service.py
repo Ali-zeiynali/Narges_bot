@@ -119,6 +119,23 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.assertEqual(self.service.list_active(1), [])
 
+    def test_persian_user_facts_and_style_are_saved(self) -> None:
+        self.service.process_user_message(1, 10, "اسمم آرمان است و دوست دارم باهام شوخی کنی")
+
+        memories = self.service.list_active(1, limit=10)
+        summaries = " ".join(item.summary for item in memories)
+        kinds = {item.kind.value for item in memories}
+        self.assertIn("آرمان", summaries)
+        self.assertIn("inside_joke", kinds)
+
+    def test_duplicate_create_updates_existing_memory(self) -> None:
+        self.service.process_user_message(1, 10, "I like bananas")
+        self.service.process_user_message(1, 11, "I love bananas")
+
+        memories = self.service.list_active(1, limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertIn("bananas", memories[0].summary)
+
 
 if __name__ == "__main__":
     unittest.main()

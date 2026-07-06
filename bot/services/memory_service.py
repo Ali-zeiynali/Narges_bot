@@ -23,6 +23,8 @@ SENSITIVE_WORDS = [
     "secret",
     "کد ملی",
     "کارت بانکی",
+    "شماره کارت",
+    "cvv",
 ]
 INJECTION_WORDS = [
     "ignore previous",
@@ -33,10 +35,10 @@ INJECTION_WORDS = [
     "پرامپت سیستم",
 ]
 LOW_VALUE_PATTERNS = [
-    r"^(سلام|باشه|اوکی|مرسی|ممنون|خوبم|اره|نه)$",
+    r"^(سلام|باشه|اوکی|مرسی|ممنون|خوبم|اره|آره|نه|لول|خخخ)$",
     r"^کاربر پیام داد",
 ]
-TEMPORARY_WORDS = ["الان", "امروز", "امشب", "فعلا", "حالم", "ناراحتم", "خستم", "استرس"]
+TEMPORARY_WORDS = ["امروز", "امشب", "فعلا", "حالم", "ناراحتم", "خستم", "استرس دارم"]
 
 
 @dataclass(frozen=True)
@@ -202,13 +204,16 @@ class MemoryExtractor:
         candidates: list[MemorySuggestion] = []
         candidates.extend(self._extract_name(text))
         candidates.extend(self._extract_preferences(text))
+        candidates.extend(self._extract_relationship_style(text))
+        candidates.extend(self._extract_stable_facts(text))
         candidates.extend(self._extract_project_goal_constraint(text))
-        return candidates[:5]
+        return self._dedupe_candidates(candidates)[:6]
 
     def _extract_name(self, text: str) -> list[MemorySuggestion]:
         patterns = [
             r"(?:اسمم|اسم من)\s+(?P<name>[\w\u0600-\u06FF‌-]{2,40})\s*(?:است|ه)?",
             r"(?:منو|مرا|من را)\s+(?P<name>[\w\u0600-\u06FF‌-]{2,40})\s+صدا\s+(?:کن|بزن)",
+            r"(?:صدام کن|صدایم کن)\s+(?P<name>[\w\u0600-\u06FF‌-]{2,40})",
             r"\bcall me (?P<name>[a-zA-Z][a-zA-Z0-9 _-]{1,40})",
         ]
         for pattern in patterns:
@@ -228,17 +233,24 @@ class MemoryExtractor:
 
     def _extract_preferences(self, text: str) -> list[MemorySuggestion]:
         patterns = [
-            r"(?:من\s+)?(?P<thing>[\w\u0600-\u06FF\s‌-]{2,60})\s+را\s+دوست\s+دارم",
-            r"(?:من\s+)?(?P<thing>[\w\u0600-\u06FF\s‌-]{2,60})\s+دوست\s+دارم",
-            r"از\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,60})\s+خوشم\s+می(?:اد|آید)",
+            r"(?:من\s+)?(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})\s+را\s+دوست\s+دارم",
+            r"(?:^|[،.!؟]\s*)(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})\s+دوست\s+دارم",
+            r"دوست\s+دارم\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})",
+            r"از\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})\s+خوشم\s+می(?:اد|آید)",
+            r"(?:ترجیح می‌?دم|ترجیح میدم)\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})",
             r"\bi\s+(?:like|love|prefer)\s+(?P<thing>[a-zA-Z0-9\s-]{2,60})",
+        ]
+        dislikes = [
+            r"از\s+(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})\s+بدم\s+می(?:اد|آید)",
+            r"(?P<thing>[\w\u0600-\u06FF\s‌-]{2,80})\s+دوست\s+ندارم",
+            r"\bi\s+(?:dislike|hate)\s+(?P<thing>[a-zA-Z0-9\s-]{2,60})",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if not match:
                 continue
-            thing = re.sub(r"\s+", " ", match.group("thing")).strip(" .،,!؟")
-            if not thing or thing.lower() in {"من", "i", "it"}:
+            thing = self._clean_memory_object(match.group("thing"))
+            if not thing:
                 continue
             return [
                 MemorySuggestion(
@@ -247,6 +259,91 @@ class MemoryExtractor:
                     summary=f"User likes {thing}.",
                     confidence=0.86,
                     importance=3,
+                )
+            ]
+        for pattern in dislikes:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            thing = self._clean_memory_object(match.group("thing"))
+            if not thing:
+                continue
+            return [
+                MemorySuggestion(
+                    action="create",
+                    kind="boundary",
+                    summary=f"User dislikes {thing}.",
+                    confidence=0.84,
+                    importance=3,
+                )
+            ]
+        return []
+
+    def _clean_memory_object(self, value: str) -> str | None:
+        thing = re.sub(r"\s+", " ", value or "").strip(" .،,!؟")
+        lowered = thing.lower()
+        if not thing or lowered in {"من", "i", "it"}:
+            return None
+        noisy_fragments = ["اسمم", "اسم من", " است و", " هستم و", "من "]
+        if any(fragment in lowered for fragment in noisy_fragments):
+            return None
+        if len(thing.split()) > 8:
+            return None
+        return thing
+
+    def _extract_relationship_style(self, text: str) -> list[MemorySuggestion]:
+        lowered = text.lower()
+        candidates: list[MemorySuggestion] = []
+        style_triggers = {
+            "شوخی": "User enjoys playful jokes in the conversation.",
+            "سر به سر": "User enjoys light teasing when it stays friendly.",
+            "کل کل": "User enjoys friendly banter.",
+            "صمیمی": "User prefers a familiar and warm tone.",
+            "لوس": "User likes a softer affectionate tone.",
+        }
+        for trigger, summary in style_triggers.items():
+            if trigger in lowered:
+                candidates.append(
+                    MemorySuggestion(
+                        action="create",
+                        kind="inside_joke" if trigger in {"شوخی", "سر به سر", "کل کل"} else "preference",
+                        summary=summary,
+                        confidence=0.78,
+                        importance=3,
+                    )
+                )
+        if "اینجوری" in lowered and ("حرف بزن" in lowered or "جواب بده" in lowered):
+            candidates.append(
+                MemorySuggestion(
+                    action="create",
+                    kind="preference",
+                    summary=self._summary("User preferred interaction style", text),
+                    confidence=0.76,
+                    importance=3,
+                )
+            )
+        return candidates
+
+    def _extract_stable_facts(self, text: str) -> list[MemorySuggestion]:
+        patterns = [
+            (r"(?:من|من\s+الان)?\s*(?:دانشجو|دانش‌آموز|برنامه‌نویس|توسعه‌دهنده|طراح|مدیر|پزشک|مهندس)\s*(?:هستم|ام)?", "identity"),
+            (r"(?:کارم|شغلم)\s+(?P<value>[\w\u0600-\u06FF\s‌-]{2,80})\s*(?:است|ه)?", "identity"),
+            (r"(?:روی|تو)\s+(?P<value>[\w\u0600-\u06FF\s‌-]{2,100})\s+کار\s+می(?:کنم|کنم)", "project"),
+            (r"(?:دارم|میخوام|می‌خوام)\s+(?P<value>[\w\u0600-\u06FF\s‌-]{2,100})\s+(?:بسازم|درست کنم|راه بندازم)", "project"),
+        ]
+        for pattern, kind in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            value = match.groupdict().get("value")
+            summary = self._summary("User stable fact", value or match.group(0))
+            return [
+                MemorySuggestion(
+                    action="create",
+                    kind=kind,
+                    summary=summary,
+                    confidence=0.76,
+                    importance=4 if kind == "project" else 3,
                 )
             ]
         return []
@@ -289,6 +386,17 @@ class MemoryExtractor:
         compact = re.sub(r"\s+", " ", text).strip()
         return f"{prefix}: {compact[:190]}"
 
+    def _dedupe_candidates(self, candidates: list[MemorySuggestion]) -> list[MemorySuggestion]:
+        seen: set[tuple[str, str]] = set()
+        result: list[MemorySuggestion] = []
+        for candidate in candidates:
+            key = (candidate.kind, MemoryDeduplicator.normalize(candidate.summary))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(candidate)
+        return result
+
 
 class MemoryPolicyGate:
     def __init__(self, repository: MemoryRepository, max_active_memories: int) -> None:
@@ -325,8 +433,6 @@ class MemoryPolicyGate:
             return MemoryDecision(False, "temporary or mood-only content")
         if self._looks_like_raw_dialogue(summary):
             return MemoryDecision(False, "raw dialogue")
-        if action == "create" and self._duplicate(existing, suggestion):
-            return MemoryDecision(False, "duplicate memory")
         return MemoryDecision(True, "accepted")
 
     def normalize_action(self, action: str) -> str:

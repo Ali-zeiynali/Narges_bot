@@ -229,11 +229,13 @@ def register_handlers(
         memory_service.upsert_identity_name(user_id, name, message.message_id)
         await ask_for_gender(message, user_id, name)
 
-    async def finish_gender_update(message: Message, user_id: int, gender: str | None) -> None:
+    async def finish_gender_update(message: Message, user_id: int, gender: str | None, bot: Bot | None = None) -> None:
         user_service.save_gender(user_id, gender)
         inviter_id = user_service.claim_referral_bonus_if_ready(user_id)
         if inviter_id:
             quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{user_id}")
+            if bot:
+                await notify_referral_reward(bot, inviter_id, user_id)
         await message.answer(
             "تمومه ✨\nاز الان هرچی بفرستی مستقیم می‌رسه به نرگس.",
             reply_markup=menu_service.reply_menu(can_debug(user_id)),
@@ -331,6 +333,16 @@ def register_handlers(
             f"✅ کامل‌شده: {stats['qualified']}\n"
             f"⭐ پاداش‌گرفته: {stats['rewarded']}",
         )
+
+    async def notify_referral_reward(bot: Bot, inviter_id: int, invited_user_id: int) -> None:
+        with suppress(Exception):
+            await bot.send_message(
+                inviter_id,
+                "🎁 دعوتت کامل شد!\n\n"
+                "یکی از دوستات پروفایلش رو کامل کرد و اولین سوالش رو پرسید.\n"
+                "✅ ۱۰ پیام رایگان به ظرفیتت اضافه شد.\n\n"
+                f"👤 کاربر دعوت‌شده: `{invited_user_id}`",
+            )
 
     @dispatcher.my_chat_member()
     async def my_chat_member_handler(event: ChatMemberUpdated) -> None:
@@ -634,7 +646,7 @@ def register_handlers(
         await callback.answer()
 
     @dispatcher.callback_query(F.data.startswith("onboarding:gender:"))
-    async def gender_callback(callback: CallbackQuery) -> None:
+    async def gender_callback(callback: CallbackQuery, bot: Bot) -> None:
         if not callback.message:
             return
         gender = (callback.data or "").split(":", 2)[2]
@@ -642,7 +654,7 @@ def register_handlers(
         await callback.answer("ثبت شد.")
         with suppress(Exception):
             await callback.message.delete()
-        await finish_gender_update(callback.message, callback.from_user.id, None if gender == "unspecified" else gender)
+        await finish_gender_update(callback.message, callback.from_user.id, None if gender == "unspecified" else gender, bot)
 
     @dispatcher.callback_query(F.data.startswith("menu:"))
     async def menu_callback(callback: CallbackQuery, bot: Bot) -> None:
@@ -909,4 +921,5 @@ def register_handlers(
         inviter_id = user_service.claim_referral_bonus_if_ready(message.from_user.id)
         if inviter_id:
             quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
+            await notify_referral_reward(bot, inviter_id, message.from_user.id)
 

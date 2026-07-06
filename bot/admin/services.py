@@ -215,7 +215,7 @@ class AdminDataService:
                 select(ConversationMessageORM)
                 .where(ConversationMessageORM.user_id == user_id)
                 .order_by(desc(ConversationMessageORM.id))
-                .limit(300)
+                .limit(30)
             ).all()
             memories = session.scalars(
                 select(MemoryORM)
@@ -228,6 +228,13 @@ class AdminDataService:
             ).all()
             block = session.get(UserBlockORM, user_id)
             usage = session.scalars(select(UsageLogORM).where(UsageLogORM.user_id == user_id).order_by(desc(UsageLogORM.id)).limit(30)).all()
+            usage_totals = session.execute(
+                select(
+                    func.coalesce(func.sum(UsageLogORM.prompt_tokens), 0),
+                    func.coalesce(func.sum(UsageLogORM.completion_tokens), 0),
+                    func.coalesce(func.sum(UsageLogORM.total_tokens), 0),
+                ).where(UsageLogORM.user_id == user_id)
+            ).one()
             quota_events = session.scalars(select(QuotaEventORM).where(QuotaEventORM.user_id == user_id).order_by(desc(QuotaEventORM.id)).limit(40)).all()
             invoices = session.scalars(select(BillingInvoiceORM).where(BillingInvoiceORM.user_id == user_id).order_by(desc(BillingInvoiceORM.created_at)).limit(20)).all()
             memory_audits = session.scalars(select(MemoryAuditLogORM).where(MemoryAuditLogORM.user_id == user_id).order_by(desc(MemoryAuditLogORM.id)).limit(40)).all()
@@ -242,9 +249,9 @@ class AdminDataService:
             "quota_events": quota_events,
             "invoices": invoices,
             "memory_audits": memory_audits,
-            "usage_total_tokens": sum(int(row.total_tokens or 0) for row in usage),
-            "usage_prompt_tokens": sum(int(row.prompt_tokens or 0) for row in usage),
-            "usage_completion_tokens": sum(int(row.completion_tokens or 0) for row in usage),
+            "usage_total_tokens": int(usage_totals[2] or 0),
+            "usage_prompt_tokens": int(usage_totals[0] or 0),
+            "usage_completion_tokens": int(usage_totals[1] or 0),
         }
 
     def message_detail(self, message_id: int) -> dict[str, Any]:
