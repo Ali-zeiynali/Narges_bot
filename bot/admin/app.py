@@ -6,14 +6,15 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from bot.admin.services import AdminDataService, dt_iso, mask_key
+from bot.admin.services import AdminDataService, compact_number, dt_iso, mask_key
 from bot.config import Settings, load_settings
 from bot.logging_config import setup_logging
-from bot.services.group_service import send_messages
+from bot.services.group_service import send_messages, send_messages_detailed
 from bot.storage.database import Database
 
 
@@ -21,6 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.filters["dt"] = dt_iso
 templates.env.filters["mask_key"] = mask_key
+templates.env.filters["compact_number"] = compact_number
 templates.env.filters["json_pretty"] = lambda value: json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
@@ -90,6 +92,52 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             return render(request, "message.html", {"title": "کاربر پیدا نشد", "message": "این کاربر در دیتابیس وجود ندارد."})
         return render(request, "user_detail.html", {"detail": detail, "user_id": user_id})
 
+    @app.get("/admin/messages", response_class=HTMLResponse)
+    async def messages(request: Request, user_id: str | None = None, limit: int = 300) -> HTMLResponse:
+        require_admin(request)
+        parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
+        return render(request, "messages.html", service.messages(user_id=parsed_user_id, limit=limit))
+
+    @app.post("/admin/users/{user_id}/extra")
+    async def add_user_extra(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        amount = int(str(form.get("amount", "0")).strip() or "0")
+        reason = str(form.get("reason", "manual")).strip()
+        service.add_user_extra_credit(user_id, amount, reason)
+        return RedirectResponse(f"/admin/users/{user_id}?flash=extra اضافه شد", status_code=303)
+
+    @app.post("/admin/users/{user_id}/memories")
+    async def add_user_memory(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.add_memory_from_form(user_id, dict(await request.form()))
+        return RedirectResponse(f"/admin/users/{user_id}?flash=حافظه اضافه شد", status_code=303)
+
+    @app.post("/admin/users/{user_id}/memories/{memory_id}/delete")
+    async def delete_user_memory(request: Request, user_id: int, memory_id: int) -> RedirectResponse:
+        require_admin(request)
+        service.delete_memory(user_id, memory_id)
+        return RedirectResponse(f"/admin/users/{user_id}?flash=حافظه حذف شد", status_code=303)
+
+    @app.post("/admin/users/{user_id}/delete")
+    async def delete_user(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        ok = service.delete_user_completely(user_id, str(form.get("confirm", "")))
+        if not ok:
+            return RedirectResponse(f"/admin/users/{user_id}?flash=برای حذف کامل، آیدی کاربر را دقیق وارد کن", status_code=303)
+        return RedirectResponse("/admin/users?flash=کاربر کامل حذف شد", status_code=303)
+
+    @app.get("/admin/messages/{message_id}", response_class=HTMLResponse)
+    async def message_detail(request: Request, message_id: int) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "message_detail.html", service.message_detail(message_id))
+
+    @app.get("/admin/invoices", response_class=HTMLResponse)
+    async def invoices(request: Request) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "invoices.html", service.invoices())
+
     @app.get("/admin/model", response_class=HTMLResponse)
     async def model_state(request: Request) -> HTMLResponse:
         require_admin(request)
@@ -102,6 +150,12 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         ok, message = service.save_state_from_form(form)
         return RedirectResponse(f"/admin/model?flash={message}", status_code=303)
 
+    @app.post("/admin/model/ai")
+    async def save_ai_toggle(request: Request) -> RedirectResponse:
+        require_admin(request)
+        service.save_ai_toggle_from_form(dict(await request.form()))
+        return RedirectResponse("/admin/model?flash=وضعیت اتصال هوش مصنوعی ذخیره شد", status_code=303)
+
     @app.get("/admin/providers", response_class=HTMLResponse)
     async def providers(request: Request) -> HTMLResponse:
         require_admin(request)
@@ -110,7 +164,8 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     @app.post("/admin/providers/{provider_name}")
     async def update_provider(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
-        return RedirectResponse("/admin/providers?flash=ویرایش provider از پنل غیرفعال است", status_code=303)
+        service.update_provider(provider_name, dict(await request.form()))
+        return RedirectResponse("/admin/providers?flash=provider ذخیره شد", status_code=303)
 
     @app.post("/admin/providers/{provider_name}/keys")
     async def add_provider_key(request: Request, provider_name: str) -> RedirectResponse:
@@ -140,10 +195,13 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         require_admin(request)
         form = await request.form()
         text = str(form.get("text", "")).strip()
+        media_type = str(form.get("media_type", "text")).strip()
+        media_file = form.get("media_file")
         target_type = str(form.get("target_type", "users")).strip()
         target_value = str(form.get("target_value", "")).strip() or None
         only_ready = str(form.get("only_ready", "on")).lower() in {"on", "true", "1"}
-        if not text:
+        has_file = hasattr(media_file, "filename") and bool(getattr(media_file, "filename", ""))
+        if not text and not has_file:
             return RedirectResponse("/admin/broadcast?flash=متن پیام خالی است", status_code=303)
         if target_type == "groups":
             target_ids = service.target_group_ids()
@@ -154,10 +212,24 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         else:
             target_type = "users"
             target_ids = service.target_user_ids(only_ready=only_ready)
-        broadcast_id = service.create_broadcast(text, len(target_ids), target_type=target_type, target_value=target_value)
-        sent, failed, error = await send_broadcast(settings, target_ids, text)
-        service.finish_broadcast(broadcast_id, sent, failed, error)
+        broadcast_id = service.create_broadcast(
+            text or f"[{media_type}]",
+            len(target_ids),
+            target_type=target_type,
+            target_value=target_value,
+        )
+        file_payload = None
+        if has_file:
+            content = await media_file.read()  # type: ignore[attr-defined]
+            file_payload = (getattr(media_file, "filename", "broadcast.bin") or "broadcast.bin", content)
+        sent, failed, error, deliveries = await send_broadcast(settings, target_ids, text, detailed=True, media_type=media_type, file_payload=file_payload)
+        service.finish_broadcast(broadcast_id, sent, failed, error, deliveries=deliveries)
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
+
+    @app.get("/admin/broadcast/{broadcast_id}", response_class=HTMLResponse)
+    async def broadcast_detail(request: Request, broadcast_id: int) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "broadcast_detail.html", service.broadcast_detail(broadcast_id))
 
     @app.post("/admin/broadcast/schedules")
     async def create_group_schedule(request: Request) -> RedirectResponse:
@@ -227,10 +299,32 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     return app
 
 
-async def send_broadcast(settings: Settings, user_ids: list[int], text: str) -> tuple[int, int, str | None]:
+async def send_broadcast(settings: Settings, user_ids: list[int], text: str, detailed: bool = False, media_type: str = "text", file_payload: tuple[str, bytes] | None = None):
     session = AiohttpSession(proxy=settings.telegram_proxy)
     bot = Bot(token=settings.telegram_token, session=session)
     try:
+        if detailed:
+            if file_payload and media_type in {"photo", "voice"}:
+                from bot.services.group_service import MessageDeliveryResult
+
+                deliveries = []
+                filename, content = file_payload
+                for user_id in user_ids:
+                    try:
+                        file = BufferedInputFile(content, filename=filename)
+                        if media_type == "photo":
+                            sent_message = await bot.send_photo(user_id, file, caption=text or None)
+                        else:
+                            sent_message = await bot.send_voice(user_id, file, caption=text or None)
+                        deliveries.append(MessageDeliveryResult(target_id=user_id, status="sent", telegram_message_id=sent_message.message_id))
+                    except Exception as exc:
+                        deliveries.append(MessageDeliveryResult(target_id=user_id, status="failed", error=f"{exc.__class__.__name__}: {exc}"))
+            else:
+                deliveries = await send_messages_detailed(bot, user_ids, text)
+            sent = sum(1 for item in deliveries if item.status == "sent")
+            failed = len(deliveries) - sent
+            first_error = next((item.error for item in deliveries if item.error), None)
+            return sent, failed, first_error, deliveries
         return await send_messages(bot, user_ids, text)
     finally:
         await bot.session.close()

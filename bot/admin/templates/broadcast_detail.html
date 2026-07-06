@@ -1,0 +1,45 @@
+{% extends "base.html" %}{% block title %}ارسال همگانی {{ broadcast.id if broadcast else "" }}{% endblock %}
+{% block content %}
+{% if not broadcast %}
+<div class="card">ارسال همگانی پیدا نشد.</div>
+{% else %}
+<h2>ارسال همگانی #{{ broadcast.id }}</h2>
+<div class="grid two">
+  <div class="card">
+    <h3>خلاصه</h3>
+    <table>
+      <tr><th>key</th><th>value</th></tr>
+      <tr><td>target</td><td>{{ broadcast.target_type }} {{ broadcast.target_value or "" }}</td></tr>
+      <tr><td>target_count</td><td>{{ broadcast.target_count }}</td></tr>
+      <tr><td>sent</td><td>{{ broadcast.sent_count }}</td></tr>
+      <tr><td>failed</td><td>{{ broadcast.failed_count }}</td></tr>
+      <tr><td>status</td><td>{{ broadcast.status }}</td></tr>
+      <tr><td>created_at</td><td>{{ broadcast.created_at|dt }}</td></tr>
+      <tr><td>finished_at</td><td>{{ broadcast.finished_at|dt }}</td></tr>
+      <tr><td>error</td><td>{{ broadcast.error or "-" }}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>متن</h3>
+    <pre>{{ broadcast.text }}</pre>
+  </div>
+</div>
+<div class="card">
+  <h3>گیرنده‌ها</h3>
+  <p class="muted">تلگرام Bot API برای بات‌ها read receipt یا seen تک‌تک کاربران را برنمی‌گرداند؛ این جدول وضعیت ارسال و message_id تلگرام را ذخیره می‌کند.</p>
+  <table>
+    <tr><th>target</th><th>type</th><th>telegram_message_id</th><th>status</th><th>error</th><th>زمان</th></tr>
+    {% for d in deliveries %}
+    <tr>
+      <td class="ltr">{{ d.target_id }}</td>
+      <td>{{ d.target_type }}</td>
+      <td class="ltr">{{ d.telegram_message_id or "-" }}</td>
+      <td>{{ d.status }}</td>
+      <td>{{ d.error or "-" }}</td>
+      <td>{{ d.created_at|dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

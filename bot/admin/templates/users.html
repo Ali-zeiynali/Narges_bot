@@ -1,8 +1,40 @@
 {% extends "base.html" %}{% block title %}کاربران{% endblock %}
 {% block content %}
-<h2>کاربران</h2>
-<form class="card row" method="get"><input name="q" value="{{ q }}" placeholder="جستجو نام، یوزرنیم، شماره یا آیدی"><select name="sort"><option value="last_seen" {% if sort=="last_seen" %}selected{% endif %}>آخرین استفاده</option><option value="warnings" {% if sort=="warnings" %}selected{% endif %}>اخطار</option><option value="quota" {% if sort=="quota" %}selected{% endif %}>ظرفیت باقی‌مانده</option><option value="created" {% if sort=="created" %}selected{% endif %}>تاریخ عضویت</option></select><button>اعمال</button></form>
-<table><tr><th>کاربر</th><th>یوزرنیم</th><th>وضعیت</th><th>پلن</th><th>اخطار</th><th>باقی‌مانده</th><th>آخرین استفاده</th></tr>
-{% for u in users %}<tr><td><a href="/admin/users/{{ u.telegram_id }}">{{ u.name }}</a><div class="muted ltr">{{ u.telegram_id }}</div></td><td>{{ u.username or "-" }}</td><td>{{ u.onboarding_state }}</td><td>{{ u.plan }}</td><td>{{ u.warnings }}</td><td>{{ u.daily_remaining }} + {{ u.extra_remaining }}</td><td>{{ u.last_seen|dt }}</td></tr>{% endfor %}
-</table>
+<div class="top">
+  <div>
+    <h2>کاربران</h2>
+    <div class="muted">جستجو، وضعیت ثبت‌نام، ظرفیت و آخرین فعالیت کاربران.</div>
+  </div>
+</div>
+
+<form class="card row" method="get">
+  <input name="q" value="{{ q }}" placeholder="جستجو نام، یوزرنیم، شماره یا آیدی">
+  <select name="sort">
+    <option value="last_seen" {% if sort=="last_seen" %}selected{% endif %}>آخرین استفاده</option>
+    <option value="warnings" {% if sort=="warnings" %}selected{% endif %}>اخطار</option>
+    <option value="quota" {% if sort=="quota" %}selected{% endif %}>ظرفیت باقی‌مانده</option>
+    <option value="created" {% if sort=="created" %}selected{% endif %}>تاریخ عضویت</option>
+  </select>
+  <button>اعمال</button>
+</form>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <tr><th>کاربر</th><th>یوزرنیم</th><th>موبایل</th><th>وضعیت</th><th>پلن</th><th>اخطار</th><th>ظرفیت</th><th>آخرین استفاده</th></tr>
+      {% for u in users %}
+      <tr>
+        <td><a href="/admin/users/{{ u.telegram_id }}"><b>{{ u.name }}</b></a><div class="muted ltr">{{ u.telegram_id }}</div></td>
+        <td>{{ u.username or "-" }}</td>
+        <td class="ltr">{{ u.phone_number or "-" }}</td>
+        <td><span class="pill">{{ u.onboarding_state }}</span></td>
+        <td>{{ u.plan }}</td>
+        <td>{{ u.warnings }}</td>
+        <td>{{ u.daily_remaining }} روزانه + {{ u.extra_remaining }} extra</td>
+        <td>{{ u.last_seen|dt }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
 {% endblock %}

@@ -28,6 +28,7 @@ class GroqResult:
     usage: dict[str, int | None]
     provider: str = "unknown"
     model: str = "unknown"
+    provider_response_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class ProviderConfig:
     kind: str
     model: str
     api_keys: tuple[str, ...]
+    priority: int | None = None
     base_url: str | None = None
     enabled: bool = True
     temperature: float = 0.7
@@ -45,6 +47,9 @@ class ProviderConfig:
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
     prompt_cache: bool = False
+    health_check: bool = False
+    experimental: bool = False
+    use_proxy: bool = True
 
 
 class ProviderRequestError(RuntimeError):
@@ -58,9 +63,13 @@ class GroqChatClient:
     def __init__(self, settings: Settings, database: Database | None = None) -> None:
         self.settings = settings
         self.database = database
+        self._providers_path = Path(settings.ai_providers_config)
+        self._providers_fingerprint: tuple[int, int] | None = None
         self.providers = self._load_providers(settings)
-        proxy = settings.groq_proxy
-        self.http_client = httpx.Client(proxy=proxy, timeout=45) if proxy else httpx.Client(timeout=45)
+        self._health_cache: dict[str, datetime] = {}
+        self.proxy_url = settings.groq_proxy or settings.telegram_proxy
+        self.http_client = httpx.Client(proxy=self.proxy_url, timeout=45) if self.proxy_url else httpx.Client(timeout=45)
+        self.direct_http_client = httpx.Client(timeout=45)
 
     def complete(self, messages: list[dict[str, str]]) -> GroqResult:
         raw_text, usage, provider, model = self._complete_json(messages, NargesReply.model_json_schema(), "chat")
@@ -80,6 +89,42 @@ class GroqChatClient:
             provider=provider,
             model=model,
         )
+
+    def complete_conversation_summary(self, existing_summary: str, messages: list[dict[str, str]]) -> str:
+        prompt_payload = {
+            "existing_summary": existing_summary,
+            "new_messages": [
+                {
+                    "role": item.get("role"),
+                    "text": item.get("text"),
+                    "created_at": item.get("created_at"),
+                    "intent": item.get("intent"),
+                }
+                for item in messages
+            ],
+            "rules": [
+                "Write a compact factual memory summary for future context.",
+                "Do not imitate the user's or assistant's tone.",
+                "Do not include raw dialogue unless it is a stable fact or unresolved topic.",
+                "Keep it under 900 characters.",
+            ],
+        }
+        raw_text, _usage, _provider, _model = self._complete_json(
+            [
+                {
+                    "role": "system",
+                    "content": "You update durable conversation summaries. Return only JSON: {\"summary\":\"...\"}.",
+                },
+                {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
+            ],
+            {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+            "conversation_summary",
+            max_completion_tokens=260,
+            temperature=0.2,
+        )
+        payload = self._try_loads_json(raw_text) or {}
+        summary = payload.get("summary")
+        return str(summary or raw_text).strip()
 
     def complete_narges_state(self, messages: list[dict[str, str]]) -> tuple[NargesSelfStateCandidate, dict[str, int | None]]:
         raw_text, usage, _provider, _model = self._complete_json(
@@ -102,6 +147,7 @@ class GroqChatClient:
         temperature: float | None = None,
     ) -> tuple[str, dict[str, int | None], str, str]:
         last_error: Exception | None = None
+        self._reload_providers_if_changed()
         for provider in self.providers:
             if not provider.enabled:
                 continue
@@ -111,6 +157,10 @@ class GroqChatClient:
             provider_failures = 0
             for key_index, api_key in enumerate(keys):
                 if self._key_is_temporarily_disabled(provider.name, key_index):
+                    continue
+                if provider.experimental and provider.health_check and not self._provider_is_healthy(provider, api_key):
+                    last_error = ProviderRequestError(provider.name, "health check failed", retryable=True)
+                    self._record_key_failure(provider.name, key_index, last_error)
                     continue
                 try:
                     return self._request_provider(
@@ -127,7 +177,10 @@ class GroqChatClient:
                     last_error = exc
                     provider_failures += 1
                     self._record_key_failure(provider.name, key_index, exc)
-                    if not exc.retryable or provider_failures >= 2:
+                    if not exc.retryable:
+                        break
+                    if provider_failures >= 2:
+                        logger.warning("ai_provider_failed_twice provider=%s moving_to_next error=%s", provider.name, exc)
                         break
                     logger.warning("ai_provider_failed provider=%s retryable=%s error=%s", provider.name, exc.retryable, exc)
         if last_error:
@@ -161,7 +214,7 @@ class GroqChatClient:
         self._log_ai_request(purpose, provider, key_index, payload)
         response = self._post_with_fallbacks(provider, url, headers, payload, purpose)
         if response.status_code >= 400:
-            retryable = response.status_code in {401, 403, 408, 409, 429} or response.status_code >= 500
+            retryable = response.status_code in {401, 403, 408, 409, 429}
             retry_after = self._retry_after(response)
             self._log_ai_error(purpose, provider, payload, RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}"))
             message = f"HTTP {response.status_code}"
@@ -185,7 +238,7 @@ class GroqChatClient:
         max_completion_tokens: int | None,
         temperature: float | None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
-        base_url = (provider.base_url or "").rstrip("/")
+        base_url = self._normalized_openai_base_url(provider)
         if not base_url:
             raise ProviderRequestError(provider.name, "base_url is required", retryable=False)
         headers = {
@@ -204,6 +257,13 @@ class GroqChatClient:
         if purpose != "chat" and provider.response_format in {"json_object", "json_schema"}:
             payload["response_format"] = {"type": "json_object"}
         return f"{base_url}/chat/completions", headers, payload
+
+    def _normalized_openai_base_url(self, provider: ProviderConfig) -> str:
+        base_url = (provider.base_url or "").rstrip("/")
+        for suffix in ("/chat/completions", "/completions"):
+            if base_url.endswith(suffix):
+                base_url = base_url[: -len(suffix)].rstrip("/")
+        return base_url
 
     def _post_with_fallbacks(
         self,
@@ -230,7 +290,7 @@ class GroqChatClient:
         last_response: httpx.Response | None = None
         for index, variant in enumerate(variants):
             try:
-                response = self.http_client.post(url, headers=headers, json=variant, timeout=provider.timeout_seconds)
+                response = self._client_for_provider(provider).post(url, headers=headers, json=variant, timeout=provider.timeout_seconds)
             except httpx.HTTPError as exc:
                 self._log_ai_error(purpose, provider, variant, exc)
                 raise ProviderRequestError(provider.name, exc.__class__.__name__, retryable=True) from exc
@@ -378,20 +438,50 @@ class GroqChatClient:
         path = Path(settings.ai_providers_config)
         if not path.exists():
             raise RuntimeError(f"AI providers config not found: {path}")
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        raw_text = path.read_text(encoding="utf-8-sig")
+        stat = path.stat()
+        self._providers_fingerprint = (stat.st_mtime_ns, hash(raw_text))
+        raw = json.loads(raw_text)
         providers = raw.get("providers", raw if isinstance(raw, list) else [])
-        configured = [self._provider_from_dict(item) for item in providers if isinstance(item, dict)]
+        configured = [
+            self._provider_from_dict(item, index)
+            for index, item in enumerate(providers)
+            if isinstance(item, dict)
+        ]
         if not configured:
             raise RuntimeError(f"AI providers config has no providers: {path}")
-        return configured
+        ordered = sorted(
+            enumerate(configured),
+            key=lambda pair: pair[1].priority if pair[1].priority is not None else 10_000 + pair[0],
+        )
+        return [provider for _index, provider in ordered]
 
-    def _provider_from_dict(self, item: dict[str, Any]) -> ProviderConfig:
+    def _reload_providers_if_changed(self) -> None:
+        path = self._providers_path
+        if not path.exists():
+            return
+        raw_text = path.read_text(encoding="utf-8-sig")
+        stat = path.stat()
+        fingerprint = (stat.st_mtime_ns, hash(raw_text))
+        if fingerprint == self._providers_fingerprint:
+            return
+        logger.info("ai_provider_config_reloaded path=%s", path)
+        self.providers = self._load_providers(self.settings)
+
+    def _provider_from_dict(self, item: dict[str, Any], index: int = 0) -> ProviderConfig:
+        api_keys = list(item.get("api_keys", []))
+        if item.get("api_key_env"):
+            api_keys.insert(0, f"env:{item['api_key_env']}")
+        model = item.get("model")
+        if not model and isinstance(item.get("models"), list) and item["models"]:
+            model = item["models"][0]
         return ProviderConfig(
             name=str(item["name"]).strip(),
             kind=str(item.get("type") or item.get("kind") or "openai_compatible").strip(),
             base_url=str(item.get("base_url") or "").strip() or None,
-            api_keys=tuple(str(value).strip() for value in item.get("api_keys", []) if str(value).strip()),
-            model=str(item["model"]).strip(),
+            api_keys=tuple(str(value).strip() for value in api_keys if str(value).strip()),
+            model=str(model or "").strip(),
+            priority=int(item["priority"]) if item.get("priority") is not None else None,
             enabled=bool(item.get("enabled", True)),
             temperature=float(item.get("temperature", self.settings.groq_temperature)),
             max_completion_tokens=int(item.get("max_completion_tokens", self.settings.groq_max_completion_tokens)),
@@ -399,8 +489,41 @@ class GroqChatClient:
             response_format=str(item.get("response_format", "json_object")),
             extra_headers=dict(item.get("extra_headers") or {}),
             extra_body=dict(item.get("extra_body") or {}),
-            prompt_cache=bool(item.get("prompt_cache", False)),
+            prompt_cache=bool(item.get("prompt_cache", item.get("supports_prompt_cache") is True)),
+            health_check=bool(item.get("health_check", False)),
+            experimental=bool(item.get("experimental", False)),
+            use_proxy=bool(item.get("use_proxy", True)),
         )
+
+    def _client_for_provider(self, provider: ProviderConfig) -> httpx.Client:
+        return self.http_client if provider.use_proxy else self.direct_http_client
+
+    def _provider_is_healthy(self, provider: ProviderConfig, api_key: str) -> bool:
+        cache_key = f"{provider.name}:{provider.base_url}"
+        cached_until = self._health_cache.get(cache_key)
+        if cached_until and cached_until > datetime.now(UTC):
+            return True
+        base_url = self._normalized_openai_base_url(provider)
+        if not base_url:
+            return False
+        try:
+            response = self._client_for_provider(provider).get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}", **(provider.extra_headers or {})},
+                timeout=min(provider.timeout_seconds, 8),
+            )
+        except httpx.HTTPError:
+            logger.warning("ai_provider_health_check_failed provider=%s", provider.name)
+            return False
+        if response.status_code >= 400:
+            if response.status_code in {401, 403, 404, 405}:
+                logger.info("ai_provider_health_endpoint_inconclusive provider=%s status=%s", provider.name, response.status_code)
+                self._health_cache[cache_key] = datetime.now(UTC) + timedelta(minutes=5)
+                return True
+            logger.warning("ai_provider_health_check_bad_status provider=%s status=%s", provider.name, response.status_code)
+            return False
+        self._health_cache[cache_key] = datetime.now(UTC) + timedelta(minutes=5)
+        return True
 
     def _resolve_keys(self, provider: ProviderConfig) -> list[str]:
         keys: list[str] = []

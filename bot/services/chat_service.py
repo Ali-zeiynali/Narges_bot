@@ -3,10 +3,14 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 
 from bot.models.ai import NargesReply, ResponseMode, TelegramOutboundMessage
+from bot.models.context import BuiltContext
 from bot.persona.compiler import PersonaCompiler
+from bot.services.context_builder import ContextBuilder
 from bot.services.groq_client import GroqChatClient, GroqResult
+from bot.services.global_state_service import GlobalStateService
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.services.conversation_search_tool import ConversationSearchTool
@@ -17,6 +21,7 @@ from bot.services.quota_service import QuotaService
 from bot.services.style_linter import StyleLinter
 from bot.services.usage_service import UsageService
 from bot.services.validation import MessageValidator
+from bot.utils.text_safety import clamp_repeated_chars
 from bot.utils.tokens import estimate_tokens
 
 
@@ -43,12 +48,14 @@ class ChatService:
         narges_state_service: NargesStateService,
         memory_service: MemoryService,
         history_service: HistoryService,
+        context_builder: ContextBuilder,
         conversation_search_tool: ConversationSearchTool,
         moderation_service: ModerationService,
         debug_service: DebugService,
         usage_service: UsageService,
         style_linter: StyleLinter,
         quota_service: QuotaService,
+        global_state_service: GlobalStateService | None = None,
     ) -> None:
         self.validator = validator
         self.persona_compiler = persona_compiler
@@ -56,12 +63,14 @@ class ChatService:
         self.narges_state_service = narges_state_service
         self.memory_service = memory_service
         self.history_service = history_service
+        self.context_builder = context_builder
         self.conversation_search_tool = conversation_search_tool
         self.moderation_service = moderation_service
         self.debug_service = debug_service
         self.usage_service = usage_service
         self.style_linter = style_linter
         self.quota_service = quota_service
+        self.global_state_service = global_state_service
 
     async def answer(
         self,
@@ -73,14 +82,19 @@ class ChatService:
         user_profile=None,
     ) -> ChatTurnResult:
         message_datetime = (message_datetime or datetime.now(UTC)).astimezone(UTC)
+        text = clamp_repeated_chars(text)
         validation = self.validator.validate(text, "")
         if not validation.ok:
             raise UserFacingError(validation.message)
-        self.memory_service.apply_obvious_user_facts(user_id, message_id, text)
+        if self.global_state_service:
+            global_state = self.global_state_service.get()
+            if not global_state.ai_enabled:
+                raise UserFacingError(global_state.ai_disabled_message)
 
         state = self.narges_state_service.get_active()
         memories = self.memory_service.retrieve_relevant(user_id, text)
-        short_term_messages = self.history_service.recent_turns(user_id, limit=5)
+        context = self.context_builder.build(user_id, text, memories)
+        short_term_messages: list[dict[str, str]] = []
         search_results: list[dict[str, str]] = []
 
         quota_check = await self.quota_service.begin_generation(user_id)
@@ -90,6 +104,7 @@ class ChatService:
         input_token_estimate = 0
         assistant_history_message_type = "chat"
         compiled = None
+        messages: list[dict[str, str]] = []
         provider_failed = False
         final_usage: dict[str, int | None] = {}
         try:
@@ -97,6 +112,7 @@ class ChatService:
                 text=text,
                 state=state,
                 memories=memories,
+                context=context,
                 short_term_messages=short_term_messages,
                 search_results=search_results,
                 remaining_quota=quota_check.remaining,
@@ -109,7 +125,7 @@ class ChatService:
                     "sections": compiled.sections,
                     "message_datetime": message_datetime.isoformat(),
                     "memory_count": len(memories),
-                    "short_term_count": len(short_term_messages),
+                    "context": context.for_debug(),
                     "search_result_count": len(search_results),
                     "quota_remaining": quota_check.remaining,
                     "estimated_input_tokens": input_token_estimate,
@@ -117,8 +133,9 @@ class ChatService:
                 user_id=user_id,
             )
             recent_for_lint = self.history_service.recent_assistant_replies(user_id, limit=5)
+            last_assistant = self.history_service.last_assistant_reply(user_id)
             result = await self._complete_with_retries(messages)
-            result = await self._retry_once_if_needed(result, messages, recent_for_lint)
+            result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant)
         except Exception:
             logger.exception("model_response_failed user_id=%s chat_id=%s", user_id, chat_id)
             provider_failed = True
@@ -154,11 +171,12 @@ class ChatService:
                     provider_failed = True
                     assistant_history_message_type = "system"
                 else:
-                    self.memory_service.apply_suggestions(user_id, message_id, text, result.reply.memory_suggestions)
                     if result.reply.event_suggestion:
                         logger.info("event_suggestion_ignored_from_chat_model user_id=%s", user_id)
                     self.quota_service.consume_successful_reply(user_id, result.reply)
 
+            for outbound in result.reply.messages:
+                outbound.text = clamp_repeated_chars(outbound.text)
             assistant_text = "\n".join(message.text for message in result.reply.messages)
             clean_assistant_text = assistant_text
             if self.debug_service.can_debug(user_id):
@@ -189,6 +207,13 @@ class ChatService:
                 telegram_message_id=message_id,
                 created_at=message_datetime,
                 input_tokens=input_token_estimate,
+                intent=context.recent_intent,
+                ai_request_payload={
+                    "messages": messages,
+                    "compiled_sections": list(compiled.sections) if compiled else [],
+                    "estimated_input_tokens": input_token_estimate,
+                    "message_datetime": message_datetime.isoformat(),
+                },
             )
             self.history_service.add(
                 user_id,
@@ -201,7 +226,25 @@ class ChatService:
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                provider_response_id=result.provider_response_id,
+                intent=context.recent_intent,
             )
+            if assistant_history_message_type == "chat":
+                self.memory_service.process_user_message(
+                    user_id,
+                    message_id,
+                    text,
+                    metadata={"intent": context.recent_intent, "mode": context.state.mode},
+                )
+            self.context_builder.observe_turn(
+                user_id=user_id,
+                user_text=text,
+                assistant_text=clean_assistant_text,
+                assistant_intent=context.recent_intent,
+                message_datetime=message_datetime,
+            )
+            if self.context_builder.should_refresh_summary(user_id):
+                await asyncio.to_thread(self.context_builder.refresh_summary_with_llm, user_id, self.groq_client)
             self.usage_service.log(
                 user_id,
                 chat_id,
@@ -243,46 +286,48 @@ class ChatService:
         text: str,
         state,
         memories,
+        context: BuiltContext,
         short_term_messages: list[dict[str, str]],
         search_results: list[dict[str, str]],
         remaining_quota: int,
         message_datetime: datetime,
         user_profile=None,
     ):
-        max_input_tokens = min(self.validator.settings.max_api_input_tokens, 3000)
+        max_input_tokens = min(
+            self.validator.settings.max_api_input_tokens,
+            max(512, 3000 - self.validator.settings.groq_max_completion_tokens),
+        )
         memories = list(memories)
-        short_term_messages = list(short_term_messages)
         search_results = list(search_results)
         history_char_limit = 700
 
         while True:
-            compact_history = self._compact_messages(short_term_messages, history_char_limit)
             compact_search = self._compact_messages(search_results, history_char_limit)
             compiled = self.persona_compiler.compile(
                 text,
                 state,
                 memories,
                 None,
-                compact_history,
+                [],
                 compact_search,
-                message_datetime.isoformat(),
+                context=context,
+                current_message_datetime=message_datetime.isoformat(),
+                user_gender=getattr(user_profile, "gender", None),
             )
             messages = self._build_messages(compiled.system_prompt, text, remaining_quota, message_datetime, user_profile)
             input_tokens = self._estimate_message_tokens(messages)
             if input_tokens <= max_input_tokens:
-                return compiled, messages, input_tokens, memories, compact_history, compact_search
+                return compiled, messages, input_tokens, memories, [], compact_search
             if search_results:
                 search_results.pop(0)
             elif len(memories) > 6:
                 memories.pop()
             elif history_char_limit > 180:
                 history_char_limit = max(180, history_char_limit // 2)
-            elif len(short_term_messages) > 6:
-                short_term_messages.pop(0)
             elif memories:
                 memories.pop()
             else:
-                return compiled, messages, input_tokens, memories, compact_history, compact_search
+                return compiled, messages, input_tokens, memories, [], compact_search
 
     def _compact_messages(self, messages: list[dict[str, str]], max_text_chars: int) -> list[dict[str, str]]:
         compacted: list[dict[str, str]] = []
@@ -316,7 +361,7 @@ class ChatService:
     ) -> str:
         debug_payload = {
             "provider_failed": provider_failed,
-            "memory_suggestions": [item.model_dump(mode="json") for item in result.reply.memory_suggestions],
+            "ignored_model_memory_suggestions_count": len(result.reply.memory_suggestions),
             "warning_suggestion": result.reply.warning_suggestion.model_dump(mode="json") if result.reply.warning_suggestion else None,
             "event_suggestion": result.reply.event_suggestion.model_dump(mode="json") if result.reply.event_suggestion else None,
             "sections": list(compiled_sections),
@@ -349,18 +394,23 @@ class ChatService:
         result: GroqResult,
         messages: list[dict[str, str]],
         recent: list[str],
+        last_assistant: dict[str, str] | None = None,
     ) -> GroqResult:
         texts = [message.text for message in result.reply.messages]
         lint = self.style_linter.lint(texts, recent)
-        if not lint.serious:
+        too_similar = self._too_similar_to_last("\n".join(texts), last_assistant)
+        if not lint.serious and not too_similar:
             return result
+        feedback = lint.feedback
+        if too_similar:
+            feedback = f"{feedback}; too similar to the previous assistant reply" if feedback else "too similar to the previous assistant reply"
 
         retry_messages = messages + [
             {
                 "role": "user",
                 "content": (
                     "پاسخ قبلی مشکل سبک داشت: "
-                    f"{lint.feedback}. فقط یک JSON معتبر کوتاه‌تر و طبیعی‌تر بده."
+                    f"{feedback}. فقط یک JSON معتبر کوتاه‌تر و طبیعی‌تر بده."
                 ),
             }
         ]
@@ -370,6 +420,20 @@ class ChatService:
             logger.exception("model_retry_failed")
             return result
 
+    def _too_similar_to_last(self, text: str, last_assistant: dict[str, str] | None) -> bool:
+        if not last_assistant:
+            return False
+        if self.history_service.message_hash(text) == last_assistant.get("text_hash"):
+            return True
+        normalized = self._normalize_for_similarity(text)
+        previous = self._normalize_for_similarity(last_assistant.get("text", ""))
+        if not normalized or not previous:
+            return False
+        return SequenceMatcher(None, normalized, previous).ratio() > 0.82
+
+    def _normalize_for_similarity(self, text: str) -> str:
+        return " ".join((text or "").lower().split())
+
     async def _complete_with_retries(self, messages: list[dict[str, str]], attempts: int = 3) -> GroqResult:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
@@ -378,7 +442,7 @@ class ChatService:
             except Exception as exc:
                 last_error = exc
                 lowered = str(exc).lower()
-                if "429" in lowered or "rate limit" in lowered or "quota" in lowered or "limit" in lowered:
+                if "429" in lowered or "http 5" in lowered or "rate limit" in lowered or "quota" in lowered or "limit" in lowered:
                     break
                 if attempt < attempts:
                     await asyncio.sleep(min(2 * attempt, 5))

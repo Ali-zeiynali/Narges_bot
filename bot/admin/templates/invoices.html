@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% block title %}Invoiceها{% endblock %}
+{% block content %}
+<h2>Invoiceها</h2>
+<div class="card">
+  <table>
+    <tr><th>invoice_id</th><th>کاربر</th><th>plan</th><th>Stars</th><th>پیام</th><th>status</th><th>payment_id</th><th>ساخته‌شده</th><th>آپدیت</th></tr>
+    {% for i in invoices %}
+    <tr>
+      <td class="ltr">{{ i.invoice_id }}</td>
+      <td><a href="/admin/users/{{ i.user_id }}">{{ i.user_id }}</a></td>
+      <td>{{ i.plan_id }}</td>
+      <td>{{ i.stars_cost }}</td>
+      <td>{{ i.message_quota }}</td>
+      <td>{{ i.status }}</td>
+      <td class="ltr">{{ i.payment_id or "-" }}</td>
+      <td>{{ i.created_at|dt }}</td>
+      <td>{{ i.updated_at|dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

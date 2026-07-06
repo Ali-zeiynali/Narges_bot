@@ -67,6 +67,10 @@ class Settings:
     admin_panel_token: str | None = None
     admin_panel_host: str = "127.0.0.1"
     admin_panel_port: int = 8080
+    reengagement_enabled: bool = True
+    reengagement_after_hours: int = 30
+    reengagement_message: str = "دلم برات تنگ شدهه🥺 کجایی"
+    reengagement_check_seconds: int = 600
 
 
 def csv_int_env(name: str) -> tuple[int, ...]:
@@ -122,8 +126,8 @@ def load_settings() -> Settings:
         groq_temperature=float_env("GROQ_TEMPERATURE", 0.7, 0, 2),
         groq_max_completion_tokens=int_env("GROQ_MAX_COMPLETION_TOKENS", 512, 1, 4096),
         max_request_tokens=min(int_env("MAX_REQUEST_TOKENS", 3000, 128, 131072), 3000),
-        max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 3000, 128, 131072), 3000),
-        max_message_chars=int_env("MAX_MESSAGE_CHARS", 4000, 1, 4096),
+        max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 2400, 128, 131072), 2400),
+        max_message_chars=int_env("MAX_MESSAGE_CHARS", 1800, 1, 4096),
         persona_version=os.getenv("PERSONA_VERSION", "2026-07-05.1").strip(),
         database_path=os.getenv("DATABASE_PATH", "data/narges.sqlite3").strip(),
         log_file=os.getenv("LOG_FILE", "logs/bot.log").strip(),
@@ -145,4 +149,8 @@ def load_settings() -> Settings:
         admin_panel_token=os.getenv("ADMIN_PANEL_TOKEN", "").strip() or None,
         admin_panel_host=os.getenv("ADMIN_PANEL_HOST", "127.0.0.1").strip(),
         admin_panel_port=int_env("ADMIN_PANEL_PORT", 8080, 1, 65535),
+        reengagement_enabled=bool_env("REENGAGEMENT_ENABLED", True),
+        reengagement_after_hours=int_env("REENGAGEMENT_AFTER_HOURS", 30, 1, 720),
+        reengagement_message=os.getenv("REENGAGEMENT_MESSAGE", "دلم برات تنگ شدهه🥺 کجایی").strip() or "دلم برات تنگ شدهه🥺 کجایی",
+        reengagement_check_seconds=int_env("REENGAGEMENT_CHECK_SECONDS", 600, 60, 86400),
     )

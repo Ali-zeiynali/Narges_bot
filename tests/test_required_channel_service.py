@@ -38,6 +38,33 @@ class RequiredChannelServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.service.list_active()), 0)
         self.assertEqual(len(self.service.list_all()), 0)
 
+    def test_update_channel_edits_same_record(self) -> None:
+        channel = self.service.add_channel(
+            admin_id=10,
+            chat_id="@old_channel",
+            title="Old",
+            join_url="https://t.me/old_channel",
+            is_private=False,
+        )
+
+        updated = self.service.update_channel(
+            admin_id=10,
+            channel_id=channel.id,
+            chat_id="@new_channel",
+            title="New",
+            join_url="https://t.me/new_channel",
+            is_private=True,
+            active=True,
+            position=25,
+        )
+
+        channels = self.service.list_all()
+        self.assertTrue(updated)
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0].id, channel.id)
+        self.assertEqual(channels[0].chat_id, "@new_channel")
+        self.assertEqual(channels[0].title, "New")
+
 
 if __name__ == "__main__":
     unittest.main()

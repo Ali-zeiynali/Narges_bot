@@ -1,16 +1,32 @@
 {% extends "base.html" %}{% block title %}Providerها{% endblock %}
 {% block content %}
-<h2>وضعیت Providerها</h2>
-<p class="muted">تنظیم providerها فعلا فقط از فایل config/ai_providers.json انجام می‌شود. این صفحه فقط وضعیت و محدودیت کلیدها را نشان می‌دهد.</p>
+<div class="top">
+  <div>
+    <h2>Providerها</h2>
+    <div class="muted">ترتیب استفاده لحظه‌ای از همین فایل providers.json و priority خوانده می‌شود. تغییرات بعد از ذخیره، بدون restart در درخواست بعدی اعمال می‌شود.</div>
+  </div>
+</div>
+
 {% for p in providers %}
 <div class="card">
   <h3>{{ p.name }} <span class="pill">{{ "فعال" if p.enabled else "غیرفعال" }}</span></h3>
-  <div class="grid two">
-    <div><b>model:</b> <span class="ltr">{{ p.model }}</span></div>
-    <div><b>base_url:</b> <span class="ltr">{{ p.base_url or "-" }}</span></div>
-    <div><b>response_format:</b> {{ p.response_format }}</div>
-    <div><b>timeout:</b> {{ p.timeout_seconds }}s</div>
-  </div>
+  <form method="post" action="/admin/providers/{{ p.name }}">
+    <div class="grid two">
+      <label>priority<input name="priority" type="number" value="{{ p.priority if p.priority is not none else '' }}"></label>
+      <label>model<input name="model" class="ltr" value="{{ p.model or (p.models[0] if p.models else '') }}"></label>
+      <label>base_url<input name="base_url" class="ltr" value="{{ p.base_url or '' }}"></label>
+      <label>response_format<input name="response_format" value="{{ p.response_format or 'json_object' }}"></label>
+      <label>timeout_seconds<input name="timeout_seconds" type="number" value="{{ p.timeout_seconds or 45 }}"></label>
+      <label>max_completion_tokens<input name="max_completion_tokens" type="number" value="{{ p.max_completion_tokens or 512 }}"></label>
+      <label><input style="width:auto" type="checkbox" name="enabled" {% if p.enabled %}checked{% endif %}> فعال</label>
+      <label><input style="width:auto" type="checkbox" name="use_proxy" {% if p.use_proxy is not sameas false %}checked{% endif %}> استفاده از proxy</label>
+      <label><input style="width:auto" type="checkbox" name="health_check" {% if p.health_check %}checked{% endif %}> health-check قبل از استفاده</label>
+      <label><input style="width:auto" type="checkbox" name="experimental" {% if p.experimental %}checked{% endif %}> experimental</label>
+      <label><input style="width:auto" type="checkbox" name="prompt_cache" {% if p.prompt_cache %}checked{% endif %}> prompt cache</label>
+    </div>
+    <button>ذخیره provider</button>
+  </form>
+
   <h4>کلیدها</h4>
   <table>
     <tr><th>#</th><th>کلید</th><th>وضعیت</th><th>خطا</th><th>غیرفعال تا</th><th>آخرین موفق</th></tr>

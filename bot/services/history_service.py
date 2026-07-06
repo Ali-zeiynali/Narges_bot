@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
@@ -25,14 +26,18 @@ class HistoryService:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         total_tokens: int | None = None,
-    ) -> None:
+        provider_response_id: str | None = None,
+        safety_metadata: dict | None = None,
+        tone_metadata: dict | None = None,
+        ai_request_payload: dict | None = None,
+        intent: str | None = None,
+    ) -> int:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         preview = text[:240]
         now = (created_at or datetime.now(UTC)).astimezone(UTC)
         with self.database.orm.session() as session:
             session.add(ConversationHistoryORM(user_id=user_id, role=role, text_hash=text_hash, text_preview=preview, created_at=now))
-            session.add(
-                ConversationMessageORM(
+            row = ConversationMessageORM(
                     user_id=user_id,
                     chat_id=chat_id,
                     telegram_message_id=telegram_message_id,
@@ -42,12 +47,19 @@ class HistoryService:
                     text_hash=text_hash,
                     provider=provider,
                     model=model,
+                    provider_response_id=provider_response_id,
+                    safety_metadata_json=json.dumps(safety_metadata, ensure_ascii=False, default=str) if safety_metadata else None,
+                    tone_metadata_json=json.dumps(tone_metadata, ensure_ascii=False, default=str) if tone_metadata else None,
+                    ai_request_payload_json=json.dumps(ai_request_payload, ensure_ascii=False, default=str) if ai_request_payload else None,
+                    intent=intent,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     total_tokens=total_tokens,
                     created_at=now,
                 )
-            )
+            session.add(row)
+            session.flush()
+            return int(row.id)
 
     def recent_assistant_replies(self, user_id: int, limit: int = 5) -> list[str]:
         with self.database.orm.session() as session:
@@ -79,6 +91,72 @@ class HistoryService:
             }
             for row in reversed(rows)
         ]
+
+    def last_assistant_reply(self, user_id: int) -> dict[str, str] | None:
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(ConversationMessageORM)
+                .where(
+                    ConversationMessageORM.user_id == user_id,
+                    ConversationMessageORM.message_type == "chat",
+                    ConversationMessageORM.role == "assistant",
+                )
+                .order_by(ConversationMessageORM.id.desc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        return {
+            "id": str(row.id),
+            "text": row.text,
+            "text_hash": row.text_hash,
+            "intent": row.intent or "",
+            "created_at": self._iso(row.created_at),
+        }
+
+    def messages_after(self, user_id: int, message_id: int, limit: int = 20) -> list[dict[str, str]]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(ConversationMessageORM)
+                .where(
+                    ConversationMessageORM.user_id == user_id,
+                    ConversationMessageORM.message_type == "chat",
+                    ConversationMessageORM.id > message_id,
+                    ConversationMessageORM.role.in_(("user", "assistant")),
+                )
+                .order_by(ConversationMessageORM.id.asc())
+                .limit(limit)
+            ).all()
+        return [
+            {
+                "id": str(row.id),
+                "role": row.role,
+                "text": row.text,
+                "created_at": self._iso(row.created_at),
+                "intent": row.intent or "",
+            }
+            for row in rows
+        ]
+
+    def count_messages_after(self, user_id: int, message_id: int) -> int:
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM conversation_messages
+                    WHERE user_id = :user_id
+                      AND message_type = 'chat'
+                      AND id > :message_id
+                      AND role IN ('user', 'assistant')
+                    """
+                ),
+                {"user_id": user_id, "message_id": message_id},
+            )
+        return int(value or 0)
+
+    def message_hash(self, text_value: str) -> str:
+        return hashlib.sha256(text_value.encode("utf-8")).hexdigest()
 
     def search_user_messages(self, user_id: int, query: str, limit: int = 5) -> list[dict[str, str]]:
         query = self._sanitize_fts_query(query)

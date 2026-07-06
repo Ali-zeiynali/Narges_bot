@@ -1,7 +1,13 @@
 {% extends "base.html" %}{% block title %}ارسال همگانی{% endblock %}
 {% block content %}
-<h2>ارسال پیام</h2>
-<form class="card" method="post">
+<div class="top">
+  <div>
+    <h2>ارسال همگانی</h2>
+    <div class="muted">ارسال متن، عکس یا ویس به کاربران، گروه‌ها یا یک کاربر خاص.</div>
+  </div>
+</div>
+
+<form class="card" method="post" enctype="multipart/form-data">
   <div class="grid two">
     <label>هدف
       <select name="target_type">
@@ -13,8 +19,18 @@
     <label>شناسه کاربر خاص
       <input name="target_value" class="ltr" placeholder="مثلا 8482032584">
     </label>
+    <label>نوع پیام
+      <select name="media_type">
+        <option value="text">متن</option>
+        <option value="photo">عکس</option>
+        <option value="voice">ویس</option>
+      </select>
+    </label>
+    <label>فایل عکس/ویس
+      <input name="media_file" type="file" accept="image/*,audio/*,.ogg,.oga,.mp3,.wav,.m4a">
+    </label>
   </div>
-  <label>متن پیام<textarea name="text" required></textarea></label>
+  <label>متن یا کپشن پیام<textarea name="text"></textarea></label>
   <label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label>
   <button>ارسال</button>
 </form>
@@ -32,18 +48,21 @@
 </form>
 
 <div class="card">
-  <h3>زمان‌بندی‌های فعال</h3>
+  <h3>زمان‌بندی‌ها</h3>
   <table>
     <tr><th>متن</th><th>فاصله</th><th>فعال</th><th>اجرای بعدی</th><th>ارسال/خطا</th><th>عملیات</th></tr>
     {% for s in schedules %}
     <tr>
-      <form method="post" action="/admin/broadcast/schedules/{{ s.id }}">
-        <td><textarea name="text">{{ s.text }}</textarea></td>
-        <td><input name="interval_minutes" type="number" min="5" value="{{ s.interval_minutes }}"></td>
-        <td><input style="width:auto" type="checkbox" name="enabled" {% if s.enabled %}checked{% endif %}></td>
-        <td>{{ s.next_run_at|dt }}</td>
-        <td>{{ s.sent_count }} / {{ s.failed_count }}<div class="muted">{{ s.last_error or "" }}</div></td>
-        <td class="row"><button>ذخیره</button></form><form method="post" action="/admin/broadcast/schedules/{{ s.id }}/delete"><button class="bad">حذف</button></form></td>
+      <td colspan="6">
+        <form method="post" action="/admin/broadcast/schedules/{{ s.id }}" class="row">
+          <textarea name="text">{{ s.text }}</textarea>
+          <input name="interval_minutes" type="number" min="5" value="{{ s.interval_minutes }}">
+          <label><input style="width:auto" type="checkbox" name="enabled" {% if s.enabled %}checked{% endif %}> فعال</label>
+          <div>{{ s.next_run_at|dt }}<br><span class="muted">{{ s.sent_count }} / {{ s.failed_count }} {{ s.last_error or "" }}</span></div>
+          <button>ذخیره</button>
+        </form>
+        <form method="post" action="/admin/broadcast/schedules/{{ s.id }}/delete"><button class="bad">حذف</button></form>
+      </td>
     </tr>
     {% endfor %}
   </table>
@@ -62,9 +81,9 @@
 <div class="card">
   <h3>ارسال‌های قبلی</h3>
   <table>
-    <tr><th>متن</th><th>هدف</th><th>تعداد</th><th>موفق</th><th>ناموفق</th><th>وضعیت</th><th>خطا</th><th>زمان</th></tr>
+    <tr><th>ID</th><th>متن</th><th>هدف</th><th>تعداد</th><th>موفق</th><th>ناموفق</th><th>وضعیت</th><th>خطا</th><th>زمان</th></tr>
     {% for b in logs %}
-    <tr><td>{{ b.text }}</td><td>{{ b.target_type }} {{ b.target_value or "" }}</td><td>{{ b.target_count }}</td><td>{{ b.sent_count }}</td><td>{{ b.failed_count }}</td><td>{{ b.status }}</td><td>{{ b.error or "-" }}</td><td>{{ b.created_at|dt }}</td></tr>
+    <tr><td><a href="/admin/broadcast/{{ b.id }}">{{ b.id }}</a></td><td>{{ b.text }}</td><td>{{ b.target_type }} {{ b.target_value or "" }}</td><td>{{ b.target_count }}</td><td>{{ b.sent_count }}</td><td>{{ b.failed_count }}</td><td>{{ b.status }}</td><td>{{ b.error or "-" }}</td><td>{{ b.created_at|dt }}</td></tr>
     {% endfor %}
   </table>
 </div>

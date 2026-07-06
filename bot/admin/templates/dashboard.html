@@ -1,22 +1,26 @@
 {% extends "base.html" %}{% block title %}داشبورد{% endblock %}
 {% block content %}
-<div class="top"><div><h2>داشبورد</h2><div class="muted">نمای کلی سلامت ربات، کاربران، پیام‌ها و providerها</div></div></div>
+<div class="top"><div><h2>داشبورد</h2><div class="muted">نمای دقیق سلامت ربات، مصرف مدل‌ها و رفتار کاربران</div></div></div>
 <div class="grid">
   <div class="card metric">کل کاربران<b>{{ snapshot.users_total }}</b></div>
-  <div class="card metric">کاربران امروز<b>{{ snapshot.users_today }}</b></div>
+  <div class="card metric">کاربران جدید امروز<b>{{ snapshot.users_today }}</b></div>
+  <div class="card metric">کاربران فعال امروز<b>{{ snapshot.active_users_today }}</b></div>
   <div class="card metric">پیام‌های امروز<b>{{ snapshot.messages_today }}</b></div>
+  <div class="card metric">توکن مصرفی امروز<b>{{ snapshot.tokens_today|compact_number }}</b></div>
   <div class="card metric">اخطارهای امروز<b>{{ snapshot.warnings_today }}</b></div>
-  <div class="card metric">خطاهای امروز<b>{{ snapshot.ai_errors_today }}</b></div>
-  <div class="card metric">مسدودی فعال<b>{{ snapshot.active_blocks }}</b></div>
+  <div class="card metric">خطاهای AI امروز<b>{{ snapshot.ai_errors_today }}</b></div>
   <div class="card metric">رویدادهای سهمیه امروز<b>{{ snapshot.quota_events_today }}</b></div>
-  <div class="card metric">وضعیت مدل<b>{{ snapshot.current_state.mood }}</b></div>
+</div>
+<div class="grid two">
+  <div class="card"><h3>۱۰ پیام آخر</h3><table><tr><th>ID</th><th>کاربر</th><th>نقش</th><th>متن</th><th>توکن</th><th>زمان</th></tr>{% for m in snapshot.recent_messages %}<tr><td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td><td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td><td>{{ m.role }}</td><td>{{ m.text }}</td><td>{{ m.total_tokens or "-" }}</td><td>{{ m.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card"><h3>آخرین کاربران</h3><table><tr><th>کاربر</th><th>نام</th><th>username</th><th>ثبت‌نام</th></tr>{% for u in snapshot.recent_users %}<tr><td><a href="/admin/users/{{ u.telegram_id }}">{{ u.telegram_id }}</a></td><td>{{ u.name }}</td><td>{{ u.username or "-" }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
+</div>
+<div class="grid two">
+  <div class="card"><h3>آخرین usage</h3><table><tr><th>کاربر</th><th>provider</th><th>مدل</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr>{% for u in snapshot.recent_usage %}<tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.prompt_tokens|compact_number }}</td><td>{{ u.completion_tokens|compact_number }}</td><td>{{ u.total_tokens|compact_number }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
+  <div class="card"><h3>Providerها</h3><table><tr><th>Provider</th><th>کلید</th><th>وضعیت</th><th>آخرین خطا</th><th>غیرفعال تا</th></tr>{% for s in snapshot.provider_statuses %}<tr><td>{{ s.provider }}</td><td>{{ s.key_index }}</td><td>{{ s.status }}</td><td>{{ s.last_error or "-" }}</td><td>{{ s.disabled_until|dt }}</td></tr>{% endfor %}</table></div>
 </div>
 <div class="grid two">
   <div class="card"><h3>وضعیت فعلی مدل</h3><pre>{{ snapshot.current_state | json_pretty }}</pre></div>
-  <div class="card"><h3>Providerها</h3><table><tr><th>Provider</th><th>کلید</th><th>وضعیت</th><th>غیرفعال تا</th></tr>{% for s in snapshot.provider_statuses %}<tr><td>{{ s.provider }}</td><td>{{ s.key_index }}</td><td>{{ s.status }}</td><td>{{ s.disabled_until|dt }}</td></tr>{% endfor %}</table></div>
-</div>
-<div class="grid two">
-  <div class="card"><h3>آخرین usage</h3><table><tr><th>کاربر</th><th>provider</th><th>مدل</th><th>توکن</th><th>زمان</th></tr>{% for u in snapshot.recent_usage %}<tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div>
   <div class="card"><h3>آخرین debug</h3><table><tr><th>event</th><th>کاربر</th><th>زمان</th></tr>{% for d in snapshot.recent_debug %}<tr><td>{{ d.event }}</td><td>{{ d.user_id }}</td><td>{{ d.created_at|dt }}</td></tr>{% endfor %}</table></div>
 </div>
 {% endblock %}

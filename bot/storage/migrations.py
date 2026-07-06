@@ -377,4 +377,107 @@ MIGRATIONS: list[tuple[str, str]] = [
         );
         """,
     ),
+    (
+        "012_context_memory_membership_state",
+        """
+        ALTER TABLE users ADD COLUMN registration_state TEXT NOT NULL DEFAULT 'new';
+        ALTER TABLE users ADD COLUMN membership_state TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE users ADD COLUMN last_membership_gate_chat_id INTEGER;
+        ALTER TABLE users ADD COLUMN last_membership_gate_message_id INTEGER;
+
+        UPDATE users
+        SET registration_state = CASE
+            WHEN onboarding_state = 'need_channels' THEN
+                CASE
+                    WHEN display_name IS NOT NULL AND gender IS NOT NULL THEN 'ready'
+                    WHEN display_name IS NOT NULL THEN 'ask_gender'
+                    ELSE 'new'
+                END
+            ELSE onboarding_state
+        END;
+
+        UPDATE users
+        SET onboarding_state = registration_state
+        WHERE onboarding_state = 'need_channels';
+
+        ALTER TABLE conversation_messages ADD COLUMN provider_response_id TEXT;
+        ALTER TABLE conversation_messages ADD COLUMN safety_metadata TEXT;
+        ALTER TABLE conversation_messages ADD COLUMN tone_metadata TEXT;
+        ALTER TABLE conversation_messages ADD COLUMN intent TEXT;
+
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+            user_id INTEGER PRIMARY KEY,
+            summary TEXT NOT NULL DEFAULT '',
+            summarized_message_id INTEGER NOT NULL DEFAULT 0,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            token_estimate INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_context_states (
+            user_id INTEGER PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'casual',
+            topic TEXT,
+            recent_intent TEXT NOT NULL DEFAULT 'casual',
+            intent_confidence REAL NOT NULL DEFAULT 0.5,
+            relationship_stage TEXT NOT NULL DEFAULT 'new',
+            trust_level REAL NOT NULL DEFAULT 0,
+            familiarity_score REAL NOT NULL DEFAULT 0,
+            last_user_message_hash TEXT,
+            last_assistant_text_hash TEXT,
+            last_assistant_intent TEXT,
+            last_interaction_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        "013_referrals_and_ai_request_payloads",
+        """
+        ALTER TABLE users ADD COLUMN referral_code TEXT;
+        ALTER TABLE users ADD COLUMN referred_by_user_id INTEGER;
+        ALTER TABLE users ADD COLUMN first_question_at TEXT;
+        ALTER TABLE users ADD COLUMN referral_bonus_claimed_at TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
+        CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by_user_id);
+
+        ALTER TABLE conversation_messages ADD COLUMN ai_request_payload TEXT;
+        """,
+    ),
+    (
+        "014_admin_broadcast_deliveries",
+        """
+        CREATE TABLE IF NOT EXISTS admin_broadcast_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            broadcast_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            target_type TEXT NOT NULL DEFAULT 'user',
+            telegram_message_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'created',
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_admin_broadcast_deliveries_broadcast
+            ON admin_broadcast_deliveries(broadcast_id);
+
+        CREATE INDEX IF NOT EXISTS idx_admin_broadcast_deliveries_target
+            ON admin_broadcast_deliveries(target_id);
+        """,
+    ),
+    (
+        "015_user_prompt_tracking",
+        """
+        ALTER TABLE users ADD COLUMN last_prompt_chat_id INTEGER;
+        ALTER TABLE users ADD COLUMN last_prompt_message_id INTEGER;
+        """,
+    ),
+    (
+        "016_user_nudges_and_reengagement",
+        """
+        ALTER TABLE users ADD COLUMN last_gender_nudge_date TEXT;
+        ALTER TABLE users ADD COLUMN last_reengagement_sent_at TEXT;
+        """,
+    ),
 ]

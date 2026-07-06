@@ -1,15 +1,53 @@
 ﻿{
   "providers": [
     {
+      "name": "nvidia",
+      "enabled": true,
+      "priority": 10,
+      "type": "openai_compatible",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEY",
+      "models": ["nvidia/llama-3.3-nemotron-super-49b-v1.5"],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "supports_json_schema": false,
+      "supports_prompt_cache": "unknown",
+      "use_proxy": true,
+      "health_check": true
+    },
+    {
+      "name": "nararouter",
+      "enabled": true,
+      "priority": 20,
+      "type": "openai_compatible",
+      "base_url": "https://router.bynara.id/v1",
+      "api_key_env": "NARAROUTER_API_KEY",
+      "models": ["auto"],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "supports_json_schema": false,
+      "supports_prompt_cache": "unknown",
+      "use_proxy": true,
+      "health_check": true,
+      "experimental": true
+    },
+    {
       "name": "bazaarlink",
       "type": "openai_compatible",
       "enabled": false,
+      "priority": 30,
       "base_url": "https://YOUR_BAZAARLINK_OPENAI_COMPATIBLE_BASE_URL/v1",
       "model": "YOUR_BAZAARLINK_MODEL",
       "api_keys": ["env:BAZAARLINK_API_KEY_1", "env:BAZAARLINK_API_KEY_2"],
       "temperature": 0.7,
       "max_completion_tokens": 512,
       "timeout_seconds": 45,
+      "response_format": "none",
+      "use_proxy": true,
+      "health_check": true,
+      "experimental": true,
       "prompt_cache": false
     },
     {

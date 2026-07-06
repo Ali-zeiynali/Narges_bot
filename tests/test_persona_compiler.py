@@ -1,13 +1,14 @@
 import unittest
 from datetime import UTC, datetime
 
+from bot.models.context import AntiLoopContext, BuiltContext, ContextState
 from bot.models.state import NargesSelfState
 from bot.persona.cache import PersonaCache
 from bot.persona.compiler import PersonaCompiler
 
 
 class PersonaCompilerTests(unittest.TestCase):
-    def test_selects_relevant_memory_context_and_core(self) -> None:
+    def test_static_prompt_and_runtime_context_are_present(self) -> None:
         compiler = PersonaCompiler("v1")
         compiled = compiler.compile(
             "remember that I like bitter coffee",
@@ -17,14 +18,12 @@ class PersonaCompilerTests(unittest.TestCase):
             current_message_datetime="2026-07-05T18:00:00+00:00",
         )
 
-        self.assertIn("core", compiled.sections)
-        self.assertIn("memory_context", compiled.sections)
+        self.assertEqual(compiled.sections, ("static",))
         self.assertIn("JSON", compiled.system_prompt)
         self.assertIn("current_message_datetime", compiled.system_prompt)
 
     def test_cache_clears_when_version_changes(self) -> None:
         cache = PersonaCache()
-        key = "core|engine_rules"
         compiler_v1 = PersonaCompiler("v1", cache)
         compiler_v1.compile(
             "hello",
@@ -32,7 +31,7 @@ class PersonaCompilerTests(unittest.TestCase):
             [],
             [],
         )
-        self.assertIsNotNone(cache.get("v1", key))
+        self.assertEqual(len(cache._items), 1)
 
         compiler_v2 = PersonaCompiler("v2", cache)
         compiler_v2.compile(
@@ -41,9 +40,9 @@ class PersonaCompilerTests(unittest.TestCase):
             [],
             [],
         )
-        self.assertIsNone(cache.get("v1", key))
+        self.assertEqual(len(cache._items), 1)
 
-    def test_runtime_context_uses_only_core_sections(self) -> None:
+    def test_runtime_context_uses_static_section(self) -> None:
         compiled = PersonaCompiler("v1").compile(
             "hello",
             NargesSelfState(updated_at=datetime.now(UTC)),
@@ -51,7 +50,29 @@ class PersonaCompilerTests(unittest.TestCase):
             [],
         )
 
-        self.assertEqual(compiled.sections, ("core", "engine_rules"))
+        self.assertEqual(compiled.sections, ("static",))
+
+    def test_runtime_context_does_not_include_raw_history(self) -> None:
+        context = BuiltContext(
+            state=ContextState(mode="casual", topic="bananas", relationship_stage="familiar", familiarity_score=0.4),
+            summary="User likes concise replies.",
+            facts=[],
+            recent_intent="casual",
+            relevant_memories=["preference: User likes bananas."],
+            last_user_message="this raw current message is not in system context",
+            anti_loop=AntiLoopContext(last_assistant_text_hash="abc", last_assistant_intent="casual", forbidden_reuse=True),
+        )
+        compiled = PersonaCompiler("v1").compile(
+            "hello",
+            NargesSelfState(updated_at=datetime.now(UTC)),
+            [],
+            short_term_messages=[{"role": "assistant", "text": "OLD RAW ASSISTANT TEXT", "created_at": "now"}],
+            context=context,
+        )
+
+        self.assertIn("conversation_context", compiled.system_prompt)
+        self.assertIn("User likes concise replies.", compiled.system_prompt)
+        self.assertNotIn("OLD RAW ASSISTANT TEXT", compiled.system_prompt)
 
 
 if __name__ == "__main__":

@@ -19,11 +19,7 @@ class MenuService:
         self.settings = settings
 
     async def setup_commands(self, bot: Bot) -> None:
-        await bot.set_my_commands(
-            [BotCommand(command="start", description="شروع")],
-            scope=BotCommandScopeDefault(),
-        )
-
+        await bot.set_my_commands([BotCommand(command="start", description="شروع")], scope=BotCommandScopeDefault())
         admin_commands = [
             BotCommand(command="admin_channels", description="مدیریت کانال‌ها"),
             BotCommand(command="admin_add_channel", description="افزودن کانال اجباری"),
@@ -41,14 +37,13 @@ class MenuService:
                 BotCommand(command="debug_logs", description="دیباگ لاگ‌ها"),
                 BotCommand(command="debug_all", description="دیباگ کامل"),
             ]
-
         for admin_id in set(self.settings.admin_ids) | set(self.settings.debug_user_ids):
             await bot.set_my_commands(admin_commands + debug_commands, scope=BotCommandScopeChat(chat_id=admin_id))
 
     def reply_menu(self, debug: bool = False) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton(text="👤 پروفایل"), KeyboardButton(text="⚡ افزایش ظرفیت")],
-            [KeyboardButton(text="💬 راهنما")],
+            [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="💬 راهنما")],
         ]
         if debug:
             keyboard[1].append(KeyboardButton(text="🧠 حافظه‌ها"))
@@ -60,6 +55,7 @@ class MenuService:
                 InlineKeyboardButton(text="👤 پروفایل", callback_data="menu:profile"),
                 InlineKeyboardButton(text="⚡ افزایش ظرفیت", callback_data="capacity:open"),
             ],
+            [InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="menu:referral")],
             [
                 InlineKeyboardButton(text="💬 راهنما", callback_data="menu:help"),
                 InlineKeyboardButton(text="🛟 پشتیبانی", url=self.settings.support_url or "https://t.me/"),
@@ -76,18 +72,20 @@ class MenuService:
                 InlineKeyboardButton(text="⚧️ ویرایش جنسیت", callback_data="account:edit_gender"),
             ],
             [InlineKeyboardButton(text="⚡ افزایش ظرفیت", callback_data="capacity:open")],
+            [InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="menu:referral")],
         ]
         if debug:
             rows.append([InlineKeyboardButton(text="🧠 حافظه‌ها", callback_data="menu:memories")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def capacity_keyboard(self) -> InlineKeyboardMarkup:
+    def capacity_keyboard(self, phone_available: bool = True) -> InlineKeyboardMarkup:
+        row = [InlineKeyboardButton(text="⭐ افزایش با Stars", callback_data="billing:stars_menu")]
+        if phone_available:
+            row.append(InlineKeyboardButton(text="📱 افزایش با شماره موبایل", callback_data="capacity:phone"))
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="⭐ خرید ظرفیت", callback_data="billing:stars_menu"),
-                    InlineKeyboardButton(text="📱 هدیه شماره", callback_data="capacity:phone"),
-                ],
+                row,
+                [InlineKeyboardButton(text="🎁 دعوت دوستان؛ پیام رایگان", callback_data="capacity:referral")],
             ]
         )
 

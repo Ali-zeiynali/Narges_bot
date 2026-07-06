@@ -10,20 +10,27 @@ from sqlalchemy import desc, func, select
 
 from bot.config import Settings
 from bot.models.state import NargesSelfStateCandidate
+from bot.services.global_state_service import GlobalStateService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
 from bot.services.required_channel_service import RequiredChannelService
 from bot.storage.database import Database
 from bot.storage.orm import (
     AdminBroadcastORM,
+    AdminBroadcastDeliveryORM,
+    AdminBypassORM,
     AiProviderKeyStatusORM,
     BillingInvoiceORM,
+    ConversationContextStateORM,
+    ConversationHistoryORM,
     ConversationMessageORM,
+    ConversationSummaryORM,
     DailyEventORM,
     DebugLogORM,
     GroupChatORM,
     MemoryORM,
     MemoryAuditLogORM,
+    MembershipCacheORM,
     NargesSelfStateORM,
     NargesStateAuditLogORM,
     NargesStateSchedulerRunORM,
@@ -44,9 +51,26 @@ def utc_now() -> datetime:
 def dt_iso(value: Any) -> str:
     if value is None:
         return "-"
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
+    if not isinstance(value, datetime):
+        try:
+            value = datetime.fromisoformat(str(value))
+        except ValueError:
+            return str(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    delta = utc_now() - value.astimezone(UTC)
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return "همین الان"
+    if seconds < 3600:
+        return f"{seconds // 60} دقیقه قبل"
+    if seconds < 86400:
+        return f"{seconds // 3600} ساعت قبل"
+    if seconds < 30 * 86400:
+        return f"{seconds // 86400} روز قبل"
+    if seconds < 365 * 86400:
+        return f"{seconds // (30 * 86400)} ماه قبل"
+    return f"{seconds // (365 * 86400)} سال قبل"
 
 
 def mask_key(value: str) -> str:
@@ -56,6 +80,20 @@ def mask_key(value: str) -> str:
     if len(value) <= 12:
         return "*" * len(value)
     return f"{value[:6]}...{value[-4:]}"
+
+
+def compact_number(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return "-"
+    sign = "-" if number < 0 else ""
+    number = abs(number)
+    if number >= 1_000_000:
+        return f"{sign}{number / 1_000_000:.1f}M".replace(".0M", "M")
+    if number >= 1_000:
+        return f"{sign}{number / 1_000:.1f}K".replace(".0K", "K")
+    return f"{sign}{int(number)}"
 
 
 @dataclass(frozen=True)
@@ -71,6 +109,10 @@ class DashboardSnapshot:
     recent_debug: list[dict[str, Any]]
     recent_usage: list[dict[str, Any]]
     provider_statuses: list[dict[str, Any]]
+    active_users_today: int
+    tokens_today: int
+    recent_messages: list[dict[str, Any]]
+    recent_users: list[dict[str, Any]]
 
 
 class AdminDataService:
@@ -79,6 +121,7 @@ class AdminDataService:
         self.settings = settings
         self.quota_service = QuotaService(database, settings)
         self.state_service = NargesStateService(database)
+        self.global_state_service = GlobalStateService(database)
         self.channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
 
     def dashboard(self) -> DashboardSnapshot:
@@ -97,6 +140,10 @@ class AdminDataService:
             quota_events_today = session.scalar(select(func.count()).select_from(QuotaEventORM).where(QuotaEventORM.created_at >= today)) or 0
             recent_debug_rows = session.scalars(select(DebugLogORM).order_by(desc(DebugLogORM.id)).limit(8)).all()
             recent_usage_rows = session.scalars(select(UsageLogORM).order_by(desc(UsageLogORM.id)).limit(8)).all()
+            active_users_today = session.scalar(select(func.count(func.distinct(ConversationMessageORM.user_id))).where(ConversationMessageORM.created_at >= today)) or 0
+            tokens_today = session.scalar(select(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)).where(UsageLogORM.created_at >= today)) or 0
+            recent_messages = session.scalars(select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(10)).all()
+            recent_users = session.scalars(select(UserORM).order_by(desc(UserORM.created_at)).limit(10)).all()
 
         return DashboardSnapshot(
             users_total=int(users_total),
@@ -110,6 +157,10 @@ class AdminDataService:
             recent_debug=[self._debug_row(row) for row in recent_debug_rows],
             recent_usage=[self._usage_row(row) for row in recent_usage_rows],
             provider_statuses=self.provider_statuses(),
+            active_users_today=int(active_users_today),
+            tokens_today=int(tokens_today),
+            recent_messages=[self._message_row(row) for row in recent_messages],
+            recent_users=[self._user_row(row) for row in recent_users],
         )
 
     def users(self, sort: str = "last_seen", query: str = "") -> list[dict[str, Any]]:
@@ -139,6 +190,7 @@ class AdminDataService:
                     "telegram_id": row.telegram_id,
                     "name": row.display_name or row.first_name or row.username or str(row.telegram_id),
                     "username": row.username,
+                    "phone_number": row.phone_number,
                     "plan": row.plan,
                     "onboarding_state": row.onboarding_state,
                     "warnings": warnings.get(row.telegram_id, 0),
@@ -163,7 +215,7 @@ class AdminDataService:
                 select(ConversationMessageORM)
                 .where(ConversationMessageORM.user_id == user_id)
                 .order_by(desc(ConversationMessageORM.id))
-                .limit(30)
+                .limit(300)
             ).all()
             memories = session.scalars(
                 select(MemoryORM)
@@ -190,7 +242,88 @@ class AdminDataService:
             "quota_events": quota_events,
             "invoices": invoices,
             "memory_audits": memory_audits,
+            "usage_total_tokens": sum(int(row.total_tokens or 0) for row in usage),
+            "usage_prompt_tokens": sum(int(row.prompt_tokens or 0) for row in usage),
+            "usage_completion_tokens": sum(int(row.completion_tokens or 0) for row in usage),
         }
+
+    def message_detail(self, message_id: int) -> dict[str, Any]:
+        with self.database.orm.session() as session:
+            row = session.get(ConversationMessageORM, message_id)
+        payload = {}
+        if row and row.ai_request_payload_json:
+            try:
+                payload = json.loads(row.ai_request_payload_json)
+            except json.JSONDecodeError:
+                payload = {"raw": row.ai_request_payload_json}
+        return {"message": row, "ai_request": payload}
+
+    def messages(self, user_id: int | None = None, limit: int = 300) -> dict[str, Any]:
+        limit = max(20, min(limit, 1000))
+        with self.database.orm.session() as session:
+            statement = select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(limit)
+            if user_id is not None:
+                statement = statement.where(ConversationMessageORM.user_id == user_id)
+            rows = session.scalars(statement).all()
+        return {"messages": rows, "user_id": user_id, "limit": limit}
+
+    def invoices(self, limit: int = 300) -> dict[str, Any]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(select(BillingInvoiceORM).order_by(desc(BillingInvoiceORM.created_at)).limit(limit)).all()
+        return {"invoices": rows}
+
+    def add_user_extra_credit(self, user_id: int, amount: int, reason: str) -> None:
+        if amount > 0:
+            self.quota_service.add_extra_credit(user_id, amount, reason=f"admin:{reason or 'manual'}")
+
+    def add_memory_from_form(self, user_id: int, form: dict[str, Any]) -> None:
+        from bot.models.ai import MemorySuggestion
+        from bot.services.memory_service import MemoryService
+
+        suggestion = MemorySuggestion(
+            action="create",
+            kind=str(form.get("kind", "preference")),
+            summary=str(form.get("summary", "")).strip(),
+            confidence=float(form.get("confidence", 1) or 1),
+            importance=int(form.get("importance", 3) or 3),
+        )
+        MemoryService(self.database).apply_candidates(user_id, None, suggestion.summary, [suggestion], assistant_sourced=False)
+
+    def delete_memory(self, user_id: int, memory_id: int) -> bool:
+        from bot.services.memory_service import MemoryService
+
+        return MemoryService(self.database).delete(user_id, memory_id)
+
+    def delete_user_completely(self, user_id: int, confirm: str) -> bool:
+        if confirm.strip() != str(user_id):
+            return False
+        with self.database.orm.session() as session:
+            user = session.get(UserORM, user_id)
+            if user is None:
+                return False
+            for model in (
+                ConversationMessageORM,
+                ConversationHistoryORM,
+                MemoryORM,
+                MemoryAuditLogORM,
+                ConversationSummaryORM,
+                ConversationContextStateORM,
+                QuotaEventORM,
+                UsageLogORM,
+                BillingInvoiceORM,
+                DebugLogORM,
+                UserWarningEventORM,
+                MembershipCacheORM,
+                AdminBypassORM,
+            ):
+                session.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
+            session.query(UserBlockORM).filter(UserBlockORM.user_id == user_id).delete(synchronize_session=False)
+            session.query(UserORM).filter(UserORM.referred_by_user_id == user_id).update(
+                {"referred_by_user_id": None},
+                synchronize_session=False,
+            )
+            session.delete(user)
+        return True
 
     def memories(self, user_id: int | None = None, limit: int = 200) -> dict[str, Any]:
         with self.database.orm.session() as session:
@@ -211,6 +344,7 @@ class AdminDataService:
             events = session.scalars(select(DailyEventORM).order_by(desc(DailyEventORM.start_at)).limit(60)).all()
         return {
             "active": self.state_service.get_active(),
+            "global_state": self.global_state_service.get(),
             "states": states,
             "audits": audits,
             "scheduler_runs": scheduler_runs,
@@ -235,6 +369,13 @@ class AdminDataService:
             return False, f"داده نامعتبر است: {exc}"
         ok = self.state_service.save_candidate(candidate, source="admin_panel")
         return ok, "وضعیت ذخیره شد." if ok else "وضعیت توسط validator رد شد."
+
+    def save_ai_toggle_from_form(self, form: dict[str, Any]) -> None:
+        enabled = str(form.get("ai_enabled", "")).lower() in {"1", "true", "on", "yes"}
+        self.global_state_service.set_ai_enabled(
+            enabled,
+            str(form.get("ai_disabled_message", "")).strip() or None,
+        )
 
     def provider_config(self) -> list[dict[str, Any]]:
         providers = self._read_provider_config().get("providers", [])
@@ -295,8 +436,14 @@ class AdminDataService:
                 provider["model"] = str(form.get("model", provider.get("model", ""))).strip()
                 provider["base_url"] = str(form.get("base_url", provider.get("base_url", ""))).strip()
                 provider["response_format"] = str(form.get("response_format", provider.get("response_format", "json_object"))).strip()
+                priority_raw = str(form.get("priority", provider.get("priority", ""))).strip()
+                provider["priority"] = int(priority_raw) if priority_raw.lstrip("-").isdigit() else None
                 provider["timeout_seconds"] = float(form.get("timeout_seconds", provider.get("timeout_seconds", 45)))
                 provider["max_completion_tokens"] = int(form.get("max_completion_tokens", provider.get("max_completion_tokens", 512)))
+                provider["use_proxy"] = str(form.get("use_proxy", "on")).lower() in {"1", "true", "on", "yes"}
+                provider["health_check"] = str(form.get("health_check", "")).lower() in {"1", "true", "on", "yes"}
+                provider["experimental"] = str(form.get("experimental", "")).lower() in {"1", "true", "on", "yes"}
+                provider["prompt_cache"] = str(form.get("prompt_cache", "")).lower() in {"1", "true", "on", "yes"}
                 self._write_provider_config(data)
                 return
 
@@ -323,7 +470,8 @@ class AdminDataService:
             session.flush()
             return int(row.id)
 
-    def finish_broadcast(self, broadcast_id: int, sent: int, failed: int, error: str | None = None) -> None:
+    def finish_broadcast(self, broadcast_id: int, sent: int, failed: int, error: str | None = None, deliveries: list[Any] | None = None) -> None:
+        now = utc_now()
         with self.database.orm.session() as session:
             row = session.get(AdminBroadcastORM, broadcast_id)
             if not row:
@@ -332,7 +480,31 @@ class AdminDataService:
             row.failed_count = failed
             row.status = "failed" if error else "done"
             row.error = error
-            row.finished_at = utc_now()
+            row.finished_at = now
+            for item in deliveries or []:
+                session.add(
+                    AdminBroadcastDeliveryORM(
+                        broadcast_id=broadcast_id,
+                        target_id=int(item.target_id),
+                        target_type="group" if row.target_type == "groups" else "user",
+                        telegram_message_id=item.telegram_message_id,
+                        status=item.status,
+                        error=item.error,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
+    def broadcast_detail(self, broadcast_id: int) -> dict[str, Any]:
+        with self.database.orm.session() as session:
+            broadcast = session.get(AdminBroadcastORM, broadcast_id)
+            deliveries = session.scalars(
+                select(AdminBroadcastDeliveryORM)
+                .where(AdminBroadcastDeliveryORM.broadcast_id == broadcast_id)
+                .order_by(desc(AdminBroadcastDeliveryORM.id))
+                .limit(1000)
+            ).all()
+        return {"broadcast": broadcast, "deliveries": deliveries}
 
     def target_user_ids(self, only_ready: bool = True) -> list[int]:
         with self.database.orm.session() as session:
@@ -398,17 +570,16 @@ class AdminDataService:
         if current is None:
             return
         position_raw = str(form.get("position", current.position)).strip()
-        self.channel_service.add_channel(
+        self.channel_service.update_channel(
             admin_id=0,
+            channel_id=channel_id,
             chat_id=str(form.get("chat_id", current.chat_id)).strip(),
             title=str(form.get("title", current.title)).strip(),
             join_url=str(form.get("join_url", current.join_url or "")).strip() or None,
             is_private=str(form.get("is_private", "")).lower() in {"on", "true", "1", "yes"},
+            active=str(form.get("active", "")).lower() in {"on", "true", "1", "yes"},
             position=int(position_raw) if position_raw.isdigit() else current.position,
         )
-        active = str(form.get("active", "")).lower() in {"on", "true", "1", "yes"}
-        if not active:
-            self.channel_service.remove_channel(0, channel_id)
 
     def _read_provider_config(self) -> dict[str, Any]:
         path = Path(self.settings.ai_providers_config)
@@ -426,6 +597,27 @@ class AdminDataService:
 
     def _debug_row(self, row: DebugLogORM) -> dict[str, Any]:
         return {"id": row.id, "event": row.event, "user_id": row.user_id, "payload": row.payload, "created_at": row.created_at}
+
+    def _message_row(self, row: ConversationMessageORM) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "user_id": row.user_id,
+            "role": row.role,
+            "text": row.text[:180],
+            "provider": row.provider,
+            "model": row.model,
+            "total_tokens": row.total_tokens,
+            "created_at": row.created_at,
+        }
+
+    def _user_row(self, row: UserORM) -> dict[str, Any]:
+        return {
+            "telegram_id": row.telegram_id,
+            "name": row.display_name or row.first_name or row.username or row.telegram_id,
+            "username": row.username,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
 
     def _usage_row(self, row: UsageLogORM) -> dict[str, Any]:
         return {

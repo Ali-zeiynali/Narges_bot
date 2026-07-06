@@ -24,7 +24,11 @@ class DebugService:
         return self.settings.debug_mode
 
     def can_debug(self, user_id: int) -> bool:
-        return self.enabled and user_id in self.debug_users
+        if not self.enabled:
+            return False
+        if not self.settings.debug_user_ids:
+            return True
+        return user_id in self.debug_users
 
     def log(self, event: str, payload: dict[str, Any], user_id: int | None = None) -> None:
         if not self.enabled:

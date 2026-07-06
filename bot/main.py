@@ -11,7 +11,9 @@ from bot.logging_config import setup_logging
 from bot.persona.compiler import PersonaCompiler
 from bot.services.chat_service import ChatService
 from bot.services.billing_service import BillingService
+from bot.services.context_builder import ContextBuilder
 from bot.services.groq_client import GroqChatClient
+from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupMessageScheduler, GroupService
 from bot.services.history_service import HistoryService
 from bot.services.conversation_search_tool import ConversationSearchTool
@@ -21,6 +23,7 @@ from bot.services.menu_service import MenuService
 from bot.services.moderation_service import ModerationService
 from bot.services.name_service import NameService
 from bot.services.quota_service import QuotaService
+from bot.services.reengagement_service import ReengagementScheduler, ReengagementService
 from bot.services.required_channel_service import RequiredChannelService
 from bot.services.narges_state_scheduler import NargesStateScheduler
 from bot.services.narges_state_service import NargesStateService
@@ -53,8 +56,10 @@ async def main() -> None:
     name_service = NameService(settings.name_transliteration_map)
     groq_client = GroqChatClient(settings, database)
     narges_state_service = NargesStateService(database)
+    global_state_service = GlobalStateService(database)
     narges_state_scheduler = NargesStateScheduler(narges_state_service, groq_client)
     history_service = HistoryService(database)
+    context_builder = ContextBuilder(database, history_service)
     chat_service = ChatService(
         validator=MessageValidator(settings),
         persona_compiler=PersonaCompiler(settings.persona_version),
@@ -62,12 +67,14 @@ async def main() -> None:
         narges_state_service=narges_state_service,
         memory_service=memory_service,
         history_service=history_service,
+        context_builder=context_builder,
         conversation_search_tool=ConversationSearchTool(history_service),
         moderation_service=moderation_service,
         debug_service=debug_service,
         usage_service=UsageService(database, settings.groq_model),
         style_linter=StyleLinter(),
         quota_service=quota_service,
+        global_state_service=global_state_service,
     )
 
     dispatcher = Dispatcher()
@@ -94,6 +101,7 @@ async def main() -> None:
     await menu_service.setup_commands(bot)
     scheduler_task = asyncio.create_task(narges_state_scheduler.run_forever())
     group_scheduler_task = asyncio.create_task(GroupMessageScheduler(group_service, bot).run_forever())
+    reengagement_task = asyncio.create_task(ReengagementScheduler(ReengagementService(database, settings), bot).run_forever())
 
     logger.info(
         "bot_started model=%s persona_version=%s proxy_enabled=%s",
@@ -102,14 +110,18 @@ async def main() -> None:
         bool(settings.telegram_proxy),
     )
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(bot)
     finally:
         scheduler_task.cancel()
         group_scheduler_task.cancel()
+        reengagement_task.cancel()
         with suppress(asyncio.CancelledError):
             await scheduler_task
         with suppress(asyncio.CancelledError):
             await group_scheduler_task
+        with suppress(asyncio.CancelledError):
+            await reengagement_task
         await bot.session.close()
         logger.info("bot_stopped")
 

@@ -34,6 +34,18 @@ class UserProfile:
     suggested_name: str | None
     pending_name: str | None
     onboarding_state: OnboardingState
+    registration_state: OnboardingState
+    membership_state: str
+    last_membership_gate_chat_id: int | None
+    last_membership_gate_message_id: int | None
+    last_prompt_chat_id: int | None
+    last_prompt_message_id: int | None
+    last_gender_nudge_date: str | None
+    last_reengagement_sent_at: datetime | None
+    referral_code: str | None
+    referred_by_user_id: int | None
+    first_question_at: datetime | None
+    referral_bonus_claimed_at: datetime | None
     name_confirm_attempted: bool
     plan: str
     phone_number: str | None

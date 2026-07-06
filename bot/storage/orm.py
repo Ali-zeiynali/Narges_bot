@@ -31,6 +31,18 @@ class UserORM(Base):
     suggested_name: Mapped[str | None] = mapped_column(String(128))
     pending_name: Mapped[str | None] = mapped_column(String(128))
     onboarding_state: Mapped[str] = mapped_column(String(64), default="new")
+    registration_state: Mapped[str] = mapped_column(String(64), default="new")
+    membership_state: Mapped[str] = mapped_column(String(64), default="unknown")
+    last_membership_gate_chat_id: Mapped[int | None] = mapped_column(Integer)
+    last_membership_gate_message_id: Mapped[int | None] = mapped_column(Integer)
+    last_prompt_chat_id: Mapped[int | None] = mapped_column(Integer)
+    last_prompt_message_id: Mapped[int | None] = mapped_column(Integer)
+    last_gender_nudge_date: Mapped[str | None] = mapped_column(String(16))
+    last_reengagement_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    referral_code: Mapped[str | None] = mapped_column(String(64), unique=True)
+    referred_by_user_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    first_question_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    referral_bonus_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     name_confirm_attempted: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[str] = mapped_column(String(32), default="free")
     phone_number: Mapped[str | None] = mapped_column(String(32))
@@ -99,10 +111,44 @@ class ConversationMessageORM(Base):
     text_hash: Mapped[str] = mapped_column(String(128))
     provider: Mapped[str | None] = mapped_column(String(64))
     model: Mapped[str | None] = mapped_column(String(128))
+    provider_response_id: Mapped[str | None] = mapped_column(String(128))
+    safety_metadata_json: Mapped[str | None] = mapped_column("safety_metadata", Text)
+    tone_metadata_json: Mapped[str | None] = mapped_column("tone_metadata", Text)
+    ai_request_payload_json: Mapped[str | None] = mapped_column("ai_request_payload", Text)
+    intent: Mapped[str | None] = mapped_column(String(64))
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ConversationSummaryORM(Base):
+    __tablename__ = "conversation_summaries"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    summarized_message_id: Mapped[int] = mapped_column(Integer, default=0)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    token_estimate: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ConversationContextStateORM(Base):
+    __tablename__ = "conversation_context_states"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(64), default="casual")
+    topic: Mapped[str | None] = mapped_column(Text)
+    recent_intent: Mapped[str] = mapped_column(String(64), default="casual")
+    intent_confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    relationship_stage: Mapped[str] = mapped_column(String(64), default="new")
+    trust_level: Mapped[float] = mapped_column(Float, default=0.0)
+    familiarity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    last_user_message_hash: Mapped[str | None] = mapped_column(String(128))
+    last_assistant_text_hash: Mapped[str | None] = mapped_column(String(128))
+    last_assistant_intent: Mapped[str | None] = mapped_column(String(64))
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class QuotaEventORM(Base):
@@ -157,6 +203,20 @@ class AdminBroadcastORM(Base):
     target_value: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AdminBroadcastDeliveryORM(Base):
+    __tablename__ = "admin_broadcast_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    broadcast_id: Mapped[int] = mapped_column(Integer, index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="user")
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="created")
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class GroupChatORM(Base):

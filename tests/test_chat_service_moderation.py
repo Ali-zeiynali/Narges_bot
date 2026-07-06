@@ -7,6 +7,7 @@ from bot.config import Settings
 from bot.models.ai import NargesReply
 from bot.persona.compiler import PersonaCompiler
 from bot.services.chat_service import ChatService
+from bot.services.context_builder import ContextBuilder
 from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
 from bot.services.groq_client import GroqResult
@@ -66,6 +67,28 @@ class FakeWarningGroqClient:
         return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
+class FakeMemorySuggestionGroqClient:
+    def complete(self, messages):
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "noted", "delay_seconds": 0}],
+                "memory_suggestions": [
+                    {
+                        "action": "create",
+                        "kind": "preference",
+                        "summary": "User likes model-invented duplicate memory.",
+                        "confidence": 1,
+                        "importance": 5,
+                    }
+                ],
+                "warning_suggestion": None,
+                "event_suggestion": None,
+            }
+        )
+        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+
+
 class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -83,6 +106,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
             narges_state_service=NargesStateService(self.database),
             memory_service=MemoryService(self.database),
             history_service=self.history,
+            context_builder=ContextBuilder(self.database, self.history),
             conversation_search_tool=ConversationSearchTool(self.history),
             moderation_service=self.moderation,
             debug_service=self.debug,
@@ -106,6 +130,36 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔴", result.reply.messages[0].text)
         self.assertEqual(self.moderation.warning_count(1), 1)
         self.assertEqual(self.quota.remaining_today(1), 40)
+
+    async def test_chat_model_memory_suggestions_are_ignored_and_pipeline_writes_once(self) -> None:
+        service = ChatService(
+            validator=MessageValidator(self.settings),
+            persona_compiler=PersonaCompiler("v"),
+            groq_client=FakeMemorySuggestionGroqClient(),  # type: ignore[arg-type]
+            narges_state_service=NargesStateService(self.database),
+            memory_service=MemoryService(self.database),
+            history_service=self.history,
+            context_builder=ContextBuilder(self.database, self.history),
+            conversation_search_tool=ConversationSearchTool(self.history),
+            moderation_service=self.moderation,
+            debug_service=self.debug,
+            usage_service=UsageService(self.database, "m"),
+            style_linter=StyleLinter(),
+            quota_service=self.quota,
+        )
+
+        await service.answer(
+            user_id=2,
+            chat_id=1,
+            message_id=101,
+            text="I like black tea",
+            message_datetime=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
+        )
+
+        memories = MemoryService(self.database).list_active(2)
+        self.assertEqual(len(memories), 1)
+        self.assertIn("black tea", memories[0].summary)
+        self.assertNotIn("model-invented", memories[0].summary)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 import json
 import logging
 from dataclasses import asdict, is_dataclass
+from datetime import UTC
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
@@ -26,6 +27,7 @@ from bot.services.name_service import NameService
 from bot.services.quota_service import QuotaService
 from bot.services.required_channel_service import RequiredChannelService
 from bot.services.user_service import UserService
+from bot.utils.text_safety import clamp_repeated_chars, meaningful_length
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,15 @@ def register_handlers(
             return str(units // 5)
         return f"{units / 5:.1f}"
 
+    def phone_bonus_available(profile) -> bool:
+        return not bool(profile and (profile.phone_number or profile.phone_bonus_claimed))
+
+    def capacity_text(profile=None) -> str:
+        lines = ["✨ افزایش ظرفیت", "", "یکی را انتخاب کن:", "⭐ افزایش با Stars"]
+        if phone_bonus_available(profile):
+            lines.append("📱 افزایش با شماره موبایل")
+        return "\n".join(lines)
+
     def jsonable(value):
         if isinstance(value, BaseModel):
             return value.model_dump(mode="json")
@@ -116,26 +127,56 @@ def register_handlers(
             active=True,
         )
 
-    async def show_membership_gate(message: Message, check: MembershipCheck) -> None:
+    async def delete_membership_gate(bot: Bot, user_id: int) -> None:
+        profile = user_service.get(user_id)
+        if not profile or not profile.last_membership_gate_chat_id or not profile.last_membership_gate_message_id:
+            return
+        with suppress(Exception):
+            await bot.delete_message(profile.last_membership_gate_chat_id, profile.last_membership_gate_message_id)
+        user_service.clear_membership_gate_message(user_id)
+
+    async def delete_prompt_message(bot: Bot, user_id: int) -> None:
+        profile = user_service.get(user_id)
+        if not profile or not profile.last_prompt_chat_id or not profile.last_prompt_message_id:
+            return
+        with suppress(Exception):
+            await bot.delete_message(profile.last_prompt_chat_id, profile.last_prompt_message_id)
+        user_service.clear_prompt_message(user_id)
+
+    async def show_membership_gate(
+        message: Message,
+        bot: Bot,
+        check: MembershipCheck,
+        verification_failed: bool = False,
+        user_id: int | None = None,
+    ) -> None:
+        user_id = user_id or (message.from_user.id if message.from_user else 0)
+        await delete_membership_gate(bot, user_id)
+        note = (
+            "\n\n⚠️ اگر عضو هستی ولی تأیید نمی‌شود، چند ثانیه بعد دوباره دکمه را بزن."
+            if verification_failed
+            else ""
+        )
         text = (
             "📣 عضویت لازم است\n\n"
             "برای استفاده از نرگس، اول عضو کانال‌های زیر شو.\n"
-            "بعد از عضویت، دکمه «✅ عضو شدم، بررسی کن» را بزن.\n\n"
-            "⚠️ اگر عضو هستی ولی تأیید نمی‌شود، ممکن است تلگرام لحظه‌ای اجازه بررسی نداده باشد؛ چند ثانیه بعد دوباره دکمه را بزن."
-            if check.errors
-            else "📣 عضویت لازم است\n\n"
-            "برای استفاده از نرگس، اول عضو کانال‌های زیر شو.\n"
             "بعد از عضویت، دکمه «✅ عضو شدم، بررسی کن» را بزن."
+            f"{note}"
         )
-        await message.answer(text, reply_markup=menu_service.membership_keyboard(check))
+        sent = await message.answer(text, reply_markup=menu_service.membership_keyboard(check))
+        if user_id:
+            user_service.set_membership_gate_message(user_id, sent.chat.id, sent.message_id)
 
     async def ensure_membership(message: Message, bot: Bot, use_cache: bool = True) -> bool:
         user_id = message.from_user.id if message.from_user else 0
         check = await channel_service.check_user(bot, user_id, use_cache=use_cache)
         if check.ok:
+            await delete_membership_gate(bot, user_id)
+            user_service.mark_membership_ok(user_id)
+            user_service.recover_registration_state(user_id)
             return True
-        user_service.set_state(user_id, OnboardingState.NEED_CHANNELS)
-        await show_membership_gate(message, check)
+        user_service.mark_membership_required(user_id)
+        await show_membership_gate(message, bot, check)
         return False
 
     async def ensure_not_blocked_for_model(message: Message) -> bool:
@@ -173,19 +214,32 @@ def register_handlers(
             return
         await message.answer("⚧️ جنسیتت رو انتخاب کن تا نرگس دقیق‌تر باهات حرف بزنه:", reply_markup=menu_service.gender_keyboard())
 
-    async def finish_name_update(message: Message, user_id: int, name: str) -> None:
+    async def finish_name_update(message: Message, user_id: int, name: str, bot: Bot | None = None) -> None:
+        if bot:
+            await delete_prompt_message(bot, user_id)
+        profile = user_service.get(user_id)
+        if profile and profile.registration_state == OnboardingState.READY:
+            user_service.save_display_name_keep_state(user_id, name)
+            user_service.set_onboarding_state(user_id, OnboardingState.READY)
+            memory_service.upsert_identity_name(user_id, name, message.message_id)
+            await message.answer(f"✅ از این به بعد «{name}» صدات می‌کنم.", reply_markup=menu_service.reply_menu(can_debug(user_id)))
+            await show_account(message)
+            return
         user_service.save_display_name(user_id, name)
         memory_service.upsert_identity_name(user_id, name, message.message_id)
         await ask_for_gender(message, user_id, name)
 
     async def finish_gender_update(message: Message, user_id: int, gender: str | None) -> None:
         user_service.save_gender(user_id, gender)
+        inviter_id = user_service.claim_referral_bonus_if_ready(user_id)
+        if inviter_id:
+            quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{user_id}")
         await message.answer(
             "تمومه ✨\nاز الان هرچی بفرستی مستقیم می‌رسه به نرگس.",
             reply_markup=menu_service.reply_menu(can_debug(user_id)),
         )
 
-    async def handle_name_text(message: Message) -> bool:
+    async def handle_name_text(message: Message, bot: Bot) -> bool:
         if not message.from_user:
             return False
         profile = user_service.get(message.from_user.id)
@@ -196,24 +250,33 @@ def register_handlers(
             return False
 
         if is_same_name_request(message.text or "") and (profile.pending_name or profile.suggested_name):
-            await finish_name_update(message, message.from_user.id, profile.pending_name or profile.suggested_name)  # type: ignore[arg-type]
+            await finish_name_update(message, message.from_user.id, profile.pending_name or profile.suggested_name, bot)  # type: ignore[arg-type]
             return True
 
-        result = name_service.validate(message.text or "", allow_ambiguous=True)
+        raw_name = (message.text or "").strip()
+        result = name_service.validate(raw_name, allow_ambiguous=True)
         if not result.ok or not result.normalized:
             await message.answer(
                 f"اسم رو نتونستم درست ذخیره کنم 🌙\n{result.reason or ''}\n\nیه اسم کوتاه و واقعی بنویس؛ مثلا: علی"
             )
             return True
-        if result.ambiguous and not profile.name_confirm_attempted:
-            user_service.set_pending_name(message.from_user.id, result.normalized, attempted=True)
+        if profile.registration_state != OnboardingState.READY and profile.onboarding_state == OnboardingState.ASK_NAME_INPUT and not profile.name_confirm_attempted:
+            user_service.set_pending_name(message.from_user.id, raw_name, attempted=True)
             user_service.set_state(message.from_user.id, OnboardingState.NAME_AMBIGUOUS_CONFIRM)
             await message.answer(
-                f"{result.normalized} را همین‌طوری ذخیره کنم؟",
+                f"دوست داری «{raw_name}» صدات کنم؟",
                 reply_markup=menu_service.ambiguous_name_confirm(),
             )
             return True
-        await finish_name_update(message, message.from_user.id, result.normalized)
+        if profile.registration_state != OnboardingState.READY and result.ambiguous and not profile.name_confirm_attempted:
+            user_service.set_pending_name(message.from_user.id, raw_name, attempted=True)
+            user_service.set_state(message.from_user.id, OnboardingState.NAME_AMBIGUOUS_CONFIRM)
+            await message.answer(
+                f"دوست داری «{raw_name}» صدات کنم؟",
+                reply_markup=menu_service.ambiguous_name_confirm(),
+            )
+            return True
+        await finish_name_update(message, message.from_user.id, result.normalized, bot)
         return True
 
     async def show_memories(message: Message) -> None:
@@ -253,6 +316,22 @@ def register_handlers(
             reply_markup=menu_service.account_keyboard(can_debug(user_id)),
         )
 
+    async def show_referral(message: Message, bot: Bot) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        stats = user_service.referral_stats(user_id)
+        bot_username = (await bot.get_me()).username
+        link = f"https://t.me/{bot_username}?start={stats['code']}" if bot_username else stats["code"]
+        await message.answer(
+            "🎁 دعوت دوستان\n\n"
+            "لینک اختصاصی‌ات:\n"
+            f"`{link}`\n\n"
+            "هر دوستی که با لینک تو بیاد، پروفایلش رو کامل کنه و حداقل یک سوال بپرسه، "
+            "۱۰ پیام extra به ظرفیتت اضافه می‌شه.\n\n"
+            f"👥 دعوت‌شده‌ها: {stats['total']}\n"
+            f"✅ کامل‌شده: {stats['qualified']}\n"
+            f"⭐ پاداش‌گرفته: {stats['rewarded']}",
+        )
+
     @dispatcher.my_chat_member()
     async def my_chat_member_handler(event: ChatMemberUpdated) -> None:
         if group_service is None or not is_group_chat_type(getattr(event.chat, "type", None)):
@@ -278,6 +357,9 @@ def register_handlers(
             await message.answer("نتوانستم اطلاعات کاربرت را بخوانم. دوباره /start را بزن.")
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) == 2:
+            user_service.set_referred_by_code(message.from_user.id, parts[1].strip())
         if not await ensure_membership(message, bot, use_cache=False):
             return
         profile = user_service.get(message.from_user.id)
@@ -495,10 +577,19 @@ def register_handlers(
         check = await channel_service.check_user(bot, callback.from_user.id, use_cache=False)
         if not check.ok:
             await callback.answer("هنوز عضویت کامل نیست.", show_alert=False)
-            await show_membership_gate(callback.message, check)
+            profile = user_service.get(callback.from_user.id)
+            await show_membership_gate(
+                callback.message,
+                bot,
+                check,
+                verification_failed=bool(profile and profile.membership_state == "required"),
+                user_id=callback.from_user.id,
+            )
             return
         await callback.answer("عضویت تأیید شد.")
-        profile = user_service.get(callback.from_user.id)
+        await delete_membership_gate(bot, callback.from_user.id)
+        user_service.mark_membership_ok(callback.from_user.id)
+        profile = user_service.recover_registration_state(callback.from_user.id)
         if profile and profile.onboarding_state == OnboardingState.READY:
             await callback.message.answer("عضویت تأیید شد ✨\nحالا پیامت رو بفرست.", reply_markup=menu_service.reply_menu(can_debug(callback.from_user.id)))
             return
@@ -508,7 +599,7 @@ def register_handlers(
         await ask_for_name(callback.message)
 
     @dispatcher.callback_query(F.data == "onboarding:name_confirm")
-    async def confirm_name_callback(callback: CallbackQuery) -> None:
+    async def confirm_name_callback(callback: CallbackQuery, bot: Bot) -> None:
         if not callback.message:
             return
         profile = user_service.get(callback.from_user.id)
@@ -519,7 +610,7 @@ def register_handlers(
         await callback.answer("ثبت شد.")
         with suppress(Exception):
             await callback.message.delete()
-        await finish_name_update(callback.message, callback.from_user.id, profile.suggested_name)
+        await finish_name_update(callback.message, callback.from_user.id, profile.suggested_name, bot)
 
     @dispatcher.callback_query(F.data == "onboarding:name_change")
     async def change_name_callback(callback: CallbackQuery) -> None:
@@ -532,14 +623,14 @@ def register_handlers(
         await callback.message.answer("باشه ✨\nاسم دلخواهت رو کوتاه بنویس.")
 
     @dispatcher.callback_query(F.data == "onboarding:ambiguous_confirm")
-    async def ambiguous_name_callback(callback: CallbackQuery) -> None:
+    async def ambiguous_name_callback(callback: CallbackQuery, bot: Bot) -> None:
         if not callback.message:
             return
         profile = user_service.get(callback.from_user.id)
         if profile and profile.pending_name:
             with suppress(Exception):
                 await callback.message.delete()
-            await finish_name_update(callback.message, callback.from_user.id, profile.pending_name)
+            await finish_name_update(callback.message, callback.from_user.id, profile.pending_name, bot)
         await callback.answer()
 
     @dispatcher.callback_query(F.data.startswith("onboarding:gender:"))
@@ -561,7 +652,7 @@ def register_handlers(
         check = await channel_service.check_user(bot, callback.from_user.id)
         if not check.ok:
             await callback.answer("اول عضویت کانال‌ها را کامل کن.")
-            await show_membership_gate(callback.message, check)
+            await show_membership_gate(callback.message, bot, check, user_id=callback.from_user.id)
             return
         action = (callback.data or "").split(":", 1)[1]
         await callback.answer()
@@ -569,6 +660,8 @@ def register_handlers(
             await show_memories(callback.message)
         elif action in {"profile", "account"}:
             await show_account(callback.message)
+        elif action == "referral":
+            await show_referral(callback.message, bot)
         elif action == "help":
             await callback.message.answer("💬 هر پیام معمولی‌ای بفرستی مستقیم به نرگس می‌رسه.\nاز دکمه‌های پایین هم برای پروفایل و ظرفیت استفاده کن.")
 
@@ -576,9 +669,10 @@ def register_handlers(
     async def account_edit_name_callback(callback: CallbackQuery) -> None:
         if not callback.message:
             return
-        user_service.set_state(callback.from_user.id, OnboardingState.ASK_NAME_INPUT)
+        user_service.set_onboarding_state(callback.from_user.id, OnboardingState.ASK_NAME_INPUT)
         await callback.answer()
-        await callback.message.answer("✏️ اسم جدیدی که می‌خوای باهاش صدات کنم رو بفرست.")
+        sent = await callback.message.answer("✏️ اسم جدیدی که می‌خوای باهاش صدات کنم رو بفرست.")
+        user_service.set_prompt_message(callback.from_user.id, sent.chat.id, sent.message_id)
 
     @dispatcher.callback_query(F.data == "account:edit_gender")
     async def account_edit_gender_callback(callback: CallbackQuery) -> None:
@@ -592,9 +686,10 @@ def register_handlers(
         if not callback.message:
             return
         await callback.answer()
+        profile = user_service.get(callback.from_user.id)
         await callback.message.answer(
-            "افزایش ظرفیت\n\nمی‌تونی با Stars ظرفیت اضافه کنی یا یک‌بار شماره موبایل اکانت تلگرامت را برای ۳۰ پیام اضافه بفرستی.",
-            reply_markup=menu_service.capacity_keyboard(),
+            capacity_text(profile),
+            reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)),
         )
 
     @dispatcher.callback_query(F.data == "billing:stars_menu")
@@ -612,9 +707,10 @@ def register_handlers(
         if not callback.message:
             return
         await callback.answer()
+        profile = user_service.get(callback.from_user.id)
         await callback.message.edit_text(
-            "افزایش ظرفیت\n\nمی‌تونی با Stars ظرفیت اضافه کنی یا شماره موبایل اکانت تلگرامت را بفرستی.",
-            reply_markup=menu_service.capacity_keyboard(),
+            capacity_text(profile),
+            reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)),
         )
 
     @dispatcher.callback_query(F.data.startswith("billing:plan:"))
@@ -644,11 +740,24 @@ def register_handlers(
     async def capacity_phone_callback(callback: CallbackQuery) -> None:
         if not callback.message:
             return
+        profile = user_service.get(callback.from_user.id)
+        if not phone_bonus_available(profile):
+            await callback.answer("شماره موبایل قبلاً ثبت شده.", show_alert=True)
+            return
         await callback.answer()
         await callback.message.answer(
-            "برای دریافت ۳۰ پیام اضافه، باید شماره موبایل همان اکانت تلگرام را با دکمه زیر بفرستی.",
+            "برای دریافت ۲۰ پیام اضافه، باید شماره موبایل همان اکانت تلگرام را با دکمه زیر بفرستی.",
             reply_markup=menu_service.phone_request_keyboard(),
         )
+
+    @dispatcher.callback_query(F.data == "capacity:referral")
+    async def capacity_referral_callback(callback: CallbackQuery, bot: Bot) -> None:
+        if not callback.message:
+            return
+        await callback.answer()
+        with suppress(Exception):
+            await callback.message.delete()
+        await show_referral(callback.message, bot)
 
     @dispatcher.pre_checkout_query()
     async def pre_checkout_handler(query: PreCheckoutQuery) -> None:
@@ -697,11 +806,11 @@ def register_handlers(
             return
         can_claim = user_service.save_phone_number(message.from_user.id, message.contact.phone_number)
         if not can_claim:
-            await message.answer("شماره‌ات قبلاً ثبت شده و پاداش ۳۰ پیام را گرفته‌ای.", reply_markup=ReplyKeyboardRemove())
+            await message.answer("شماره‌ات قبلاً ثبت شده و پاداش ۲۰ پیام را گرفته‌ای.", reply_markup=ReplyKeyboardRemove())
             return
-        quota_service.add_extra_credit(message.from_user.id, 30, reason="phone")
+        quota_service.add_extra_credit(message.from_user.id, 20, reason="phone")
         user_service.mark_phone_bonus_claimed(message.from_user.id)
-        await message.answer("شماره موبایل تأیید شد. ۳۰ پیام به ظرفیت اضافه‌ات اضافه شد.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("شماره موبایل تأیید شد. ۲۰ پیام به ظرفیت اضافه‌ات اضافه شد.", reply_markup=ReplyKeyboardRemove())
         await show_account(message)
 
     @dispatcher.message(F.text)
@@ -710,12 +819,12 @@ def register_handlers(
             await message.answer("نتوانستم اطلاعات کاربرت را بخوانم.")
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
-        if await handle_name_text(message):
+        if await handle_name_text(message, bot):
             return
         if not await ensure_membership(message, bot):
             return
         profile = user_service.get(message.from_user.id)
-        text_value = (message.text or "").strip()
+        text_value = clamp_repeated_chars((message.text or "").strip())
         if profile and profile.onboarding_state == OnboardingState.ASK_GENDER:
             await ask_for_gender(message, message.from_user.id)
             return
@@ -725,17 +834,27 @@ def register_handlers(
         if text_value == "👤 پروفایل":
             await show_account(message)
             return
+        if text_value == "🎁 دعوت دوستان":
+            await show_referral(message, bot)
+            return
         if text_value == "⚡ افزایش ظرفیت":
+            profile = user_service.get(message.from_user.id)
             await message.answer(
-                "⚡ افزایش ظرفیت\n\nمی‌تونی با Stars ظرفیت اضافه بگیری یا یک‌بار شماره همین اکانت تلگرام رو بفرستی.",
-                reply_markup=menu_service.capacity_keyboard(),
+                capacity_text(profile),
+                reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)),
             )
             return
         if text_value == "💬 راهنما":
             await message.answer("💬 پیام معمولی بفرست؛ مستقیم به نرگس می‌رسه.\nبرای حساب و ظرفیت هم از دکمه‌های پایین استفاده کن.")
             return
         if text_value == "🧠 حافظه‌ها":
+            if not can_debug(message.from_user.id):
+                await message.answer("🧠 بخش حافظه فقط در حالت debug فعاله.")
+                return
             await show_memories(message)
+            return
+        if meaningful_length(text_value) < 2:
+            await message.answer("متوجه نشدمم دوباره بگو")
             return
         if not await ensure_not_blocked_for_model(message):
             return
@@ -757,7 +876,8 @@ def register_handlers(
             with suppress(asyncio.CancelledError):
                 await typing_task
             if any(word in text for word in ("سهمیه", "ظرفیت", "تند", "سقف", "limit")):
-                await message.answer(text, reply_markup=menu_service.capacity_keyboard())
+                profile = user_service.get(message.from_user.id)
+                await message.answer(text, reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)))
             else:
                 await message.answer(text)
             return
@@ -776,4 +896,17 @@ def register_handlers(
         for item in result.reply.messages:
             await asyncio.sleep(item.delay_seconds)
             await message.answer(item.text)
+        if profile and not profile.gender:
+            today = message.date.astimezone(UTC).date().isoformat()
+            if user_service.should_send_gender_nudge(message.from_user.id, today):
+                await message.answer(
+                    "✨ یه پیشنهاد کوچولو\n\n"
+                    "اگه جنسیتت رو تنظیم کنی، لحن جواب‌ها دقیق‌تر و طبیعی‌تر می‌شه.\n"
+                    "هر وقت خواستی از همین دکمه عوضش کن 💫",
+                    reply_markup=menu_service.gender_keyboard(),
+                )
+        user_service.mark_first_question(message.from_user.id)
+        inviter_id = user_service.claim_referral_bonus_if_ready(message.from_user.id)
+        if inviter_id:
+            quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
 

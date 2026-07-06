@@ -28,6 +28,8 @@ class DailyEvent(BaseModel):
 class GlobalState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    ai_enabled: bool = True
+    ai_disabled_message: str = "فعلاً اتصال هوش مصنوعی غیرفعاله. کمی بعد دوباره پیام بده."
     mood: str = "normal"
     energy: int = Field(default=70, ge=0, le=100)
     patience: int = Field(default=70, ge=0, le=100)

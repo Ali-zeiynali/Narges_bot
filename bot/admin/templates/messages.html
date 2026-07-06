@@ -1,0 +1,38 @@
+{% extends "base.html" %}{% block title %}پیام‌ها{% endblock %}
+{% block content %}
+<div class="top">
+  <div>
+    <h2>پیام‌ها</h2>
+    <div class="muted">نمای کامل پیام‌های ذخیره‌شده و payload هر درخواست مدل.</div>
+  </div>
+</div>
+<form class="card" method="get">
+  <div class="grid two">
+    <label>user_id
+      <input name="user_id" class="ltr" value="{{ user_id or '' }}" placeholder="اختیاری">
+    </label>
+    <label>limit
+      <input name="limit" type="number" min="20" max="1000" value="{{ limit }}">
+    </label>
+  </div>
+  <button>فیلتر</button>
+</form>
+<div class="card">
+  <table>
+    <tr><th>ID</th><th>کاربر</th><th>chat</th><th>role</th><th>type</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr>
+    {% for m in messages %}
+    <tr>
+      <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
+      <td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td>
+      <td class="ltr">{{ m.chat_id or "-" }}</td>
+      <td>{{ m.role }}</td>
+      <td>{{ m.message_type }}</td>
+      <td>{{ m.text[:260] }}</td>
+      <td>{{ m.provider or "-" }}</td>
+      <td>{{ m.total_tokens or "-" }}</td>
+      <td>{{ m.created_at|dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

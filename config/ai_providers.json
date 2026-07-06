@@ -1,20 +1,78 @@
 {
   "providers": [
     {
+      "name": "nararouter",
+      "enabled": true,
+      "priority": 10,
+      "type": "openai_compatible",
+      "base_url": "https://router.bynara.id/v1",
+      "api_keys": [
+        "sk-nry-ahGF9WmmFkTzLKLiQfVyC_vF_Wmv1eK9hmIaCnWL8TE"
+      ],
+      "model": "mistral-large",
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45.0,
+      "supports_json_schema": false,
+      "supports_prompt_cache": "unknown",
+      "use_proxy": true,
+      "health_check": true,
+      "experimental": true,
+      "response_format": "none",
+      "prompt_cache": true
+    },
+    {
+      "name": "bazaarlink",
+      "type": "openai_compatible",
+      "enabled": true,
+      "priority": 20,
+      "base_url": "https://bazaarlink.ai/api/v1",
+      "model": "gemini-3-flash-preview",
+      "api_keys": [
+        "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ"
+      ],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45.0,
+      "response_format": "none",
+      "use_proxy": true,
+      "health_check": true,
+      "experimental": true,
+      "prompt_cache": true
+    },
+    {
       "name": "mistral",
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://api.mistral.ai/v1",
-      "model": "devstral-2512",
+      "model": "mistral-large-2512",
       "api_keys": [
         "idvylBuCH2EXZI55rLKCEzAuvqxvNqj6",
-        "kFzEI5iaBCCR2B8uUMChXY8DUB35VlaN",
-        "4SYVWyJlUTuEIN1He47EuId48hywByOY"
+        "kFzEI5iaBCCR2B8uUMChXY8DUB35VlaN"
       ],
       "temperature": 0.7,
       "max_completion_tokens": 512,
       "timeout_seconds": 45,
-      "prompt_cache": false
+      "use_proxy": true,
+      "prompt_cache": true
+    },
+    
+    {
+      "name": "groq",
+      "type": "openai_compatible",
+      "enabled": true,
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "qwen/qwen3.6-27b",
+      "api_keys": [
+        "env:GROQ_API_KEY",
+        "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",
+        "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"
+      ],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "use_proxy": true,
+      "prompt_cache": true
     },
     {
       "name": "groq",
@@ -23,14 +81,27 @@
       "base_url": "https://api.groq.com/openai/v1",
       "model": "llama-3.3-70b-versatile",
       "api_keys": [
-        "env:GROQ_API_KEY",
-        "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",
-        "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",
         "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"
       ],
       "temperature": 0.7,
       "max_completion_tokens": 512,
       "timeout_seconds": 45,
+      "use_proxy": true,
+      "prompt_cache": true
+    },
+    {
+      "name": "mistral",
+      "type": "openai_compatible",
+      "enabled": true,
+      "base_url": "https://api.mistral.ai/v1",
+      "model": "devstral-2512",
+      "api_keys": [
+        "4SYVWyJlUTuEIN1He47EuId48hywByOY"
+      ],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "use_proxy": true,
       "prompt_cache": true
     }
   ]

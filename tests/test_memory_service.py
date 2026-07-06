@@ -22,29 +22,29 @@ class MemoryServiceTests(unittest.TestCase):
         suggestion = MemorySuggestion(
             action="save",
             kind="preference",
-            summary="کاربر قهوه تلخ دوست دارد.",
+            summary="User likes bitter coffee.",
             confidence=0.9,
         )
-        self.service.apply_suggestions(1, 10, "من صبح‌ها قهوه تلخ می‌خورم.", [suggestion])
+        self.service.apply_candidates(1, 10, "I drink bitter coffee every morning.", [suggestion], assistant_sourced=False)
 
         memories = self.service.list_active(1)
         self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0].summary, "کاربر قهوه تلخ دوست دارد.")
-        self.assertNotIn("صبح‌ها", memories[0].summary)
+        self.assertEqual(memories[0].summary, "User likes bitter coffee.")
+        self.assertNotIn("every morning", memories[0].summary)
 
     def test_rejects_sensitive_memory(self) -> None:
         suggestion = MemorySuggestion(
             action="save",
             kind="identity",
-            summary="رمز کاربر 1234 است.",
+            summary="User password is 1234.",
             confidence=0.9,
         )
-        self.service.apply_suggestions(1, 10, "رمز من 1234 است.", [suggestion])
+        self.service.apply_candidates(1, 10, "my password is 1234", [suggestion], assistant_sourced=False)
 
         self.assertEqual(self.service.list_active(1), [])
 
     def test_retrieval_is_user_scoped_and_relevant(self) -> None:
-        self.service.apply_suggestions(
+        self.service.apply_candidates(
             1,
             10,
             "I like tea.",
@@ -52,13 +52,14 @@ class MemoryServiceTests(unittest.TestCase):
                 MemorySuggestion(
                     action="create",
                     kind="preference",
-                    summary="User prefers black tea in the morning.",
+                    summary="User prefers black tea.",
                     confidence=0.9,
                     importance=4,
                 )
             ],
+            assistant_sourced=False,
         )
-        self.service.apply_suggestions(
+        self.service.apply_candidates(
             2,
             20,
             "I like tea.",
@@ -71,6 +72,7 @@ class MemoryServiceTests(unittest.TestCase):
                     importance=4,
                 )
             ],
+            assistant_sourced=False,
         )
 
         memories = self.service.retrieve_relevant(1, "tea in the morning")
@@ -85,19 +87,37 @@ class MemoryServiceTests(unittest.TestCase):
             summary="api key is secret",
             confidence=0.9,
         )
-        self.service.apply_suggestions(1, 10, "api key is secret", [suggestion])
+        self.service.apply_candidates(1, 10, "api key is secret", [suggestion], assistant_sourced=False)
 
         with closing(self.database.connect()) as connection:
             row = connection.execute("SELECT decision FROM memory_audit_logs LIMIT 1").fetchone()
         self.assertEqual(row["decision"], "rejected")
 
-    def test_obvious_preference_is_saved_from_text(self) -> None:
-        self.service.apply_obvious_user_facts(1, 10, "من موز دوست دارم")
+    def test_obvious_preference_is_saved_from_user_text(self) -> None:
+        self.service.process_user_message(1, 10, "I like bananas")
 
         memories = self.service.list_active(1)
         self.assertEqual(len(memories), 1)
-        self.assertIn("موز", memories[0].summary)
+        self.assertIn("bananas", memories[0].summary)
         self.assertEqual(memories[0].kind.value, "preference")
+
+    def test_rejects_unstable_or_low_value_user_text(self) -> None:
+        self.service.process_user_message(1, 10, "I am sad today")
+        self.service.process_user_message(1, 11, "thanks")
+
+        self.assertEqual(self.service.list_active(1), [])
+
+    def test_assistant_sourced_candidates_are_rejected(self) -> None:
+        suggestion = MemorySuggestion(
+            action="create",
+            kind="preference",
+            summary="User likes invented assistant fact.",
+            confidence=0.95,
+        )
+
+        self.service.apply_candidates(1, 10, "assistant said so", [suggestion], assistant_sourced=True)
+
+        self.assertEqual(self.service.list_active(1), [])
 
 
 if __name__ == "__main__":

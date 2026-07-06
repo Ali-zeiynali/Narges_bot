@@ -27,3 +27,11 @@ class GlobalStateService:
                 return
             row.payload = state.model_dump_json()
             row.updated_at = datetime.now(UTC)
+
+    def set_ai_enabled(self, enabled: bool, message: str | None = None) -> GlobalState:
+        state = self.get()
+        state.ai_enabled = enabled
+        if message is not None:
+            state.ai_disabled_message = message.strip() or GlobalState().ai_disabled_message
+        self.save(state)
+        return state

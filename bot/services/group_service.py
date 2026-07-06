@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,6 +16,14 @@ from bot.storage.orm import GroupChatORM, ScheduledGroupMessageORM
 logger = logging.getLogger(__name__)
 
 ACTIVE_BOT_STATUSES = {"member", "administrator", "creator"}
+
+
+@dataclass(frozen=True)
+class MessageDeliveryResult:
+    target_id: int
+    status: str
+    telegram_message_id: int | None = None
+    error: str | None = None
 
 
 class GroupService:
@@ -148,16 +157,26 @@ async def send_messages(bot: Bot, chat_ids: list[int], text: str) -> tuple[int, 
     sent = 0
     failed = 0
     first_error: str | None = None
-    for chat_id in chat_ids:
-        try:
-            await bot.send_message(chat_id, text)
+    for result in await send_messages_detailed(bot, chat_ids, text):
+        if result.status == "sent":
             sent += 1
-            await asyncio.sleep(0.04)
-        except Exception as exc:
+        else:
             failed += 1
             if first_error is None:
-                first_error = f"{exc.__class__.__name__}: {exc}"
+                first_error = result.error
     return sent, failed, first_error
+
+
+async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str) -> list[MessageDeliveryResult]:
+    results: list[MessageDeliveryResult] = []
+    for chat_id in chat_ids:
+        try:
+            message = await bot.send_message(chat_id, text)
+            results.append(MessageDeliveryResult(target_id=chat_id, status="sent", telegram_message_id=message.message_id))
+            await asyncio.sleep(0.04)
+        except Exception as exc:
+            results.append(MessageDeliveryResult(target_id=chat_id, status="failed", error=f"{exc.__class__.__name__}: {exc}"))
+    return results
 
 
 class GroupMessageScheduler:

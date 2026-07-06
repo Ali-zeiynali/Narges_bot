@@ -64,6 +64,8 @@ class RequiredChannelService:
         position: int | None = None,
     ) -> RequiredChannel:
         now = datetime.now(UTC)
+        chat_id = self.normalize_chat_id(chat_id)
+        join_url = self.normalize_join_url(chat_id, join_url)
         if position is None:
             position = self._next_position()
         with self.database.orm.session() as session:
@@ -87,9 +89,43 @@ class RequiredChannelService:
                 row.is_private = is_private
                 row.active = True
                 row.updated_at = now
+            session.query(MembershipCacheORM).delete()
         channel = self._find_by_chat_id(chat_id)
         self._audit(admin_id, "upsert_channel", channel.id, None, channel)
         return channel
+
+    def update_channel(
+        self,
+        admin_id: int,
+        channel_id: int,
+        chat_id: str,
+        title: str,
+        join_url: str | None,
+        is_private: bool,
+        active: bool,
+        position: int,
+    ) -> bool:
+        before = self.get(channel_id)
+        if before is None:
+            return False
+        now = datetime.now(UTC)
+        chat_id = self.normalize_chat_id(chat_id)
+        join_url = self.normalize_join_url(chat_id, join_url)
+        with self.database.orm.session() as session:
+            row = session.get(RequiredChannelORM, channel_id)
+            if row is None:
+                return False
+            row.chat_id = chat_id
+            row.title = title
+            row.join_url = join_url
+            row.position = position
+            row.is_private = is_private
+            row.active = active
+            row.updated_at = now
+            session.query(MembershipCacheORM).delete()
+        after = self.get(channel_id)
+        self._audit(admin_id, "update_channel", channel_id, before, after)
+        return True
 
     def remove_channel(self, admin_id: int, channel_id: int) -> bool:
         before = self.get(channel_id)
@@ -112,6 +148,7 @@ class RequiredChannelService:
             if row:
                 row.position = position
                 row.updated_at = datetime.now(UTC)
+                session.query(MembershipCacheORM).delete()
         after = self.get(channel_id)
         self._audit(admin_id, "move_channel", channel_id, before, after)
         return True
@@ -142,16 +179,40 @@ class RequiredChannelService:
 
     async def _fetch_membership(self, bot: Bot, user_id: int, channel: RequiredChannel) -> MembershipItem:
         try:
-            member = await bot.get_chat_member(chat_id=channel.chat_id, user_id=user_id)
+            member = await bot.get_chat_member(chat_id=self.normalize_chat_id(channel.chat_id), user_id=user_id)
             status = getattr(member.status, "value", str(member.status))
             is_member = status in VALID_MEMBER_STATUSES
             item = MembershipItem(channel=channel, status=status, is_member=is_member)
             self._cache(user_id, item)
             return item
         except TelegramAPIError as exc:
-            item = MembershipItem(channel=channel, status=None, is_member=False, error=exc.__class__.__name__)
+            item = MembershipItem(channel=channel, status=None, is_member=False, error=f"{exc.__class__.__name__}: {exc}")
             self._cache(user_id, item)
             return item
+
+    def normalize_chat_id(self, value: str) -> str:
+        chat_id = str(value or "").strip()
+        if not chat_id:
+            return chat_id
+        for prefix in ("https://t.me/", "http://t.me/", "https://telegram.me/", "http://telegram.me/"):
+            if chat_id.startswith(prefix):
+                chat_id = chat_id.removeprefix(prefix).strip("/")
+                break
+        if chat_id.startswith("@") or chat_id.startswith("-") or chat_id.lstrip("-").isdigit():
+            return chat_id
+        if chat_id.startswith("t.me/"):
+            chat_id = chat_id.removeprefix("t.me/").strip("/")
+        if chat_id.startswith("telegram.me/"):
+            chat_id = chat_id.removeprefix("telegram.me/").strip("/")
+        return f"@{chat_id.strip('/')}"
+
+    def normalize_join_url(self, chat_id: str, join_url: str | None) -> str | None:
+        url = (join_url or "").strip()
+        if url:
+            return url
+        if chat_id.startswith("@"):
+            return f"https://t.me/{chat_id[1:]}"
+        return None
 
     def _get_cached(self, user_id: int, channel_id: int) -> MembershipItem | None:
         now = datetime.now(UTC)
@@ -220,11 +281,12 @@ class RequiredChannelService:
         return json.dumps(value, ensure_ascii=False, default=str)
 
     def _row_to_channel(self, row) -> RequiredChannel:
+        chat_id = self.normalize_chat_id(self._value(row, "chat_id"))
         return RequiredChannel(
             id=self._value(row, "id"),
-            chat_id=self._value(row, "chat_id"),
+            chat_id=chat_id,
             title=self._value(row, "title"),
-            join_url=self._value(row, "join_url"),
+            join_url=self.normalize_join_url(chat_id, self._value(row, "join_url")),
             position=self._value(row, "position"),
             is_private=bool(self._value(row, "is_private")),
             active=bool(self._value(row, "active")),
