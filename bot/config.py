@@ -71,6 +71,14 @@ class Settings:
     reengagement_after_hours: int = 30
     reengagement_message: str = "دلم برات تنگ شدهه🥺 کجایی"
     reengagement_check_seconds: int = 600
+    webhook_base_url: str | None = None
+    telegram_webhook_secret: str | None = None
+    telegram_drop_pending_updates: bool = False
+    webhook_queue_maxsize: int = 200
+    webhook_worker_count: int = 1
+    webhook_rate_limit_count: int = 30
+    webhook_rate_limit_window_seconds: int = 60
+    webhook_idempotency_max_items: int = 10_000
 
 
 def csv_int_env(name: str) -> tuple[int, ...]:
@@ -105,7 +113,7 @@ def bool_env(name: str, default: bool = False) -> bool:
 
 def load_settings() -> Settings:
     load_dotenv()
-    proxy = os.getenv("TELEGRAM_PROXY", "http://127.0.0.1:12334").strip()
+    proxy = os.getenv("TELEGRAM_PROXY", "").strip()
     groq_proxy = os.getenv("GROQ_PROXY", "").strip() or proxy
     default_name_map = {
         "ali": "علی",
@@ -153,4 +161,16 @@ def load_settings() -> Settings:
         reengagement_after_hours=int_env("REENGAGEMENT_AFTER_HOURS", 30, 1, 720),
         reengagement_message=os.getenv("REENGAGEMENT_MESSAGE", "دلم برات تنگ شدهه🥺 کجایی").strip() or "دلم برات تنگ شدهه🥺 کجایی",
         reengagement_check_seconds=int_env("REENGAGEMENT_CHECK_SECONDS", 600, 60, 86400),
+        webhook_base_url=(
+            os.getenv("WEBHOOK_BASE_URL", "").strip()
+            or os.getenv("RENDER_EXTERNAL_URL", "").strip()
+            or None
+        ),
+        telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None,
+        telegram_drop_pending_updates=bool_env("TELEGRAM_DROP_PENDING_UPDATES", False),
+        webhook_queue_maxsize=int_env("WEBHOOK_QUEUE_MAXSIZE", 200, 1, 5000),
+        webhook_worker_count=int_env("WEBHOOK_WORKER_COUNT", 1, 1, 4),
+        webhook_rate_limit_count=int_env("WEBHOOK_RATE_LIMIT_COUNT", 30, 1, 1000),
+        webhook_rate_limit_window_seconds=int_env("WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),
+        webhook_idempotency_max_items=int_env("WEBHOOK_IDEMPOTENCY_MAX_ITEMS", 10000, 100, 1000000),
     )

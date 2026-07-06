@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: narges-telegram-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: WEBHOOK_WORKER_COUNT
+        value: "1"
+      - key: WEBHOOK_QUEUE_MAXSIZE
+        value: "200"
+      - key: TELEGRAM_PROXY
+        value: ""
+      - key: DATABASE_PATH
+        value: data/narges.sqlite3
+      - key: LOG_FILE
+        value: logs/bot.log
+      - key: LOG_LEVEL
+        value: INFO

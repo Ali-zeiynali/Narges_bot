@@ -39,3 +39,48 @@ venv\Scripts\python.exe -m bot.main
 ## نکته‌ها
 
 مدل اجازه ذخیره مستقیم حافظه یا ساخت واقعیت جهانی ندارد. فقط پیشنهاد می‌دهد و بک‌اند آن را از نظر حساسیت، تکرار، تزریق پرامپت، اعتبار و محدودیت تعداد بررسی می‌کند.
+
+## Render webhook deployment
+
+The bot now runs in webhook mode only. The FastAPI route receives Telegram updates, puts them into an in-memory `asyncio.Queue`, and returns immediately. A background worker feeds queued updates into the existing aiogram dispatcher, so AI calls stay outside the webhook request path.
+
+### File structure
+
+- `bot/main.py`: production process entrypoint for Render (`python -m bot.main`)
+- `bot/webhook.py`: FastAPI app, `/webhook/telegram`, `/health`, webhook registration
+- `bot/update_queue.py`: in-memory queue, update-id idempotency, simple per-user limiter
+- `bot/worker.py`: background update consumer that calls aiogram `Dispatcher.feed_update`
+- `bot/application.py`: shared bot/service factory used by the worker
+- `bot/handlers.py`: existing aiogram handlers, preserved
+
+### Render settings
+
+Use the included `render.yaml`, or configure manually:
+
+```text
+Build command: pip install -r requirements.txt
+Start command: python -m bot.main
+Health check path: /health
+```
+
+Required environment variables:
+
+```text
+TELEGRAM_TOKEN=...
+GROQ_API_KEY=...
+WEBHOOK_BASE_URL=https://your-service.onrender.com
+TELEGRAM_WEBHOOK_SECRET=<long random string>
+TELEGRAM_PROXY=
+```
+
+Recommended free-tier defaults:
+
+```text
+WEBHOOK_WORKER_COUNT=1
+WEBHOOK_QUEUE_MAXSIZE=200
+WEBHOOK_RATE_LIMIT_COUNT=30
+WEBHOOK_RATE_LIMIT_WINDOW_SECONDS=60
+TELEGRAM_DROP_PENDING_UPDATES=false
+```
+
+Keep `WEBHOOK_WORKER_COUNT=1` on the free tier to avoid SQLite write contention and concurrent AI calls for the same process. The webhook returns `{"ok": true}` for duplicates, invalid payloads, and rate-limited updates so Telegram does not retry them into duplicate AI work.
