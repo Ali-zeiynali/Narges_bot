@@ -56,8 +56,8 @@ class PersonaCompiler:
             },
             "hard_rules": [
                 "The conversation model may manage user memory with memory_suggestions.",
-                "If previous_messages is present, treat it as compact prior context: user text/date plus model answer/date only.",
-                "The user may ask about previous_messages, but do not copy their wording or generate a near-duplicate answer.",
+                "Use current_user_message together with pending_user_thread; do not interpret a short message in isolation when a thread is present.",
+                "If inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and keep memory_suggestions empty.",
                 "Use active memories naturally; do not repeat them as a list in the reply.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
                 "Each Telegram message must be at most 8 lines; normal replies should be much shorter.",
@@ -73,7 +73,12 @@ class PersonaCompiler:
             "facts": [],
             "recent_intent": None,
             "relevant_memories": [memory.summary for memory in memories],
-            "previous_messages": [],
+            "current_user_message": "",
+            "last_user_messages": [],
+            "short_conversation_summary": "",
+            "pending_user_thread": "",
+            "inferred_intent": "unknown",
+            "directly_relevant_memories": [memory.summary for memory in memories],
             "anti_loop": {"forbidden_reuse": False},
         }
 

@@ -23,17 +23,17 @@
   </div>
   <div class="card">
     <h3>متن پیام</h3>
-    <pre>{{ message.text }}</pre>
+    <pre><code>{{ message.text }}</code></pre>
   </div>
 </div>
 <div class="card">
   <h3>محتوای ارسال‌شده به هوش مصنوعی</h3>
   {% if ai_request.messages %}
-  <table><tr><th>role</th><th>content</th></tr>{% for item in ai_request.messages %}<tr><td>{{ item.role }}</td><td><pre>{{ item.content }}</pre></td></tr>{% endfor %}</table>
+  <table><tr><th>role</th><th>content</th></tr>{% for item in ai_request.messages %}<tr><td>{{ item.role }}</td><td><pre><code>{{ item.content }}</code></pre></td></tr>{% endfor %}</table>
   {% else %}
   <p class="muted">برای این پیام payload ذخیره نشده است.</p>
   {% endif %}
 </div>
-<div class="card"><h3>Payload کامل</h3><pre>{{ ai_request | json_pretty }}</pre></div>
+<div class="card"><h3>Payload کامل</h3><pre><code>{{ ai_request | json_pretty }}</code></pre></div>
 {% endif %}
 {% endblock %}

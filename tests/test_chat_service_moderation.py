@@ -182,7 +182,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(memories), 1)
         self.assertIn("black tea", memories[0].summary)
 
-    async def test_model_memory_suggestions_do_not_need_current_message_support(self) -> None:
+    async def test_unsupported_model_memory_suggestions_are_rejected(self) -> None:
         service = ChatService(
             validator=MessageValidator(self.settings),
             persona_compiler=PersonaCompiler("v"),
@@ -208,8 +208,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         memories = MemoryService(self.database).list_active(3)
-        self.assertEqual(len(memories), 1)
-        self.assertIn("model-invented", memories[0].summary)
+        self.assertEqual(memories, [])
 
 
 if __name__ == "__main__":

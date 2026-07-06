@@ -27,10 +27,22 @@ class BuiltContext:
     relevant_memories: list[str]
     last_user_message: str
     anti_loop: AntiLoopContext
+    current_user_message: str = ""
+    last_user_messages: list[dict[str, str]] = field(default_factory=list)
+    pending_user_thread: str = ""
+    short_conversation_summary: str = ""
+    inferred_intent: str = "unknown"
+    directly_relevant_memories: list[str] = field(default_factory=list)
     previous_messages: list[dict[str, str]] = field(default_factory=list)
 
     def for_prompt(self) -> dict:
         return {
+            "current_user_message": self.current_user_message or self.last_user_message,
+            "last_user_messages": self.last_user_messages,
+            "short_conversation_summary": self.short_conversation_summary or self.summary,
+            "pending_user_thread": self.pending_user_thread,
+            "inferred_intent": self.inferred_intent or self.recent_intent,
+            "directly_relevant_memories": self.directly_relevant_memories or self.relevant_memories,
             "state": {
                 "mode": self.state.mode,
                 "topic": self.state.topic,
@@ -39,11 +51,11 @@ class BuiltContext:
             "facts": self.facts,
             "recent_intent": self.recent_intent,
             "relevant_memories": self.relevant_memories,
-            "previous_messages": self.previous_messages,
-            "previous_messages_note": (
-                "These are the last previous user/model turns only. "
-                "Use them to understand references to prior messages, but do not repeat or imitate them."
-            ),
+            "context_rules": {
+                "last_user_messages": "Recent user-only messages. Treat short consecutive messages as one thread when pending_user_thread is present.",
+                "guessing": "When inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and do not emit memory_suggestions.",
+                "memory": "Create memory_suggestions only for explicit, stable user facts/preferences/projects/constraints or explicit save/forget requests.",
+            },
             "anti_loop": {
                 "last_assistant_text_hash": self.anti_loop.last_assistant_text_hash,
                 "last_assistant_intent": self.anti_loop.last_assistant_intent,

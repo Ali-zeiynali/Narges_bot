@@ -32,7 +32,7 @@ class MemoryServiceTests(unittest.TestCase):
         self.assertEqual(memories[0].summary, "User likes bitter coffee.")
         self.assertNotIn("every morning", memories[0].summary)
 
-    def test_backend_accepts_model_memory_content_without_content_gate(self) -> None:
+    def test_backend_rejects_sensitive_model_memory(self) -> None:
         suggestion = MemorySuggestion(
             action="save",
             kind="identity",
@@ -42,8 +42,7 @@ class MemoryServiceTests(unittest.TestCase):
         self.service.apply_candidates(1, 10, "my password is 1234", [suggestion], assistant_sourced=False)
 
         memories = self.service.list_active(1)
-        self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0].summary, "User password is 1234.")
+        self.assertEqual(memories, [])
 
     def test_retrieval_is_user_scoped_and_relevant(self) -> None:
         self.service.apply_candidates(
@@ -110,7 +109,7 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.assertEqual(self.service.list_active(1), [])
 
-    def test_assistant_sourced_candidates_are_allowed_by_size_gate(self) -> None:
+    def test_unsupported_model_candidates_are_rejected(self) -> None:
         suggestion = MemorySuggestion(
             action="create",
             kind="preference",
@@ -118,9 +117,29 @@ class MemoryServiceTests(unittest.TestCase):
             confidence=0.95,
         )
 
-        self.service.apply_candidates(1, 10, "assistant said so", [suggestion], assistant_sourced=True)
+        self.service.apply_candidates(1, 10, "assistant said so", [suggestion], assistant_sourced=False, model_sourced=True)
 
-        self.assertEqual(len(self.service.list_active(1)), 1)
+        self.assertEqual(self.service.list_active(1), [])
+
+    def test_guessing_intent_blocks_memory(self) -> None:
+        suggestion = MemorySuggestion(
+            action="create",
+            kind="project",
+            summary="User is probably working on a secret deploy project.",
+            confidence=0.8,
+        )
+
+        self.service.apply_candidates(
+            1,
+            10,
+            "حدس بزن",
+            [suggestion],
+            assistant_sourced=False,
+            model_sourced=True,
+            metadata={"intent": "guessing"},
+        )
+
+        self.assertEqual(self.service.list_active(1), [])
 
     def test_persian_user_facts_and_style_are_saved(self) -> None:
         self.service.process_user_message(1, 10, "اسمم آرمان است و دوست دارم باهام شوخی کنی")

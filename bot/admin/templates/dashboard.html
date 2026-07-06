@@ -42,7 +42,7 @@
           <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
           <td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td>
           <td>{{ m.role }}</td>
-          <td class="text-cell">{{ m.text }}</td>
+          <td class="text-cell"><pre><code>{{ m.text }}</code></pre></td>
           <td class="ltr">{{ m.total_tokens or "-" }}</td>
           <td>{{ m.created_at|dt }}</td>
         </tr>

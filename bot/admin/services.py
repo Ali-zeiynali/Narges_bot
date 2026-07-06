@@ -625,7 +625,7 @@ class AdminDataService:
             "id": row.id,
             "user_id": row.user_id,
             "role": row.role,
-            "text": row.text[:180],
+            "text": row.text,
             "provider": row.provider,
             "model": row.model,
             "total_tokens": row.total_tokens,

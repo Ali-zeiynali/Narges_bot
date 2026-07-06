@@ -93,37 +93,28 @@ class HistoryService:
         ]
 
     def recent_previous_turns(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
+        return self.recent_user_messages(user_id, limit=limit)
+
+    def recent_user_messages(self, user_id: int, limit: int = 5) -> list[dict[str, str]]:
         with self.database.orm.session() as session:
             rows = session.scalars(
                 select(ConversationMessageORM)
                 .where(
                     ConversationMessageORM.user_id == user_id,
                     ConversationMessageORM.message_type == "chat",
-                    ConversationMessageORM.role.in_(("user", "assistant")),
+                    ConversationMessageORM.role == "user",
                 )
                 .order_by(ConversationMessageORM.id.desc())
-                .limit(max(limit * 4, 12))
+                .limit(limit)
             ).all()
-
-        pairs: list[dict[str, str]] = []
-        pending_assistant: ConversationMessageORM | None = None
-        for row in rows:
-            if row.role == "assistant":
-                pending_assistant = row
-                continue
-            if row.role == "user" and pending_assistant is not None:
-                pairs.append(
-                    {
-                        "user_text": self._compact(row.text, 220),
-                        "user_created_at": self._iso(row.created_at),
-                        "model_answer": self._compact(pending_assistant.text, 220),
-                        "model_answer_created_at": self._iso(pending_assistant.created_at),
-                    }
-                )
-                pending_assistant = None
-            if len(pairs) >= limit:
-                break
-        return list(reversed(pairs))
+        return [
+            {
+                "text": self._compact(row.text, 220),
+                "created_at": self._iso(row.created_at),
+                "intent": row.intent or "",
+            }
+            for row in reversed(rows)
+        ]
 
     def last_assistant_reply(self, user_id: int) -> dict[str, str] | None:
         with self.database.orm.session() as session:

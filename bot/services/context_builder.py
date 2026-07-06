@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_MESSAGE_THRESHOLD = 8
 SUMMARY_TOKEN_THRESHOLD = 1400
+SHORT_MESSAGE_CHARS = 90
+THREAD_LOOKBACK_MESSAGES = 5
 
 
 class ContextBuilder:
@@ -29,17 +31,18 @@ class ContextBuilder:
     def build(self, user_id: int, user_text: str, memories: list[MemoryItem]) -> BuiltContext:
         summary = self._summary(user_id)
         row = self._state_row(user_id)
-        inferred_intent = self.infer_intent(user_text)
+        last_user_messages = self.history_service.recent_user_messages(user_id, limit=THREAD_LOOKBACK_MESSAGES)
+        pending_user_thread = self.build_pending_user_thread(user_text, last_user_messages)
+        inferred_intent = self.infer_intent(user_text, pending_user_thread)
         mode = self._conversation_state(row.mode if row else None)
         relationship_stage = row.relationship_stage if row else "new"
         familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
-        previous_messages = self.history_service.recent_previous_turns(user_id, limit=5)
         relevant_memories = self._memory_lines(memories)
         return BuiltContext(
             state=ContextState(
                 mode=mode,
-                topic=self._topic_hint(user_text),
+                topic=self._topic_hint(pending_user_thread or user_text),
                 relationship_stage=relationship_stage,
                 familiarity_score=familiarity_score,
             ),
@@ -47,13 +50,18 @@ class ContextBuilder:
             facts=[],
             recent_intent=inferred_intent,
             relevant_memories=relevant_memories,
-            previous_messages=previous_messages,
             last_user_message=user_text,
             anti_loop=AntiLoopContext(
                 last_assistant_text_hash=last_assistant["text_hash"] if last_assistant else None,
                 last_assistant_intent=last_assistant["intent"] if last_assistant else None,
                 forbidden_reuse=bool(last_assistant),
             ),
+            current_user_message=user_text,
+            last_user_messages=last_user_messages,
+            pending_user_thread=pending_user_thread,
+            short_conversation_summary=self._short_summary(summary),
+            inferred_intent=inferred_intent,
+            directly_relevant_memories=relevant_memories,
         )
 
     def observe_turn(
@@ -126,21 +134,45 @@ class ContextBuilder:
             row.token_estimate = estimate_tokens(summary)
             row.updated_at = now
 
-    def infer_intent(self, text: str) -> str:
+    def infer_intent(self, text: str, pending_user_thread: str = "") -> str:
         lowered = (text or "").lower()
-        if any(word in lowered for word in ("quota", "ظرفیت", "سهمیه", "stars", "استار", "شماره موبایل")):
-            return "quota"
-        if any(word in lowered for word in ("عضو", "کانال", "membership", "join")):
-            return "membership"
-        if any(word in lowered for word in ("admin", "ادمین", "provider", "لاگ", "پنل")):
-            return "admin_action"
-        if any(word in lowered for word in ("bug", "باگ", "خطا", "error", "exception", "traceback")):
-            return "bug_report"
-        if any(word in lowered for word in ("کد", "api", "sql", "python", "fastapi", "aiogram", "سرور", "مدل")):
+        compact = re.sub(r"\s+", " ", lowered).strip()
+        if self._is_guessing(compact):
+            return "guessing"
+        if pending_user_thread and self._is_continuation(compact):
+            return "continuation"
+        if any(word in lowered for word in ("bug", "error", "exception", "traceback", "خطا", "باگ")):
             return "technical"
-        if any(word in lowered for word in ("ناراحت", "غم", "استرس", "حالم", "تنها")):
+        if any(word in lowered for word in ("code", "api", "sql", "python", "fastapi", "aiogram", "server", "deploy", "render", "database", "postgres", "کد", "سرور", "دیتابیس", "پروژه")):
+            return "technical"
+        if any(word in lowered for word in ("نه", "اشتباه", "منظورم", "تصحیح", "wrong", "actually")):
+            return "correction"
+        if any(word in lowered for word in ("خفه", "احمق", "کسکش", "کثافت", "لعنتی", "idiot", "shut up", "stupid")):
+            return "insult"
+        if any(word in lowered for word in ("ناراحت", "غم", "استرس", "حالم", "تنها", "خسته", "sad", "stress", "lonely")):
             return "support"
+        if not compact:
+            return "unknown"
         return "casual"
+
+    def build_pending_user_thread(self, current_text: str, last_user_messages: list[dict[str, str]]) -> str:
+        messages = [item.get("text", "").strip() for item in last_user_messages if item.get("text")]
+        messages.append((current_text or "").strip())
+        recent = [message for message in messages[-THREAD_LOOKBACK_MESSAGES:] if message]
+        if not recent or not self._looks_like_pending_thread(recent):
+            return ""
+        joined = " / ".join(recent)
+        lowered = joined.lower()
+        topics: list[str] = []
+        if any(word in lowered for word in ("project", "پروژه")):
+            topics.append("یک پروژه")
+        if any(word in lowered for word in ("secret", "confidential", "private", "محرمانه", "خصوصی")):
+            topics.append("محرمانه")
+        if any(word in lowered for word in ("deploy", "publish", "render", "host", "test", "دیپلوی", "منتشر", "تست", "هاست", "بذارم", "بزارم")):
+            topics.append("انتشار، دیپلوی یا تست")
+        if topics:
+            return f"کاربر در چند پیام کوتاه پشت سر هم درباره {' و '.join(topics)} حرف می‌زند. پیام فعلی ادامه همان thread است."
+        return f"کاربر در چند پیام کوتاه پشت سر هم یک منظور ادامه‌دار را می‌سازد: {joined[:260]}"
 
     def _summary(self, user_id: int) -> str:
         row = self._summary_row(user_id)
@@ -155,20 +187,16 @@ class ContextBuilder:
             return session.get(ConversationContextStateORM, user_id)
 
     def _memory_lines(self, memories: list[MemoryItem]) -> list[str]:
-        return [f"#{memory.id} | {memory.kind.value}: {memory.summary}" for memory in memories[:40]]
+        return [f"#{memory.id} | {memory.kind.value}: {memory.summary}" for memory in memories[:16]]
 
     def _conversation_state(self, value: str | None) -> str:
         return value if value in {"normal", "sexual"} else "normal"
 
     def _mode_for_intent(self, intent: str) -> str:
-        if intent in {"technical", "bug_report"}:
+        if intent == "technical":
             return "technical"
         if intent == "support":
             return "support"
-        if intent == "admin_action":
-            return "admin"
-        if intent in {"quota", "membership"}:
-            return "restricted"
         return "casual"
 
     def _topic_hint(self, text: str) -> str | None:
@@ -176,6 +204,44 @@ class ContextBuilder:
         if not words:
             return None
         return " ".join(words[:8])[:120]
+
+    def _looks_like_pending_thread(self, messages: list[str]) -> bool:
+        if len(messages) < 2:
+            return False
+        short_count = sum(len(message) <= SHORT_MESSAGE_CHARS for message in messages)
+        if short_count >= 2 and any(self._is_continuation(message.lower()) or self._is_guessing(message.lower()) for message in messages):
+            return True
+        joined = " ".join(messages).lower()
+        return short_count >= 3 and any(word in joined for word in ("project", "پروژه", "secret", "محرمانه", "deploy", "دیپلوی", "بذارم", "بزارم"))
+
+    def _is_guessing(self, text: str) -> bool:
+        normalized = re.sub(r"[؟?!.\s]+", " ", text or "").strip()
+        return normalized in {"حدس بزن", "حدس بزنم", "guess", "guess what"} or "حدس بزن" in normalized
+
+    def _is_continuation(self, text: str) -> bool:
+        normalized = re.sub(r"[؟?!.\s]+", " ", text or "").strip()
+        if len(normalized) <= 2:
+            return True
+        continuation_values = {
+            "خب",
+            "باشه",
+            "اوکی",
+            "اره",
+            "آره",
+            "نه",
+            "نمیگم",
+            "هیچی",
+            "محرمانه",
+            "خصوصی",
+            "ادامه",
+            "بعدش",
+            "یه چیزی",
+            "ok",
+            "yeah",
+            "nope",
+            "nothing",
+        }
+        return normalized in continuation_values or len(normalized) <= 14
 
     def _next_relationship_stage(self, current: str | None, familiarity_score: float | None) -> str:
         score = float(familiarity_score or 0)
@@ -186,6 +252,10 @@ class ContextBuilder:
         if score >= 0.1:
             return "warming_up"
         return current or "new"
+
+    def _short_summary(self, summary: str) -> str:
+        summary = re.sub(r"\s+", " ", (summary or "").strip())
+        return summary[:500]
 
     def _clean_summary(self, summary: str) -> str:
         summary = re.sub(r"\s+", " ", (summary or "").strip())

@@ -27,7 +27,7 @@
       <td class="ltr">{{ m.chat_id or "-" }}</td>
       <td>{{ m.role }}</td>
       <td>{{ m.message_type }}</td>
-      <td>{{ m.text[:260] }}</td>
+      <td><pre><code>{{ m.text[:260] }}</code></pre></td>
       <td>{{ m.provider or "-" }}</td>
       <td>{{ m.total_tokens or "-" }}</td>
       <td>{{ m.created_at|dt }}</td>

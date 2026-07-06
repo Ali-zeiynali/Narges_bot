@@ -1,6 +1,41 @@
-{% extends "base.html" %}{% block title %}لاگ‌ها{% endblock %}
+{% extends "base.html" %}
+{% block title %}لاگ‌ها{% endblock %}
 {% block content %}
 <h2>لاگ‌های دسته‌بندی‌شده</h2>
-<div class="grid two"><div class="card"><h3>Debug</h3><table><tr><th>event</th><th>کاربر</th><th>payload</th><th>زمان</th></tr>{% for d in debug %}<tr><td>{{ d.event }}</td><td>{{ d.user_id }}</td><td><pre>{{ d.payload }}</pre></td><td>{{ d.created_at|dt }}</td></tr>{% endfor %}</table></div><div class="card"><h3>Usage</h3><table><tr><th>کاربر</th><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>{% for u in usage %}<tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>{% endfor %}</table></div></div>
-<div class="card"><h3>اخطارها</h3><table><tr><th>کاربر</th><th>دلیل</th><th>تعداد بعد از اخطار</th><th>زمان</th></tr>{% for w in warnings %}<tr><td>{{ w.user_id }}</td><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>{% endfor %}</table></div>
+
+<div class="grid two">
+  <div class="card">
+    <h3>Debug</h3>
+    <table>
+      <tr><th>event</th><th>کاربر</th><th>payload</th><th>زمان</th></tr>
+      {% for d in debug %}
+      <tr>
+        <td>{{ d.event }}</td>
+        <td>{{ d.user_id }}</td>
+        <td><pre><code>{{ d.payload }}</code></pre></td>
+        <td>{{ d.created_at|dt }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <div class="card">
+    <h3>Usage</h3>
+    <table>
+      <tr><th>کاربر</th><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>
+      {% for u in usage %}
+      <tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3>اخطارها</h3>
+  <table>
+    <tr><th>کاربر</th><th>دلیل</th><th>تعداد بعد از اخطار</th><th>زمان</th></tr>
+    {% for w in warnings %}
+    <tr><td>{{ w.user_id }}</td><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
 {% endblock %}

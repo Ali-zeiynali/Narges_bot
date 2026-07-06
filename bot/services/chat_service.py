@@ -92,7 +92,13 @@ class ChatService:
                 raise UserFacingError(global_state.ai_disabled_message)
 
         state = self.narges_state_service.get_active()
-        memories = self.memory_service.retrieve_for_context(user_id)
+        context = self.context_builder.build(user_id, text, [])
+        memories = self.memory_service.retrieve_for_context(
+            user_id,
+            text=context.pending_user_thread or text,
+            intent=context.recent_intent,
+            pending_user_thread=context.pending_user_thread,
+        )
         context = self.context_builder.build(user_id, text, memories)
         short_term_messages: list[dict[str, str]] = []
         search_results: list[dict[str, str]] = []
@@ -230,15 +236,17 @@ class ChatService:
                 intent=context.recent_intent,
             )
             if assistant_history_message_type == "chat":
+                memory_suggestions = [] if context.recent_intent == "guessing" else result.reply.memory_suggestions
                 self.memory_service.process_model_suggestions(
                     user_id,
                     message_id,
                     text,
-                    result.reply.memory_suggestions,
+                    memory_suggestions,
                     metadata={
                         "intent": context.recent_intent,
                         "mode": context.state.mode,
                         "active_memory_count": len(memories),
+                        "pending_user_thread": context.pending_user_thread,
                     },
                 )
             self.context_builder.observe_turn(

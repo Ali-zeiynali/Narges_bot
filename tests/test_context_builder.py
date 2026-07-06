@@ -44,7 +44,7 @@ class ContextBuilderTests(unittest.TestCase):
         context = self.builder.build(1, "python bug in quota", memories)
         prompt_context = context.for_prompt()
 
-        self.assertEqual(prompt_context["recent_intent"], "quota")
+        self.assertEqual(prompt_context["recent_intent"], "technical")
         self.assertEqual(prompt_context["facts"], [])
         self.assertTrue(any("preference: User prefers black tea." in item for item in prompt_context["relevant_memories"]))
         self.assertEqual(prompt_context["state"]["mode"], "normal")
@@ -52,6 +52,24 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertNotIn("familiarity_score", prompt_context["state"])
         self.assertNotIn("This raw old assistant reply", str(prompt_context))
         self.assertTrue(prompt_context["anti_loop"]["forbidden_reuse"])
+
+    def test_short_followup_messages_build_pending_guessing_thread(self) -> None:
+        now = datetime.now(UTC)
+        self.history.add(1, "user", "دارم رو پروژه کار می‌کنم", created_at=now)
+        self.history.add(1, "user", "محرمانه", created_at=now)
+        self.history.add(1, "user", "می‌خوام یه جایی بذارم", created_at=now)
+
+        context = self.builder.build(1, "حدس بزن", [])
+        prompt_context = context.for_prompt()
+
+        self.assertEqual(prompt_context["inferred_intent"], "guessing")
+        self.assertIn("پروژه", prompt_context["pending_user_thread"])
+        self.assertIn("محرمانه", prompt_context["pending_user_thread"])
+        self.assertEqual([item["text"] for item in prompt_context["last_user_messages"]], [
+            "دارم رو پروژه کار می‌کنم",
+            "محرمانه",
+            "می‌خوام یه جایی بذارم",
+        ])
 
     def test_conversation_state_persists_for_next_turn(self) -> None:
         self.builder.observe_turn(

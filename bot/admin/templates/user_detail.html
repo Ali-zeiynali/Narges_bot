@@ -76,7 +76,7 @@
         <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
         <td>{{ m.role }}</td>
         <td>{{ m.message_type }}</td>
-        <td class="text-cell">{{ m.text }}</td>
+        <td class="text-cell"><pre><code>{{ m.text }}</code></pre></td>
         <td>{{ m.provider or "-" }}</td>
         <td class="ltr">{{ m.total_tokens or "-" }}</td>
         <td>{{ m.created_at|dt }}</td>

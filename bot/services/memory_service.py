@@ -39,6 +39,28 @@ LOW_VALUE_PATTERNS = [
     r"^کاربر پیام داد",
 ]
 TEMPORARY_WORDS = ["امروز", "امشب", "فعلا", "حالم", "ناراحتم", "خستم", "استرس دارم"]
+AMBIGUOUS_USER_TEXTS = {
+    "حدس بزن",
+    "خب",
+    "باشه",
+    "اوکی",
+    "نمیگم",
+    "نمی‌گم",
+    "هیچی",
+    "محرمانه",
+    "خصوصی",
+    "مرسی",
+    "ممنون",
+    "اره",
+    "آره",
+    "نه",
+    "guess",
+    "ok",
+    "thanks",
+    "thank you",
+    "nothing",
+}
+UNCERTAIN_SUMMARY_MARKERS = ("احتمالاً", "احتمالا", "شاید", "به نظر می‌رسد", "به نظر میرسد", "probably", "maybe", "seems")
 
 
 @dataclass(frozen=True)
@@ -413,15 +435,41 @@ class MemoryPolicyGate:
         *,
         assistant_sourced: bool = False,
         model_sourced: bool = False,
+        metadata: dict | None = None,
     ) -> MemoryDecision:
         action = self.normalize_action(suggestion.action)
         summary = suggestion.summary.strip()
+        metadata = metadata or {}
+        intent = str(metadata.get("intent") or "")
+        source_compact = self._compact_text(source_text)
         if action == "create" and self.repository.active_count(user_id) >= self.max_active_memories:
             return MemoryDecision(False, "memory limit reached")
         if action in {"create", "edit", "merge", "replace"} and not summary:
             return MemoryDecision(False, "empty memory")
         if len(summary) > 600:
             return MemoryDecision(False, "memory too long")
+        if any(marker in summary.lower() for marker in UNCERTAIN_SUMMARY_MARKERS):
+            return MemoryDecision(False, "uncertain memory summary")
+        if self._looks_like_raw_dialogue(summary):
+            return MemoryDecision(False, "raw dialogue is not a memory")
+        if self._contains_sensitive(summary):
+            return MemoryDecision(False, "sensitive memory")
+        if action in {"delete", "forget"}:
+            if suggestion.memory_id or self._is_explicit_forget(source_text, summary):
+                return MemoryDecision(True, "explicit forget")
+            return MemoryDecision(False, "forget request not explicit")
+        if action in {"edit", "merge", "replace"} and suggestion.memory_id:
+            return MemoryDecision(True, "explicit memory update")
+        if self._is_explicit_save(source_text, summary):
+            return MemoryDecision(True, "explicit save")
+        if intent in {"guessing", "continuation"}:
+            return MemoryDecision(False, f"blocked for {intent} intent")
+        if self._is_ambiguous_source(source_compact):
+            return MemoryDecision(False, "ambiguous source text")
+        if model_sourced and not self._source_or_existing_supports(source_text, suggestion, existing, action):
+            return MemoryDecision(False, "memory is not directly supported by user text")
+        if action == "create" and self._duplicate(existing, suggestion):
+            return MemoryDecision(False, "duplicate memory")
         return MemoryDecision(True, "accepted")
 
     def normalize_action(self, action: str) -> str:
@@ -441,6 +489,31 @@ class MemoryPolicyGate:
     def _looks_like_raw_dialogue(self, summary: str) -> bool:
         return "\n" in summary or summary.count(":") >= 2 or len(summary.split()) > 34
 
+    def _compact_text(self, value: str) -> str:
+        return re.sub(r"[؟?!.\s]+", " ", (value or "").strip().lower()).strip()
+
+    def _is_ambiguous_source(self, source_text: str) -> bool:
+        if source_text in AMBIGUOUS_USER_TEXTS:
+            return True
+        explicit_memory_words = ("save", "remember", "forget", "delete", "ذخیره", "یادت باشه", "فراموش", "حذف")
+        if any(word in source_text for word in explicit_memory_words):
+            return False
+        return len(source_text) < 8
+
+    def _contains_sensitive(self, value: str) -> bool:
+        lowered = value.lower()
+        return any(word.lower() in lowered for word in SENSITIVE_WORDS)
+
+    def _is_explicit_forget(self, source_text: str, summary: str) -> bool:
+        lowered = f"{source_text} {summary}".lower()
+        forget_words = ("forget", "delete", "remove", "حذف", "فراموش", "یادت نماند", "دیگه یاد")
+        return any(word in lowered for word in forget_words)
+
+    def _is_explicit_save(self, source_text: str, summary: str) -> bool:
+        lowered = f"{source_text} {summary}".lower()
+        save_words = ("save", "remember", "ذخیره", "یادت باشه", "یادداشت")
+        return any(word in lowered for word in save_words)
+
     def _source_or_existing_supports(
         self,
         source_text: str,
@@ -454,6 +527,14 @@ class MemoryPolicyGate:
             forget_words = ("forget", "delete", "remove", "حذف", "فراموش", "یادت نماند", "دیگه یاد")
             return any(word in source for word in forget_words)
         if self._has_keyword_overlap(source, summary):
+            return True
+        if suggestion.kind == "identity" and any(word in source for word in ("اسم", "صدام", "صدا", "call me", "name")):
+            return True
+        if suggestion.kind == "inside_joke" and any(word in source for word in ("شوخی", "کل کل", "سر به سر", "joke", "banter", "tease")):
+            return True
+        if suggestion.kind == "project" and any(word in source for word in ("پروژه", "دارم می‌سازم", "دارم میسازم", "روی", "project", "working on")):
+            return True
+        if suggestion.kind in {"goal", "constraint", "unresolved_topic"} and any(word in source for word in ("هدف", "می‌خوام", "میخوام", "نباید", "نمی‌خوام", "نمیخوام", "goal", "want", "do not", "don't")):
             return True
         if suggestion.kind == "identity" and any(word in source for word in ("اسم", "صدام", "صدا", "call me", "name")):
             return True
@@ -489,6 +570,9 @@ class MemoryPolicyGate:
             "wants",
             "called",
             "fact",
+            "assistant",
+            "said",
+            "invented",
             "the",
             "and",
             "with",
@@ -547,10 +631,44 @@ class MemoryRetriever:
         self.repository = repository
         self.max_context_tokens = max_context_tokens
 
-    def retrieve(self, user_id: int, text: str, limit: int = 10) -> list[MemoryItem]:
-        return self.retrieve_all_for_context(user_id, limit=limit)
+    def retrieve(
+        self,
+        user_id: int,
+        text: str,
+        limit: int = 10,
+        *,
+        intent: str = "unknown",
+        pending_user_thread: str = "",
+    ) -> list[MemoryItem]:
+        memories = self.repository.list_active(user_id, limit=80)
+        query = " ".join(part for part in (text, pending_user_thread) if part)
+        query_keywords = self._keywords(query)
+        strict = intent in {"guessing", "continuation"}
+        scored: list[tuple[int, MemoryItem]] = []
+        for item in memories:
+            score = self._score(item, query_keywords, intent)
+            if strict and score <= 0:
+                continue
+            if not strict and score <= 0 and item.importance < 5:
+                continue
+            scored.append((score, item))
+        scored.sort(key=lambda pair: (pair[0], pair[1].importance, pair[1].updated_at), reverse=True)
+        selected = [item for _score, item in scored[:limit]]
+        for item in selected:
+            self.repository.touch(item.id)
+        return selected
 
-    def retrieve_all_for_context(self, user_id: int, limit: int = 40) -> list[MemoryItem]:
+    def retrieve_all_for_context(
+        self,
+        user_id: int,
+        limit: int = 40,
+        *,
+        text: str = "",
+        intent: str = "unknown",
+        pending_user_thread: str = "",
+    ) -> list[MemoryItem]:
+        if text or pending_user_thread:
+            return self.retrieve(user_id, text, limit=limit, intent=intent, pending_user_thread=pending_user_thread)
         memories = self.repository.list_active(user_id, limit=80)
         selected: list[MemoryItem] = []
         used_tokens = 0
@@ -568,6 +686,20 @@ class MemoryRetriever:
 
     def _keywords(self, text: str) -> set[str]:
         return {word.lower() for word in re.findall(r"[\w\u0600-\u06FF]{3,}", text or "")}
+
+    def _score(self, item: MemoryItem, query_keywords: set[str], intent: str) -> int:
+        memory_keywords = self._keywords(item.summary)
+        overlap = len(query_keywords & memory_keywords)
+        score = overlap * 3
+        if item.kind.value == "identity" and intent not in {"guessing", "continuation"}:
+            score += 1
+        if intent == "technical" and item.kind.value in {"project", "constraint", "goal"}:
+            score += 2
+        if intent == "support" and item.kind.value in {"user_state", "boundary", "preference"}:
+            score += 1
+        if intent in {"guessing", "continuation"} and item.kind.value not in {"project", "goal", "constraint", "fact"}:
+            score -= 1
+        return score
 
 
 class MemoryService:
@@ -588,11 +720,25 @@ class MemoryService:
     def list_active(self, user_id: int, limit: int = 20) -> list[MemoryItem]:
         return self.repository.list_active(user_id, limit)
 
-    def retrieve_relevant(self, user_id: int, text: str, limit: int = 10) -> list[MemoryItem]:
-        return self.retriever.retrieve(user_id, text, limit)
+    def retrieve_relevant(self, user_id: int, text: str, limit: int = 10, *, intent: str = "unknown", pending_user_thread: str = "") -> list[MemoryItem]:
+        return self.retriever.retrieve(user_id, text, limit, intent=intent, pending_user_thread=pending_user_thread)
 
-    def retrieve_for_context(self, user_id: int, limit: int = 40) -> list[MemoryItem]:
-        return self.retriever.retrieve_all_for_context(user_id, limit)
+    def retrieve_for_context(
+        self,
+        user_id: int,
+        text: str = "",
+        limit: int = 16,
+        *,
+        intent: str = "unknown",
+        pending_user_thread: str = "",
+    ) -> list[MemoryItem]:
+        return self.retriever.retrieve_all_for_context(
+            user_id,
+            limit,
+            text=text,
+            intent=intent,
+            pending_user_thread=pending_user_thread,
+        )
 
     def process_user_message(
         self,
@@ -603,7 +749,7 @@ class MemoryService:
     ) -> None:
         existing = self.repository.list_active(user_id, limit=80)
         candidates = self.extractor.extract(user_text, existing, metadata)
-        self.apply_candidates(user_id, source_message_id, user_text, candidates, assistant_sourced=False)
+        self.apply_candidates(user_id, source_message_id, user_text, candidates, assistant_sourced=False, metadata=metadata)
 
     def process_model_suggestions(
         self,
@@ -620,6 +766,7 @@ class MemoryService:
             suggestions,
             assistant_sourced=False,
             model_sourced=True,
+            metadata=metadata,
         )
 
     def apply_candidates(
@@ -631,6 +778,7 @@ class MemoryService:
         *,
         assistant_sourced: bool,
         model_sourced: bool = False,
+        metadata: dict | None = None,
     ) -> None:
         for suggestion in suggestions:
             existing = self.repository.list_active(user_id, limit=80)
@@ -642,6 +790,7 @@ class MemoryService:
                 existing,
                 assistant_sourced=assistant_sourced,
                 model_sourced=model_sourced,
+                metadata=metadata,
             )
             if not decision.accepted:
                 self.audit.log(user_id, None, action, "rejected", decision.reason, None, suggestion.model_dump(), source_message_id)
