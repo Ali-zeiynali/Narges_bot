@@ -13,6 +13,8 @@ services:
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
         generateValue: true
+      - key: ADMIN_PANEL_TOKEN
+        generateValue: true
       - key: WEBHOOK_WORKER_COUNT
         value: "1"
       - key: WEBHOOK_QUEUE_MAXSIZE

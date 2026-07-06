@@ -5,6 +5,7 @@ from time import perf_counter
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from bot.admin.app import app as admin_app
 from bot.application import BotApplication, create_bot_application
 from bot.config import load_settings
 from bot.update_queue import EnqueueStatus, InMemoryRateLimiter, TelegramUpdateQueue, UpdateIdempotencyStore
@@ -93,6 +94,9 @@ async def telegram_webhook(
         logger.info("webhook_enqueued update_id=%s elapsed_ms=%s status=%s", result.update_id, elapsed_ms, result.status.value)
 
     return JSONResponse({"ok": True, "status": result.status.value})
+
+
+app.mount("/", admin_app)
 
 
 async def configure_telegram_webhook(bot_app: BotApplication) -> None:

@@ -4,7 +4,6 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 from aiogram import Bot, Dispatcher
-from aiogram.client.session.aiohttp import AiohttpSession
 
 from bot.config import Settings, load_settings
 from bot.handlers import register_handlers
@@ -33,6 +32,7 @@ from bot.services.usage_service import UsageService
 from bot.services.user_service import UserService
 from bot.services.validation import MessageValidator
 from bot.storage.database import Database
+from bot.telegram_session import create_telegram_session
 
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         settings=settings,
     )
 
-    session = AiohttpSession(proxy=settings.telegram_proxy)
+    session = create_telegram_session(settings.telegram_proxy)
     bot = Bot(token=settings.telegram_token, session=session)
 
     return BotApplication(

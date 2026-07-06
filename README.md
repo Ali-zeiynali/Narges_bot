@@ -70,6 +70,7 @@ TELEGRAM_TOKEN=...
 GROQ_API_KEY=...
 WEBHOOK_BASE_URL=https://your-service.onrender.com
 TELEGRAM_WEBHOOK_SECRET=<long random string>
+ADMIN_PANEL_TOKEN=<long random admin token>
 TELEGRAM_PROXY=
 ```
 

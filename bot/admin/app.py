@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -313,7 +312,9 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
 
 
 async def send_broadcast(settings: Settings, user_ids: list[int], text: str, detailed: bool = False, media_type: str = "text", file_payload: tuple[str, bytes] | None = None):
-    session = AiohttpSession(proxy=settings.telegram_proxy)
+    from bot.telegram_session import create_telegram_session
+
+    session = create_telegram_session(settings.telegram_proxy)
     bot = Bot(token=settings.telegram_token, session=session)
     try:
         if detailed:
