@@ -8,6 +8,7 @@
   </div>
   <div class="actions">
     <a class="btn secondary" href="/admin/messages?user_id={{ user_id }}&limit=300">همه پیام‌های کاربر</a>
+    <a class="btn secondary" href="/admin/media?user_id={{ user_id }}">Media کاربر</a>
     <a class="btn secondary" href="/admin/memories?user_id={{ user_id }}">همه حافظه‌ها</a>
   </div>
 </div>
@@ -76,7 +77,29 @@
         <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
         <td>{{ m.role }}</td>
         <td>{{ m.message_type }}</td>
-        <td class="text-cell"><pre><code>{{ m.text }}</code></pre></td>
+        <td class="text-cell">
+          <pre><code>{{ m.text }}</code></pre>
+          {% set attached = detail.media_by_message.get(m.id, []) %}
+          {% if attached %}
+          <div class="media-inline">
+            {% for item in attached %}
+            <div class="media-card">
+              <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+                {% if item.media_kind == "image" %}
+                  <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+                {% elif item.media_kind in ["voice", "audio"] %}
+                  <div style="width:100%;padding:10px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
+                {% elif item.media_kind in ["video", "animation", "video_note"] %}
+                  <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+                {% else %}
+                  <div class="media-icon">📎</div>
+                {% endif %}
+              </a>
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </td>
         <td>{{ m.provider or "-" }}</td>
         <td class="ltr">{{ m.total_tokens or "-" }}</td>
         <td>{{ m.created_at|dt }}</td>
@@ -84,6 +107,34 @@
       {% endfor %}
     </table>
   </div>
+</div>
+
+<div class="card">
+  <h3>Mediaهای اخیر</h3>
+  <div class="media-grid">
+    {% for item in detail.media[:12] %}
+    <article class="media-card">
+      <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+        {% if item.media_kind == "image" %}
+          <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+        {% elif item.media_kind in ["voice", "audio"] %}
+          <div style="width:100%;padding:16px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
+        {% elif item.media_kind in ["video", "animation", "video_note"] %}
+          <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+        {% else %}
+          <div class="media-icon">📎</div>
+        {% endif %}
+      </a>
+      <div class="media-body">
+        <h4>#{{ item.id }} · {{ item.media_kind }}</h4>
+        <div class="media-meta">{{ item.created_at|dt }}</div>
+        {% if item.caption %}<p>{{ item.caption }}</p>{% endif %}
+        {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% if not detail.media %}<div class="muted">هنوز media ثبت نشده.</div>{% endif %}
 </div>
 
 <div class="grid two">

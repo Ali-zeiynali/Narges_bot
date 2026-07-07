@@ -18,6 +18,7 @@ from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupMessageScheduler, GroupService
 from bot.services.groq_client import GroqChatClient
 from bot.services.history_service import HistoryService
+from bot.services.media_service import MediaStorageService, VisionClient
 from bot.services.memory_service import MemoryService
 from bot.services.menu_service import MenuService
 from bot.services.moderation_service import ModerationService
@@ -99,6 +100,8 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     global_state_service = GlobalStateService(database)
     narges_state_scheduler = NargesStateScheduler(narges_state_service, groq_client)
     history_service = HistoryService(database)
+    media_storage_service = MediaStorageService(settings, database)
+    vision_client = VisionClient(settings)
     context_builder = ContextBuilder(database, history_service)
     chat_service = ChatService(
         validator=MessageValidator(settings),
@@ -133,6 +136,8 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         narges_state_service=narges_state_service,
         debug_service=debug_service,
         group_service=group_service,
+        media_storage_service=media_storage_service,
+        vision_client=vision_client,
         settings=settings,
     )
 

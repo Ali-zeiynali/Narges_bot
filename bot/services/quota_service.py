@@ -12,6 +12,7 @@ from bot.storage.orm import QuotaEventORM
 
 
 QUOTA_UNIT_SCALE = 5
+BUSY_MESSAGE = "عجول نباش! صبر کن قبلی رو جواب بدم."
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ class QuotaService:
             if user_id in self._active_generations:
                 return QuotaCheck(
                     False,
-                    "⏳ هنوز دارم جواب پیام قبلی‌ات رو آماده می‌کنم.\nچند ثانیه صبر کن.",
+                    BUSY_MESSAGE,
                     self.account_quota(user_id).effective_remaining,
                 )
             check = self.check_limits(user_id)
@@ -64,6 +65,12 @@ class QuotaService:
             self._active_generations.add(user_id)
             self._record_event(user_id, "turn_start", 0)
             return check
+
+    async def active_generation_check(self, user_id: int) -> QuotaCheck | None:
+        async with self._lock:
+            if self._debug_bypass(user_id) or user_id not in self._active_generations:
+                return None
+            return QuotaCheck(False, BUSY_MESSAGE, self.account_quota(user_id).effective_remaining)
 
     async def finish_generation(self, user_id: int) -> None:
         async with self._lock:

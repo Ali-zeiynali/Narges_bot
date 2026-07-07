@@ -56,6 +56,7 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.ok)
         self.assertFalse(second.ok)
+        self.assertEqual(second.message, "عجول نباش! صبر کن قبلی رو جواب بدم.")
 
     async def test_daily_quota_counts_reply_cost_once(self) -> None:
         reply = NargesReply.model_validate(

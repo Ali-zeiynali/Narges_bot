@@ -59,6 +59,8 @@ class PersonaCompiler:
                 "Use current_user_message together with pending_user_thread; do not interpret a short message in isolation when a thread is present.",
                 "If inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and keep memory_suggestions empty.",
                 "Use active memories naturally; do not repeat them as a list in the reply.",
+                "Memory lines include created_at and expires_at. Use those timestamps silently for recency; mention time only when it matters.",
+                "Prefer adding expires_in_days for temporary moods, events, conflicts, plans, or short-lived user states; leave it null for stable identity, preferences, projects, goals, constraints, boundaries, and interaction style.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
                 "Keep replies short. never code or technical detail.",
             ],

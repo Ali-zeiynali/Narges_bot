@@ -23,11 +23,34 @@
     {% for m in messages %}
     <tr>
       <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
-      <td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td>
+      <td><a href="/admin/users/{{ m.user_id }}">{{ user_names.get(m.user_id, "کاربر " ~ m.user_id) }}</a></td>
       <td class="ltr">{{ m.chat_id or "-" }}</td>
       <td>{{ m.role }}</td>
       <td>{{ m.message_type }}</td>
-      <td><pre><code>{{ m.text[:260] }}</code></pre></td>
+      <td>
+        <pre><code>{{ m.text[:260] }}</code></pre>
+        {% set attached = media_by_message.get(m.id, []) %}
+        {% if attached %}
+        <div class="media-inline">
+          {% for item in attached %}
+          <div class="media-card">
+            <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+              {% if item.media_kind == "image" %}
+                <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+              {% elif item.media_kind in ["voice", "audio"] %}
+                <div style="width:100%;padding:10px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
+              {% elif item.media_kind in ["video", "animation", "video_note"] %}
+                <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+              {% else %}
+                <div class="media-icon">📎</div>
+              {% endif %}
+            </a>
+            <div class="media-body"><span class="pill">{{ item.media_kind }}</span></div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </td>
       <td>{{ m.provider or "-" }}</td>
       <td>{{ m.total_tokens or "-" }}</td>
       <td>{{ m.created_at|dt }}</td>

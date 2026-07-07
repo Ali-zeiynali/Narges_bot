@@ -9,7 +9,8 @@
     <h3>اطلاعات پیام</h3>
     <table>
       <tr><th>key</th><th>value</th></tr>
-      <tr><td>user_id</td><td><a href="/admin/users/{{ message.user_id }}">{{ message.user_id }}</a></td></tr>
+      <tr><td>کاربر</td><td><a href="/admin/users/{{ message.user_id }}">{{ user_names.get(message.user_id, "کاربر " ~ message.user_id) }}</a></td></tr>
+      <tr><td>telegram_id</td><td class="ltr">{{ message.user_id }}</td></tr>
       <tr><td>chat_id</td><td>{{ message.chat_id }}</td></tr>
       <tr><td>telegram_message_id</td><td>{{ message.telegram_message_id or "-" }}</td></tr>
       <tr><td>role</td><td>{{ message.role }}</td></tr>
@@ -26,6 +27,33 @@
     <pre><code>{{ message.text }}</code></pre>
   </div>
 </div>
+{% if related_media %}
+<div class="card">
+  <h3>Media مرتبط</h3>
+  <div class="media-grid">
+    {% for item in related_media %}
+    <article class="media-card">
+      <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+        {% if item.media_kind == "image" %}
+          <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+        {% elif item.media_kind in ["voice", "audio"] %}
+          <div style="width:100%;padding:16px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
+        {% elif item.media_kind in ["video", "animation", "video_note"] %}
+          <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+        {% else %}
+          <div class="media-icon">📎</div>
+        {% endif %}
+      </a>
+      <div class="media-body">
+        <h4>#{{ item.id }} · {{ item.media_kind }}</h4>
+        {% if item.caption %}<p><b>متن کاربر:</b><br>{{ item.caption }}</p>{% endif %}
+        {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 <div class="card">
   <h3>محتوای ارسال‌شده به هوش مصنوعی</h3>
   {% if ai_request.messages %}

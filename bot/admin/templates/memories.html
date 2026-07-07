@@ -7,7 +7,7 @@
   <table>
     <tr><th>کاربر</th><th>فعال</th><th>نوع</th><th>اهمیت</th><th>متن</th><th>آخرین استفاده</th><th>بروزرسانی</th></tr>
     {% for m in memories %}
-    <tr><td><a href="/admin/users/{{ m.user_id }}">{{ m.user_id }}</a></td><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{{ m.last_seen_at|dt }}</td><td>{{ m.updated_at|dt }}</td></tr>
+    <tr><td><a href="/admin/users/{{ m.user_id }}">{{ user_names.get(m.user_id, "کاربر " ~ m.user_id) }}</a></td><td>{{ "بله" if m.active else "نه" }}</td><td>{{ m.kind }}</td><td>{{ m.importance }}</td><td>{{ m.summary }}</td><td>{{ m.last_seen_at|dt }}</td><td>{{ m.updated_at|dt }}</td></tr>
     {% endfor %}
   </table>
 </div>
@@ -16,7 +16,7 @@
   <table>
     <tr><th>کاربر</th><th>action</th><th>decision</th><th>reason</th><th>after</th><th>زمان</th></tr>
     {% for a in audits %}
-    <tr><td>{{ a.user_id }}</td><td>{{ a.action }}</td><td>{{ a.decision }}</td><td>{{ a.reason or "-" }}</td><td><pre>{{ a.after_payload or "" }}</pre></td><td>{{ a.created_at|dt }}</td></tr>
+    <tr><td><a href="/admin/users/{{ a.user_id }}">{{ user_names.get(a.user_id, "کاربر " ~ a.user_id) }}</a></td><td>{{ a.action }}</td><td>{{ a.decision }}</td><td>{{ a.reason or "-" }}</td><td><pre>{{ a.after_payload or "" }}</pre></td><td>{{ a.created_at|dt }}</td></tr>
     {% endfor %}
   </table>
 </div>

@@ -46,7 +46,7 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(prompt_context["recent_intent"], "technical")
         self.assertEqual(prompt_context["facts"], [])
-        self.assertTrue(any("preference: User prefers black tea." in item for item in prompt_context["relevant_memories"]))
+        self.assertTrue(any("preference" in item and "User prefers black tea." in item and "created_at=" in item for item in prompt_context["relevant_memories"]))
         self.assertEqual(prompt_context["state"]["mode"], "normal")
         self.assertNotIn("relationship_stage", prompt_context["state"])
         self.assertNotIn("familiarity_score", prompt_context["state"])

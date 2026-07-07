@@ -1,0 +1,77 @@
+{% extends "base.html" %}{% block title %}Media{% endblock %}
+{% block content %}
+<div class="top">
+  <div>
+    <h2>Media</h2>
+    <div class="muted">گالری فایل‌های ارسال‌شده کاربران، شامل عکس، ویس، ویدیو، فایل و توضیح Vision.</div>
+  </div>
+</div>
+
+<form class="card" method="get">
+  <div class="grid three">
+    <label>کاربر
+      <input name="user_id" class="ltr" value="{{ user_id or '' }}" placeholder="اختیاری">
+    </label>
+    <label>نوع
+      <select name="kind">
+        <option value="all" {% if not kind or kind == "all" %}selected{% endif %}>همه</option>
+        <option value="image" {% if kind == "image" %}selected{% endif %}>عکس</option>
+        <option value="voice" {% if kind == "voice" %}selected{% endif %}>ویس</option>
+        <option value="audio" {% if kind == "audio" %}selected{% endif %}>صوت</option>
+        <option value="video" {% if kind == "video" %}selected{% endif %}>ویدیو</option>
+        <option value="document" {% if kind == "document" %}selected{% endif %}>فایل</option>
+        <option value="sticker" {% if kind == "sticker" %}selected{% endif %}>استیکر</option>
+      </select>
+    </label>
+    <label>جستجو
+      <input name="q" value="{{ q }}" placeholder="نام کاربر، کپشن، description، mime">
+    </label>
+  </div>
+  <div class="row">
+    <label>limit
+      <input name="limit" type="number" min="20" max="1000" value="{{ limit }}">
+    </label>
+    <button>فیلتر</button>
+    <a class="btn secondary" href="/admin/media">همه</a>
+  </div>
+</form>
+
+<div class="media-grid">
+  {% for item in media %}
+  <article class="media-card" id="media-{{ item.id }}">
+    <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+      {% if item.media_kind == "image" %}
+        <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+      {% elif item.media_kind in ["video", "animation", "video_note"] %}
+        <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+      {% elif item.media_kind in ["voice", "audio"] %}
+        <div style="width:100%;padding:16px">
+          <div class="media-icon">🎧</div>
+          <audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio>
+        </div>
+      {% else %}
+        <div class="media-icon">📎</div>
+      {% endif %}
+    </a>
+    <div class="media-body">
+      <h4><a href="/admin/users/{{ item.user_id }}">{{ item.user_name }}</a></h4>
+      <div class="media-meta">
+        #{{ item.id }} · {{ item.media_kind }} · {{ item.mime_type or "-" }}<br>
+        {{ item.created_at|dt }}
+      </div>
+      {% if item.caption %}<p><b>متن کاربر:</b><br>{{ item.caption }}</p>{% endif %}
+      {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
+      {% if item.original_file_name %}<div class="media-meta ltr">{{ item.original_file_name }}</div>{% endif %}
+      <details>
+        <summary>جزئیات</summary>
+        <pre>{{ item.metadata | json_pretty }}</pre>
+      </details>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+
+{% if not media %}
+<div class="card">فایلی پیدا نشد.</div>
+{% endif %}
+{% endblock %}

@@ -43,6 +43,13 @@
     button:hover,.btn:hover{background:var(--brand-dark);text-decoration:none}.secondary{background:#475569!important}.bad{background:var(--danger)!important}.ok{color:var(--ok)}.warn{color:var(--warn)}
     .row{display:flex;gap:10px;align-items:end}.row>*{flex:1}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions form{margin:0}
     .pill{display:inline-block;padding:3px 9px;border-radius:999px;background:var(--soft);color:#1e40af;font-size:12px;white-space:nowrap}
+    .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+    .media-card{background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden;box-shadow:var(--shadow)}
+    .media-thumb{height:180px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .media-thumb img,.media-thumb video{width:100%;height:100%;object-fit:cover}
+    .media-body{padding:12px}.media-body h4{margin:0 0 6px;font-size:14px}.media-meta{font-size:12px;color:var(--muted)}
+    .media-icon{font-size:38px;color:#64748b}.media-inline{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.media-inline .media-card{width:180px;box-shadow:none}
+    audio{width:100%}
     pre{white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e5e7eb;padding:12px;border-radius:8px;direction:ltr;text-align:left;max-height:420px;overflow:auto}
     canvas{max-height:320px}.datatable-wrapper{direction:rtl}.datatable-top,.datatable-bottom{padding:10px 0}.datatable-input,.datatable-selector{width:auto;display:inline-block}
     @media(max-width:980px){.shell{grid-template-columns:1fr}aside{position:relative;height:auto}.grid,.grid.two,.grid.three{grid-template-columns:1fr}main{padding:14px}.top,.row{display:block}.row>*{margin-bottom:8px}table{min-width:720px}}
@@ -56,6 +63,7 @@
       <a href="/admin">داشبورد</a>
       <a href="/admin/users">کاربران</a>
       <a href="/admin/messages">پیام‌ها</a>
+      <a href="/admin/media">Media</a>
       <a href="/admin/memories">حافظه</a>
       <a href="/admin/model">مدل و AI</a>
       <a href="/admin/providers">Providerها</a>

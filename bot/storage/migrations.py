@@ -480,4 +480,27 @@ MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE users ADD COLUMN last_reengagement_sent_at TEXT;
         """,
     ),
+    (
+        "017_media_files",
+        """
+        CREATE TABLE IF NOT EXISTS media_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER,
+            telegram_message_id INTEGER,
+            telegram_file_id TEXT NOT NULL,
+            media_kind TEXT NOT NULL,
+            mime_type TEXT,
+            original_file_name TEXT,
+            storage_path TEXT NOT NULL,
+            file_size INTEGER,
+            caption TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_media_files_user_kind_created
+            ON media_files(user_id, media_kind, created_at);
+        """,
+    ),
 ]

@@ -17,7 +17,7 @@ from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
-from bot.services.quota_service import QuotaService
+from bot.services.quota_service import QuotaCheck, QuotaService
 from bot.services.style_linter import StyleLinter
 from bot.services.usage_service import UsageService
 from bot.services.validation import MessageValidator
@@ -84,6 +84,7 @@ class ChatService:
         text: str,
         message_datetime: datetime | None = None,
         user_profile=None,
+        reserved_quota_check: QuotaCheck | None = None,
     ) -> ChatTurnResult:
         message_datetime = (message_datetime or datetime.now(UTC)).astimezone(UTC)
         text = clamp_repeated_chars(text)
@@ -107,7 +108,8 @@ class ChatService:
         short_term_messages: list[dict[str, str]] = []
         search_results: list[dict[str, str]] = []
 
-        quota_check = await self.quota_service.begin_generation(user_id)
+        quota_started_here = reserved_quota_check is None
+        quota_check = reserved_quota_check or await self.quota_service.begin_generation(user_id)
         if not quota_check.ok:
             raise UserFacingError(quota_check.message)
 
@@ -272,7 +274,8 @@ class ChatService:
                 model=result.model,
             )
         finally:
-            await self.quota_service.finish_generation(user_id)
+            if quota_started_here:
+                await self.quota_service.finish_generation(user_id)
 
         return ChatTurnResult(
             reply=result.reply,

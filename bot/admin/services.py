@@ -31,6 +31,7 @@ from bot.storage.orm import (
     DailyEventORM,
     DebugLogORM,
     GroupChatORM,
+    MediaFileORM,
     MemoryORM,
     MemoryAuditLogORM,
     MembershipCacheORM,
@@ -152,6 +153,7 @@ class AdminDataService:
             tokens_today = session.scalar(select(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)).where(UsageLogORM.created_at >= today)) or 0
             recent_messages = session.scalars(select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(10)).all()
             recent_users = session.scalars(select(UserORM).order_by(desc(UserORM.created_at)).limit(10)).all()
+            user_names = self._user_name_map(session, self._collect_user_ids(recent_messages, recent_usage_rows, recent_debug_rows))
             daily_chart = self._daily_chart(session, days=14)
             provider_token_chart = self._provider_token_chart(session, since=today - timedelta(days=13))
 
@@ -164,12 +166,12 @@ class AdminDataService:
             active_blocks=int(active_blocks),
             quota_events_today=int(quota_events_today),
             current_state=self.state_service.get_active().model_dump(mode="json"),
-            recent_debug=[self._debug_row(row) for row in recent_debug_rows],
-            recent_usage=[self._usage_row(row) for row in recent_usage_rows],
+            recent_debug=[self._debug_row(row, user_names) for row in recent_debug_rows],
+            recent_usage=[self._usage_row(row, user_names) for row in recent_usage_rows],
             provider_statuses=self.provider_statuses(),
             active_users_today=int(active_users_today),
             tokens_today=int(tokens_today),
-            recent_messages=[self._message_row(row) for row in recent_messages],
+            recent_messages=[self._message_row(row, user_names) for row in recent_messages],
             recent_users=[self._user_row(row) for row in recent_users],
             daily_chart=daily_chart,
             provider_token_chart=provider_token_chart,
@@ -250,6 +252,8 @@ class AdminDataService:
             quota_events = session.scalars(select(QuotaEventORM).where(QuotaEventORM.user_id == user_id).order_by(desc(QuotaEventORM.id)).limit(40)).all()
             invoices = session.scalars(select(BillingInvoiceORM).where(BillingInvoiceORM.user_id == user_id).order_by(desc(BillingInvoiceORM.created_at)).limit(20)).all()
             memory_audits = session.scalars(select(MemoryAuditLogORM).where(MemoryAuditLogORM.user_id == user_id).order_by(desc(MemoryAuditLogORM.id)).limit(40)).all()
+            media = session.scalars(select(MediaFileORM).where(MediaFileORM.user_id == user_id).order_by(desc(MediaFileORM.id)).limit(40)).all()
+            media_by_message = self._media_by_message(session, messages)
         return {
             "user": user,
             "quota": self.quota_service.account_quota(user_id),
@@ -261,6 +265,8 @@ class AdminDataService:
             "quota_events": quota_events,
             "invoices": invoices,
             "memory_audits": memory_audits,
+            "media": [self._media_row(row) for row in media],
+            "media_by_message": media_by_message,
             "usage_total_tokens": int(usage_totals[2] or 0),
             "usage_prompt_tokens": int(usage_totals[0] or 0),
             "usage_completion_tokens": int(usage_totals[1] or 0),
@@ -269,13 +275,15 @@ class AdminDataService:
     def message_detail(self, message_id: int) -> dict[str, Any]:
         with self.database.orm.session() as session:
             row = session.get(ConversationMessageORM, message_id)
+            user_names = self._user_name_map(session, [row.user_id] if row else [])
+            related_media = self._media_by_message(session, [row]).get(row.id, []) if row else []
         payload = {}
         if row and row.ai_request_payload_json:
             try:
                 payload = json.loads(row.ai_request_payload_json)
             except json.JSONDecodeError:
                 payload = {"raw": row.ai_request_payload_json}
-        return {"message": row, "ai_request": payload}
+        return {"message": row, "ai_request": payload, "user_names": user_names, "related_media": related_media}
 
     def messages(self, user_id: int | None = None, limit: int = 300) -> dict[str, Any]:
         limit = max(20, min(limit, 1000))
@@ -284,12 +292,55 @@ class AdminDataService:
             if user_id is not None:
                 statement = statement.where(ConversationMessageORM.user_id == user_id)
             rows = session.scalars(statement).all()
-        return {"messages": rows, "user_id": user_id, "limit": limit}
+            user_names = self._user_name_map(session, [row.user_id for row in rows])
+            media_by_message = self._media_by_message(session, rows)
+        return {"messages": rows, "user_id": user_id, "limit": limit, "user_names": user_names, "media_by_message": media_by_message}
+
+    def media(self, user_id: int | None = None, kind: str = "", q: str = "", limit: int = 240) -> dict[str, Any]:
+        limit = max(20, min(limit, 1000))
+        kind = (kind or "").strip()
+        needle = (q or "").strip().lower()
+        with self.database.orm.session() as session:
+            statement = select(MediaFileORM).order_by(desc(MediaFileORM.id)).limit(limit)
+            if user_id is not None:
+                statement = statement.where(MediaFileORM.user_id == user_id)
+            if kind and kind != "all":
+                statement = statement.where(MediaFileORM.media_kind == kind)
+            rows = session.scalars(statement).all()
+            user_names = self._user_name_map(session, [row.user_id for row in rows])
+        items = [self._media_row(row, user_names) for row in rows]
+        if needle:
+            items = [
+                item
+                for item in items
+                if needle in " ".join(
+                    str(value or "")
+                    for value in (
+                        item["user_name"],
+                        item["user_id"],
+                        item["media_kind"],
+                        item["mime_type"],
+                        item["caption"],
+                        item["vision_description"],
+                        item["original_file_name"],
+                    )
+                ).lower()
+            ]
+        return {"media": items, "user_id": user_id, "kind": kind, "q": q, "limit": limit}
+
+    def media_file(self, media_id: int) -> MediaFileORM | None:
+        with self.database.orm.session() as session:
+            row = session.get(MediaFileORM, media_id)
+            if row is None:
+                return None
+            session.expunge(row)
+            return row
 
     def invoices(self, limit: int = 300) -> dict[str, Any]:
         with self.database.orm.session() as session:
             rows = session.scalars(select(BillingInvoiceORM).order_by(desc(BillingInvoiceORM.created_at)).limit(limit)).all()
-        return {"invoices": rows, "plans": self.billing_service.plans}
+            user_names = self._user_name_map(session, [row.user_id for row in rows])
+        return {"invoices": rows, "plans": self.billing_service.plans, "user_names": user_names}
 
     def review_invoice(self, invoice_id: str, approve: bool, reviewer_id: int | None = None) -> tuple[bool, Any, str]:
         result = self.billing_service.review_card_invoice(invoice_id, approve=approve, reviewer_id=reviewer_id)
@@ -408,6 +459,7 @@ class AdminDataService:
                 UserWarningEventORM,
                 MembershipCacheORM,
                 AdminBypassORM,
+                MediaFileORM,
             ):
                 session.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
             session.query(UserBlockORM).filter(UserBlockORM.user_id == user_id).delete(synchronize_session=False)
@@ -427,7 +479,8 @@ class AdminDataService:
                 audit_statement = audit_statement.where(MemoryAuditLogORM.user_id == user_id)
             memories = session.scalars(memory_statement).all()
             audits = session.scalars(audit_statement).all()
-        return {"memories": memories, "audits": audits, "user_id": user_id}
+            user_names = self._user_name_map(session, [row.user_id for row in memories] + [row.user_id for row in audits])
+        return {"memories": memories, "audits": audits, "user_id": user_id, "user_names": user_names}
 
     def model_state(self) -> dict[str, Any]:
         with self.database.orm.session() as session:
@@ -547,7 +600,8 @@ class AdminDataService:
             usage_rows = session.scalars(select(UsageLogORM).order_by(desc(UsageLogORM.id)).limit(limit)).all()
             warning_rows = session.scalars(select(UserWarningEventORM).order_by(desc(UserWarningEventORM.id)).limit(limit)).all()
             broadcasts = session.scalars(select(AdminBroadcastORM).order_by(desc(AdminBroadcastORM.id)).limit(30)).all()
-        return {"kind": kind, "debug": debug_rows, "usage": usage_rows, "warnings": warning_rows, "broadcasts": broadcasts}
+            user_names = self._user_name_map(session, self._collect_user_ids(debug_rows, usage_rows, warning_rows))
+        return {"kind": kind, "debug": debug_rows, "usage": usage_rows, "warnings": warning_rows, "broadcasts": broadcasts, "user_names": user_names}
 
     def create_broadcast(self, text: str, target_count: int, target_type: str = "users", target_value: str | None = None) -> int:
         with self.database.orm.session() as session:
@@ -713,13 +767,98 @@ class AdminDataService:
             statement = statement.where(column == cleaned[column.name])
         return session.execute(statement).first() is not None
 
-    def _debug_row(self, row: DebugLogORM) -> dict[str, Any]:
-        return {"id": row.id, "event": row.event, "user_id": row.user_id, "payload": row.payload, "created_at": row.created_at}
+    def _collect_user_ids(self, *row_groups) -> list[int]:
+        values: list[int] = []
+        for rows in row_groups:
+            for row in rows or []:
+                user_id = getattr(row, "user_id", None)
+                if user_id is not None:
+                    values.append(int(user_id))
+        return values
 
-    def _message_row(self, row: ConversationMessageORM) -> dict[str, Any]:
+    def _user_name_map(self, session, user_ids: list[int]) -> dict[int, str]:
+        ids = sorted({int(user_id) for user_id in user_ids if user_id is not None})
+        if not ids:
+            return {}
+        rows = session.scalars(select(UserORM).where(UserORM.telegram_id.in_(ids))).all()
+        return {row.telegram_id: self._display_user_name(row) for row in rows}
+
+    def _display_user_name(self, row: UserORM | None) -> str:
+        if row is None:
+            return "-"
+        base = row.display_name or row.first_name or row.username
+        if base:
+            return str(base)
+        return f"کاربر {row.telegram_id}"
+
+    def _media_by_message(self, session, messages: list[ConversationMessageORM | None]) -> dict[int, list[dict[str, Any]]]:
+        pairs = [
+            (row.id, row.user_id, row.telegram_message_id)
+            for row in messages
+            if row is not None and row.telegram_message_id is not None
+        ]
+        if not pairs:
+            return {}
+        user_ids = sorted({int(user_id) for _message_id, user_id, _telegram_id in pairs})
+        telegram_ids = sorted({int(telegram_id) for _message_id, _user_id, telegram_id in pairs})
+        rows = session.scalars(
+            select(MediaFileORM).where(
+                MediaFileORM.user_id.in_(user_ids),
+                MediaFileORM.telegram_message_id.in_(telegram_ids),
+            )
+        ).all()
+        bucket: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        for row in rows:
+            bucket.setdefault((int(row.user_id), int(row.telegram_message_id or 0)), []).append(self._media_row(row))
+        return {
+            int(message_id): bucket.get((int(user_id), int(telegram_id or 0)), [])
+            for message_id, user_id, telegram_id in pairs
+        }
+
+    def _media_row(self, row: MediaFileORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
+        metadata = self._loads_json(row.metadata_json)
         return {
             "id": row.id,
             "user_id": row.user_id,
+            "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}"),
+            "chat_id": row.chat_id,
+            "telegram_message_id": row.telegram_message_id,
+            "telegram_file_id": row.telegram_file_id,
+            "media_kind": row.media_kind,
+            "mime_type": row.mime_type,
+            "original_file_name": row.original_file_name,
+            "storage_path": row.storage_path,
+            "file_size": row.file_size,
+            "caption": row.caption,
+            "metadata": metadata,
+            "vision_description": metadata.get("vision_description") or metadata.get("description") or "",
+            "created_at": row.created_at,
+        }
+
+    def _loads_json(self, raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+        return value if isinstance(value, dict) else {"value": value}
+
+    def _debug_row(self, row: DebugLogORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "event": row.event,
+            "user_id": row.user_id,
+            "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}") if row.user_id else "-",
+            "payload": row.payload,
+            "created_at": row.created_at,
+        }
+
+    def _message_row(self, row: ConversationMessageORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "user_id": row.user_id,
+            "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}"),
             "role": row.role,
             "text": row.text,
             "provider": row.provider,
@@ -737,10 +876,11 @@ class AdminDataService:
             "updated_at": row.updated_at,
         }
 
-    def _usage_row(self, row: UsageLogORM) -> dict[str, Any]:
+    def _usage_row(self, row: UsageLogORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
         return {
             "id": row.id,
             "user_id": row.user_id,
+            "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}") if row.user_id else "-",
             "provider": row.provider,
             "model": row.model,
             "prompt_tokens": row.prompt_tokens,

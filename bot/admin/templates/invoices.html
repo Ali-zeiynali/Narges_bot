@@ -16,7 +16,7 @@
     {% set plan = plans.get(i.plan_id) %}
     <tr>
       <td class="ltr">{{ i.invoice_id }}</td>
-      <td><a href="/admin/users/{{ i.user_id }}">{{ i.user_id }}</a></td>
+      <td><a href="/admin/users/{{ i.user_id }}">{{ user_names.get(i.user_id, "کاربر " ~ i.user_id) }}</a></td>
       <td>{{ i.plan_id }}</td>
       <td>{{ plan.payment_method if plan else ("card" if i.plan_id.startswith("card_") else "stars") }}</td>
       <td>

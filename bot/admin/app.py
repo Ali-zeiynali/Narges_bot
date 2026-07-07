@@ -7,7 +7,7 @@ from typing import Any
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from bot.admin.services import AdminDataService, compact_number, dt_iso, mask_key
@@ -106,6 +106,23 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         require_admin(request)
         parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
         return render(request, "messages.html", service.messages(user_id=parsed_user_id, limit=limit))
+
+    @app.get(route("/media"), response_class=HTMLResponse)
+    async def media_page(request: Request, user_id: str | None = None, kind: str = "", q: str = "", limit: int = 240) -> HTMLResponse:
+        require_admin(request)
+        parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
+        return render(request, "media.html", service.media(user_id=parsed_user_id, kind=kind, q=q, limit=limit))
+
+    @app.get(route("/media/{media_id}/file"))
+    async def media_file(request: Request, media_id: int) -> Response:
+        require_admin(request)
+        media = service.media_file(media_id)
+        if media is None:
+            raise HTTPException(status_code=404)
+        path = Path(media.storage_path)
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path, media_type=media.mime_type or "application/octet-stream")
 
     @app.post(route("/users/{user_id}/extra"))
     async def add_user_extra(request: Request, user_id: int) -> RedirectResponse:

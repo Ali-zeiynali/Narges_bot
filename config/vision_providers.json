@@ -1,0 +1,21 @@
+{
+  "providers": [
+    {
+      "name": "nararouter",
+      "enabled": true,
+      "priority": 10,
+      "type": "openai_compatible",
+      "base_url": "https://router.bynara.id/v1",
+      "api_keys": [
+        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg"
+      ],
+      "model": "mistral-medium-3-5",
+      "temperature": 0.2,
+      "max_tokens": 260,
+      "timeout_seconds": 45.0,
+      "use_proxy": true,
+      "extra_headers": {},
+      "extra_body": {}
+    }
+  ]
+}

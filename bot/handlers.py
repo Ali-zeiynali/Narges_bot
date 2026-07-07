@@ -19,6 +19,15 @@ from bot.services.chat_service import ChatService, UserFacingError
 from bot.services.debug_service import DebugService
 from bot.services.group_service import GroupService
 from bot.services.history_service import HistoryService
+from bot.services.media_service import (
+    UNSUPPORTED_AUDIO_MESSAGE,
+    UNSUPPORTED_MEDIA_MESSAGE,
+    VISION_ERROR_MESSAGE,
+    MediaStorageError,
+    MediaStorageService,
+    StoredMedia,
+    VisionClient,
+)
 from bot.services.memory_service import MemoryService
 from bot.services.menu_service import MenuService
 from bot.services.moderation_service import ModerationService
@@ -48,6 +57,8 @@ def register_handlers(
     narges_state_service: NargesStateService,
     debug_service: DebugService,
     group_service: GroupService | None,
+    media_storage_service: MediaStorageService,
+    vision_client: VisionClient,
     settings: Settings,
 ) -> None:
     admin_ids = set(settings.admin_ids)
@@ -376,6 +387,132 @@ def register_handlers(
                 "✅ ۱۰ پیام رایگان به ظرفیتت اضافه شد.\n\n"
                 f"👤 کاربر دعوت‌شده: `{invited_user_id}`",
             )
+
+    def image_model_text(description: str, caption: str | None) -> str:
+        caption_text = clamp_repeated_chars((caption or "").strip())
+        if caption_text:
+            return (
+                "کاربر یک عکس ارسال کرد.\n"
+                f"محتوای عکس: {description.strip()}\n"
+                f"متن همراه کاربر: {caption_text}"
+            )
+        return (
+            "کاربر یک عکس ارسال کرد.\n"
+            f"محتوای عکس: {description.strip()}"
+        )
+
+    def media_storage_error_message(exc: Exception) -> str:
+        if "too large" in str(exc).lower():
+            return "این فایل زیادی بزرگه و امن نیست که ذخیره‌اش کنم."
+        return UNSUPPORTED_MEDIA_MESSAGE
+
+    async def run_chat_turn(message: Message, bot: Bot, text_value: str, profile, reserved_quota_check=None):
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(keep_typing(bot, message.chat.id, stop_typing))
+        try:
+            return await chat_service.answer(
+                message.from_user.id,
+                message.chat.id,
+                message.message_id,
+                text_value,
+                message.date,
+                user_profile=profile,
+                reserved_quota_check=reserved_quota_check,
+            )
+        except UserFacingError as exc:
+            text = str(exc)
+            stop_typing.set()
+            with suppress(asyncio.CancelledError):
+                await typing_task
+            if any(word in text for word in ("سهمیه", "ظرفیت", "تند", "سقف", "limit")):
+                current_profile = user_service.get(message.from_user.id)
+                await message.answer(text, reply_markup=menu_service.capacity_keyboard(phone_bonus_available(current_profile)))
+            else:
+                await message.answer(text)
+            return None
+        finally:
+            stop_typing.set()
+            with suppress(asyncio.CancelledError):
+                await typing_task
+
+    async def deliver_chat_result(message: Message, bot: Bot, result, profile) -> None:
+        logger.info(
+            "answer_ready user_id=%s chat_id=%s estimated_tokens=%s total_tokens=%s",
+            message.from_user.id,
+            message.chat.id,
+            result.estimated_tokens,
+            result.usage.get("total_tokens"),
+        )
+        for item in result.reply.messages:
+            await asyncio.sleep(item.delay_seconds)
+            await message.answer(item.text)
+        if profile and not profile.gender:
+            today = message.date.astimezone(UTC).date().isoformat()
+            if user_service.should_send_gender_nudge(message.from_user.id, today):
+                await message.answer(
+                    "✨ یه پیشنهاد کوچولو\n\n"
+                    "اگه جنسیتت رو تنظیم کنی، لحن جواب‌ها دقیق‌تر و طبیعی‌تر می‌شه.\n"
+                    "هر وقت خواستی از همین دکمه عوضش کن 💫",
+                    reply_markup=menu_service.gender_keyboard(),
+                )
+        user_service.mark_first_question(message.from_user.id)
+        inviter_id = user_service.claim_referral_bonus_if_ready(message.from_user.id)
+        if inviter_id:
+            quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
+            await notify_referral_reward(bot, inviter_id, message.from_user.id)
+
+    async def handle_ready_image(message: Message, bot: Bot, stored_media: StoredMedia, profile) -> None:
+        if media_storage_service.image_count_today(message.from_user.id) > settings.image_daily_limit:
+            record_media_message(message, stored_media, "image daily limit reached")
+            await message.answer(VISION_ERROR_MESSAGE)
+            return
+        if not await ensure_not_blocked_for_model(message):
+            return
+        quota_check = await quota_service.begin_generation(message.from_user.id)
+        if not quota_check.ok:
+            await message.answer(quota_check.message)
+            return
+        try:
+            with suppress(Exception):
+                await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            try:
+                description = await asyncio.to_thread(vision_client.describe_image, stored_media)
+                media_storage_service.set_vision_description(stored_media.id, description)
+            except Exception:
+                logger.exception("vision_description_failed user_id=%s media_id=%s", message.from_user.id, stored_media.id)
+                record_media_message(message, stored_media, "vision failed")
+                await message.answer(VISION_ERROR_MESSAGE)
+                return
+            model_text = image_model_text(description, stored_media.caption)
+            result = await run_chat_turn(message, bot, model_text, profile, reserved_quota_check=quota_check)
+        finally:
+            await quota_service.finish_generation(message.from_user.id)
+        if result:
+            await deliver_chat_result(message, bot, result, profile)
+
+    async def answer_unsupported_media(message: Message, text: str) -> None:
+        active = await quota_service.active_generation_check(message.from_user.id)
+        if active:
+            await message.answer(active.message)
+            return
+        await message.answer(text)
+
+    def record_media_message(message: Message, media: StoredMedia, note: str) -> None:
+        history_service.add(
+            media.user_id,
+            "user",
+            f"[{media.media_kind}] {note}",
+            chat_id=media.chat_id,
+            telegram_message_id=media.telegram_message_id,
+            created_at=message.date,
+            message_type="media",
+            ai_request_payload={
+                "media_id": media.id,
+                "media_kind": media.media_kind,
+                "mime_type": media.mime_type,
+                "caption": media.caption,
+            },
+        )
 
     @dispatcher.my_chat_member()
     async def my_chat_member_handler(event: ChatMemberUpdated) -> None:
@@ -827,40 +964,78 @@ def register_handlers(
         await callback.message.answer(card_payment_text(invoice))
 
     @dispatcher.message(F.photo)
-    async def receipt_photo_handler(message: Message, bot: Bot) -> None:
+    async def photo_handler(message: Message, bot: Bot) -> None:
         if not message.from_user or not message.photo:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
             return
-        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
-        if not pending:
-            await message.answer("عکس رسیدی برای بررسی ندارم. اول از بخش افزایش ظرفیت یک پلن خرید انتخاب کن.")
+        try:
+            stored_media = await media_storage_service.store_photo(bot, message)
+        except MediaStorageError as exc:
+            await message.answer(media_storage_error_message(exc))
             return
-        invoice = billing_service.attach_card_receipt(message.from_user.id, f"photo:{message.photo[-1].file_id}")
-        if invoice:
-            await message.answer(
-                "🧾 رسیدت ثبت شد.\n\n"
-                "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
-            )
+        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
+        if pending:
+            invoice = billing_service.attach_card_receipt(message.from_user.id, f"photo:{stored_media.id}:{stored_media.telegram_file_id}")
+            if invoice:
+                await message.answer(
+                    "🧾 رسیدت ثبت شد.\n\n"
+                    "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
+                )
+            return
+        profile = user_service.get(message.from_user.id)
+        if profile is None or profile.onboarding_state != OnboardingState.READY:
+            await ask_for_name(message)
+            return
+        await handle_ready_image(message, bot, stored_media, profile)
 
     @dispatcher.message(F.document)
-    async def receipt_document_handler(message: Message, bot: Bot) -> None:
+    async def document_handler(message: Message, bot: Bot) -> None:
         if not message.from_user or not message.document:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
             return
-        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
-        if not pending:
-            await message.answer("فایلی برای بررسی خرید ندارم. اول از بخش افزایش ظرفیت یک پلن خرید انتخاب کن.")
+        try:
+            stored_media = await media_storage_service.store_document(bot, message)
+        except MediaStorageError as exc:
+            await message.answer(media_storage_error_message(exc))
             return
-        invoice = billing_service.attach_card_receipt(message.from_user.id, f"document:{message.document.file_id}")
-        if invoice:
-            await message.answer(
-                "🧾 رسیدت ثبت شد.\n\n"
-                "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
-            )
+        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
+        if pending:
+            invoice = billing_service.attach_card_receipt(message.from_user.id, f"document:{stored_media.id}:{stored_media.telegram_file_id}")
+            if invoice:
+                await message.answer(
+                    "🧾 رسیدت ثبت شد.\n\n"
+                    "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
+                )
+            return
+        profile = user_service.get(message.from_user.id)
+        if profile is None or profile.onboarding_state != OnboardingState.READY:
+            await ask_for_name(message)
+            return
+        if media_storage_service.is_supported_image(stored_media):
+            await handle_ready_image(message, bot, stored_media, profile)
+            return
+        record_media_message(message, stored_media, "unsupported document")
+        await answer_unsupported_media(message, UNSUPPORTED_MEDIA_MESSAGE)
+
+    @dispatcher.message(F.voice | F.video | F.audio | F.animation | F.video_note | F.sticker)
+    async def unsupported_media_handler(message: Message, bot: Bot) -> None:
+        if not message.from_user:
+            return
+        user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        if not await ensure_membership(message, bot):
+            return
+        try:
+            stored_media = await media_storage_service.store_unsupported_media(bot, message)
+        except MediaStorageError as exc:
+            await message.answer(media_storage_error_message(exc))
+            return
+        record_media_message(message, stored_media, "unsupported media")
+        text = UNSUPPORTED_AUDIO_MESSAGE if (message.voice or message.audio or message.video or message.video_note) else UNSUPPORTED_MEDIA_MESSAGE
+        await answer_unsupported_media(message, text)
 
     @dispatcher.callback_query(F.data == "capacity:phone")
     async def capacity_phone_callback(callback: CallbackQuery) -> None:
@@ -994,54 +1169,6 @@ def register_handlers(
         if not await ensure_not_blocked_for_model(message):
             return
 
-        stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(keep_typing(bot, message.chat.id, stop_typing))
-        try:
-            result = await chat_service.answer(
-                message.from_user.id,
-                message.chat.id,
-                message.message_id,
-                text_value,
-                message.date,
-                user_profile=profile,
-            )
-        except UserFacingError as exc:
-            text = str(exc)
-            stop_typing.set()
-            with suppress(asyncio.CancelledError):
-                await typing_task
-            if any(word in text for word in ("سهمیه", "ظرفیت", "تند", "سقف", "limit")):
-                profile = user_service.get(message.from_user.id)
-                await message.answer(text, reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)))
-            else:
-                await message.answer(text)
-            return
-        finally:
-            stop_typing.set()
-            with suppress(asyncio.CancelledError):
-                await typing_task
-
-        logger.info(
-            "answer_ready user_id=%s chat_id=%s estimated_tokens=%s total_tokens=%s",
-            message.from_user.id,
-            message.chat.id,
-            result.estimated_tokens,
-            result.usage.get("total_tokens"),
-        )
-        for item in result.reply.messages:
-            await asyncio.sleep(item.delay_seconds)
-            await message.answer(item.text)
-        if profile and not profile.gender:
-            today = message.date.astimezone(UTC).date().isoformat()
-            if user_service.should_send_gender_nudge(message.from_user.id, today):
-                await message.answer(
-                    "✨ یه پیشنهاد کوچولو\n\n"
-                    "اگه جنسیتت رو تنظیم کنی، لحن جواب‌ها دقیق‌تر و طبیعی‌تر می‌شه.\n"
-                    "هر وقت خواستی از همین دکمه عوضش کن 💫",
-                    reply_markup=menu_service.gender_keyboard(),
-                )
-        user_service.mark_first_question(message.from_user.id)
-        inviter_id = user_service.claim_referral_bonus_if_ready(message.from_user.id)
-        if inviter_id:
-            quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
-            await notify_referral_reward(bot, inviter_id, message.from_user.id)
+        result = await run_chat_turn(message, bot, text_value, profile)
+        if result:
+            await deliver_chat_result(message, bot, result, profile)

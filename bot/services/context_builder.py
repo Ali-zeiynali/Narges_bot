@@ -211,7 +211,9 @@ class ContextBuilder:
         lines: list[str] = []
         for memory in memories[:8]:
             summary = re.sub(r"\s+", " ", memory.summary).strip()
-            lines.append(f"#{memory.id} | {memory.kind.value}: {summary[:180]}")
+            created = memory.created_at.astimezone(UTC).date().isoformat()
+            expires = memory.expires_at.astimezone(UTC).date().isoformat() if memory.expires_at else "none"
+            lines.append(f"#{memory.id} | {memory.kind.value} | created_at={created} | expires_at={expires}: {summary[:180]}")
         return lines
 
     def _conversation_state(self, value: str | None) -> str:

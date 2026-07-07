@@ -486,14 +486,14 @@ class MemoryPolicyGate:
             return MemoryDecision(True, "explicit memory update")
         if self._is_explicit_save(source_text, summary):
             return MemoryDecision(True, "explicit save")
+        if action == "create" and self._duplicate(existing, suggestion):
+            return MemoryDecision(False, "duplicate memory")
+        if model_sourced:
+            return MemoryDecision(True, "accepted model memory")
         if intent in {"guessing", "continuation"}:
             return MemoryDecision(False, f"blocked for {intent} intent")
         if self._is_ambiguous_source(source_compact):
             return MemoryDecision(False, "ambiguous source text")
-        if model_sourced and not self._source_or_existing_supports(source_text, suggestion, existing, action):
-            return MemoryDecision(False, "memory is not directly supported by user text")
-        if action == "create" and self._duplicate(existing, suggestion):
-            return MemoryDecision(False, "duplicate memory")
         return MemoryDecision(True, "accepted")
 
     def normalize_action(self, action: str) -> str:

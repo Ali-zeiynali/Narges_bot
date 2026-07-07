@@ -11,7 +11,7 @@
       {% for d in debug %}
       <tr>
         <td>{{ d.event }}</td>
-        <td>{{ d.user_id }}</td>
+        <td><a href="/admin/users/{{ d.user_id }}">{{ user_names.get(d.user_id, "کاربر " ~ d.user_id) }}</a></td>
         <td><pre><code>{{ d.payload }}</code></pre></td>
         <td>{{ d.created_at|dt }}</td>
       </tr>
@@ -23,7 +23,7 @@
     <table>
       <tr><th>کاربر</th><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>
       {% for u in usage %}
-      <tr><td>{{ u.user_id }}</td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>
+      <tr><td><a href="/admin/users/{{ u.user_id }}">{{ user_names.get(u.user_id, "کاربر " ~ u.user_id) }}</a></td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>
       {% endfor %}
     </table>
   </div>
@@ -34,7 +34,7 @@
   <table>
     <tr><th>کاربر</th><th>دلیل</th><th>تعداد بعد از اخطار</th><th>زمان</th></tr>
     {% for w in warnings %}
-    <tr><td>{{ w.user_id }}</td><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>
+    <tr><td><a href="/admin/users/{{ w.user_id }}">{{ user_names.get(w.user_id, "کاربر " ~ w.user_id) }}</a></td><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>
     {% endfor %}
   </table>
 </div>
