@@ -71,7 +71,7 @@ class ContextBuilderTests(unittest.TestCase):
             "می‌خوام یه جایی بذارم",
         ])
 
-    def test_conversation_state_persists_for_next_turn(self) -> None:
+    def test_conversation_state_does_not_force_next_turn(self) -> None:
         self.builder.observe_turn(
             user_id=1,
             user_text="state change",
@@ -83,7 +83,7 @@ class ContextBuilderTests(unittest.TestCase):
 
         context = self.builder.build(1, "next message", [])
 
-        self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
+        self.assertEqual(context.for_prompt()["state"]["mode"], "normal")
 
     def test_sexual_keyword_forces_sexual_state_for_current_message(self) -> None:
         context = self.builder.build(1, "sexual topic please", [])

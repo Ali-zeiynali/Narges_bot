@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 class EnqueueStatus(str, Enum):
     ACCEPTED = "accepted"
     DUPLICATE = "duplicate"
+    BUSY = "busy"
     RATE_LIMITED = "rate_limited"
     FULL = "full"
     INVALID = "invalid"
@@ -60,6 +61,10 @@ class UpdateIdempotencyStore:
                 self._seen[update_id] = time.monotonic()
                 self._seen.move_to_end(update_id)
 
+    async def release(self, update_id: int) -> None:
+        async with self._lock:
+            self._seen.pop(update_id, None)
+
 
 class InMemoryRateLimiter:
     def __init__(self, limit: int, window_seconds: int) -> None:
@@ -101,6 +106,8 @@ class TelegramUpdateQueue:
         self._backlog_latest_only = backlog_latest_only
         self._backlog_grace_seconds = max(0, backlog_grace_seconds)
         self._latest_backlog_update_by_actor: dict[tuple[int, int], int] = {}
+        self._latest_update_by_actor: dict[tuple[int, int], int] = {}
+        self._active_actors: set[tuple[int, int]] = set()
         self._latest_lock = asyncio.Lock()
 
     def qsize(self) -> int:
@@ -118,24 +125,34 @@ class TelegramUpdateQueue:
             return EnqueueResult(EnqueueStatus.DUPLICATE, update_id=update_id, user_id=user_id)
         if not await self._rate_limiter.allow(user_id):
             logger.warning("webhook_rate_limited update_id=%s user_id=%s", update_id, user_id)
-            return EnqueueResult(EnqueueStatus.RATE_LIMITED, update_id=update_id, user_id=user_id)
-        if self._backlog_latest_only and offline_backlog and actor_key is not None:
+            # Do not drop Telegram updates because of in-process pressure. The
+            # downstream chat quota and active-generation checks handle abuse
+            # without losing the user's delivered message.
+        if actor_key is not None:
             async with self._latest_lock:
-                previous = self._latest_backlog_update_by_actor.get(actor_key)
+                previous = self._latest_update_by_actor.get(actor_key)
                 if previous is None or update_id > previous:
-                    self._latest_backlog_update_by_actor[actor_key] = update_id
+                    self._latest_update_by_actor[actor_key] = update_id
+                if self._backlog_latest_only and offline_backlog:
+                    previous_backlog = self._latest_backlog_update_by_actor.get(actor_key)
+                    if previous_backlog is None or update_id > previous_backlog:
+                        self._latest_backlog_update_by_actor[actor_key] = update_id
 
         try:
-            self._queue.put_nowait(
-                TelegramUpdateJob(
-                    update_id=update_id,
-                    payload=payload,
-                    received_at=time.monotonic(),
-                    actor_key=actor_key,
-                    offline_backlog=offline_backlog,
-                )
+            await asyncio.wait_for(
+                self._queue.put(
+                    TelegramUpdateJob(
+                        update_id=update_id,
+                        payload=payload,
+                        received_at=time.monotonic(),
+                        actor_key=actor_key,
+                        offline_backlog=offline_backlog,
+                    )
+                ),
+                timeout=2,
             )
-        except asyncio.QueueFull:
+        except asyncio.TimeoutError:
+            await self._idempotency.release(update_id)
             logger.error("update_queue_full update_id=%s user_id=%s", update_id, user_id)
             return EnqueueResult(EnqueueStatus.FULL, update_id=update_id, user_id=user_id)
         return EnqueueResult(EnqueueStatus.ACCEPTED, update_id=update_id, user_id=user_id)
@@ -149,12 +166,20 @@ class TelegramUpdateQueue:
     async def mark_processed(self, update_id: int) -> None:
         await self._idempotency.mark_processed(update_id)
 
-    async def is_stale_backlog_job(self, job: TelegramUpdateJob) -> bool:
-        if not self._backlog_latest_only or not job.offline_backlog or job.actor_key is None:
-            return False
+    async def mark_actor_active(self, actor_key: tuple[int, int] | None, active: bool) -> None:
+        if actor_key is None:
+            return
         async with self._latest_lock:
-            latest = self._latest_backlog_update_by_actor.get(job.actor_key)
-        return latest is not None and job.update_id < latest
+            if active:
+                self._active_actors.add(actor_key)
+            else:
+                self._active_actors.discard(actor_key)
+
+    async def is_stale_backlog_job(self, job: TelegramUpdateJob) -> bool:
+        return False
+
+    async def is_stale_job(self, job: TelegramUpdateJob) -> bool:
+        return False
 
     def _is_offline_backlog_message(self, payload: dict[str, Any]) -> bool:
         message = payload.get("message")

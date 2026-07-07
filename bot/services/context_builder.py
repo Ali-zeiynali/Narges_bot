@@ -55,7 +55,7 @@ class ContextBuilder:
         last_user_messages = self.history_service.recent_user_messages(user_id, limit=THREAD_LOOKBACK_MESSAGES)
         pending_user_thread = self.build_pending_user_thread(user_text, last_user_messages)
         inferred_intent = self.infer_intent(user_text, pending_user_thread)
-        mode = "sexual" if self._has_sexual_trigger(user_text) else self._conversation_state(row.mode if row else None)
+        mode = "sexual" if self._has_sexual_trigger(user_text) else "normal"
         relationship_stage = row.relationship_stage if row else "new"
         familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
@@ -98,7 +98,7 @@ class ContextBuilder:
         user_hash = self.history_service.message_hash(user_text)
         assistant_hash = self.history_service.message_hash(assistant_text)
         user_intent = self.infer_intent(user_text)
-        mode = "sexual" if self._has_sexual_trigger(user_text) else self._conversation_state(conversation_state)
+        mode = "sexual" if self._has_sexual_trigger(user_text) else "normal"
         with self.database.orm.session() as session:
             row = session.get(ConversationContextStateORM, user_id)
             if row is None:
@@ -212,8 +212,9 @@ class ContextBuilder:
         for memory in memories[:8]:
             summary = re.sub(r"\s+", " ", memory.summary).strip()
             created = memory.created_at.astimezone(UTC).date().isoformat()
+            updated = memory.updated_at.astimezone(UTC).date().isoformat()
             expires = memory.expires_at.astimezone(UTC).date().isoformat() if memory.expires_at else "none"
-            lines.append(f"#{memory.id} | {memory.kind.value} | created_at={created} | expires_at={expires}: {summary[:180]}")
+            lines.append(f"#{memory.id} | {memory.kind.value} | created_at={created} | updated_at={updated} | expires_at={expires}: {summary[:180]}")
         return lines
 
     def _conversation_state(self, value: str | None) -> str:
@@ -221,7 +222,44 @@ class ContextBuilder:
 
     def _has_sexual_trigger(self, text: str) -> bool:
         lowered = (text or "").lower()
-        return any(word in lowered for word in SEXUAL_TRIGGER_WORDS)
+        if not lowered:
+            return False
+        explicit_words = {
+            "sex",
+            "sexual",
+            "horny",
+            "nude",
+            "naked",
+            "سکس",
+            "جنسی",
+            "شهوت",
+            "حشری",
+            "پورن",
+            "لخت",
+            "برهنه",
+        }
+        if any(word in lowered for word in explicit_words):
+            return True
+        body_words = {
+            "کس",
+            "کص",
+            "کون",
+            "کیر",
+            "واژن",
+            "آلت",
+        }
+        action_words = {
+            "بکن",
+            "بخور",
+            "بمال",
+            "بساک",
+            "لمس",
+            "تحریک",
+            "ارضا",
+        }
+        has_body = any(word in lowered for word in body_words)
+        has_action = any(word in lowered for word in action_words)
+        return has_body and has_action
 
     def _mode_for_intent(self, intent: str) -> str:
         if intent == "technical":

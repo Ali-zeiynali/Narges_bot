@@ -32,6 +32,15 @@ class GroqResult:
 
 
 @dataclass(frozen=True)
+class ImageSelectionResult:
+    image_id: str | None
+    caption: str | None
+    usage: dict[str, int | None]
+    provider: str = "unknown"
+    model: str = "unknown"
+
+
+@dataclass(frozen=True)
 class ProviderConfig:
     name: str
     kind: str
@@ -136,6 +145,57 @@ class GroqChatClient:
         )
         payload = self._loads_json(raw_text)
         return NargesSelfStateCandidate.model_validate(payload), usage
+
+    def complete_image_selection(
+        self,
+        *,
+        original_messages: list[dict[str, str]],
+        image_request: dict[str, Any],
+        image_catalog: list[dict[str, Any]],
+    ) -> ImageSelectionResult:
+        schema = {
+            "type": "object",
+            "properties": {
+                "image_id": {"type": ["string", "null"]},
+                "caption": {"type": ["string", "null"]},
+            },
+            "required": ["image_id", "caption"],
+            "additionalProperties": False,
+        }
+        selection_payload = {
+            "task": "Choose at most one local image for the Telegram reply.",
+            "rules": [
+                "Return image_id null if none of the catalog images fit.",
+                "Use only an id from image_catalog.",
+                "Caption must be short Persian text suitable for Telegram.",
+            ],
+            "image_request": image_request,
+            "image_catalog": image_catalog,
+            "previous_prompt": original_messages,
+        }
+        raw_text, usage, provider, model = self._complete_json(
+            [
+                {
+                    "role": "system",
+                    "content": "Select a local Telegram image. Return only compact JSON.",
+                },
+                {"role": "user", "content": json.dumps(selection_payload, ensure_ascii=False)},
+            ],
+            schema,
+            "image_selection",
+            max_completion_tokens=180,
+            temperature=0.2,
+        )
+        payload = self._try_loads_json(raw_text) or {}
+        image_id = payload.get("image_id")
+        caption = payload.get("caption")
+        return ImageSelectionResult(
+            image_id=str(image_id).strip() if image_id else None,
+            caption=str(caption).strip()[:900] if caption else None,
+            usage=usage,
+            provider=provider,
+            model=model,
+        )
 
     def _complete_json(
         self,

@@ -1,0 +1,53 @@
+{
+  "images": [
+    {
+      "id": "selfie_1",
+      "path": "1.jfif",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_2",
+      "path": "2.jfif",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_3",
+      "path": "3.jfif",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_4",
+      "path": "4.jfif",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_5",
+      "path": "5.jpg",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_6",
+      "path": "6.jfif",
+      "mime_type": "image/jpeg",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_7",
+      "path": "12043049.webp",
+      "mime_type": "image/webp",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    }
+  ]
+}

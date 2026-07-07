@@ -78,6 +78,19 @@ def dt_iso(value: Any) -> str:
     return f"{seconds // (365 * 86400)} سال قبل"
 
 
+def sort_datetime(value: Any) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if not isinstance(value, datetime):
+        try:
+            value = datetime.fromisoformat(str(value))
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def mask_key(value: str) -> str:
     value = value.strip()
     if value.startswith("env:") or value.startswith("$"):
@@ -120,6 +133,7 @@ class DashboardSnapshot:
     recent_users: list[dict[str, Any]]
     daily_chart: list[dict[str, Any]]
     provider_token_chart: list[dict[str, Any]]
+    hourly_usage_chart: list[dict[str, Any]]
 
 
 class AdminDataService:
@@ -156,6 +170,7 @@ class AdminDataService:
             user_names = self._user_name_map(session, self._collect_user_ids(recent_messages, recent_usage_rows, recent_debug_rows))
             daily_chart = self._daily_chart(session, days=14)
             provider_token_chart = self._provider_token_chart(session, since=today - timedelta(days=13))
+            hourly_usage_chart = self._hourly_usage_chart(session, since=today - timedelta(days=13), days=14)
 
         return DashboardSnapshot(
             users_total=int(users_total),
@@ -175,6 +190,7 @@ class AdminDataService:
             recent_users=[self._user_row(row) for row in recent_users],
             daily_chart=daily_chart,
             provider_token_chart=provider_token_chart,
+            hourly_usage_chart=hourly_usage_chart,
         )
 
     def users(self, sort: str = "last_seen", query: str = "") -> list[dict[str, Any]]:
@@ -218,8 +234,8 @@ class AdminDataService:
         sort_key = {
             "warnings": lambda item: item["warnings"],
             "quota": lambda item: item["daily_remaining"] + item["extra_remaining"],
-            "created": lambda item: item["created_at"] or datetime.min,
-        }.get(sort, lambda item: item["last_seen"] or datetime.min)
+            "created": lambda item: sort_datetime(item["created_at"]),
+        }.get(sort, lambda item: sort_datetime(item["last_seen"]))
         return sorted(items, key=sort_key, reverse=True)
 
     def user_detail(self, user_id: int) -> dict[str, Any]:
@@ -283,6 +299,17 @@ class AdminDataService:
                 payload = json.loads(row.ai_request_payload_json)
             except json.JSONDecodeError:
                 payload = {"raw": row.ai_request_payload_json}
+        elif row:
+            payload = {
+                "source": "admin_fallback",
+                "role": row.role,
+                "message_type": row.message_type,
+                "chat_id": row.chat_id,
+                "telegram_message_id": row.telegram_message_id,
+                "provider": row.provider,
+                "model": row.model,
+                "note": "This older row had no stored ai_request_payload; showing reconstructed audit metadata.",
+            }
         return {"message": row, "ai_request": payload, "user_names": user_names, "related_media": related_media}
 
     def messages(self, user_id: int | None = None, limit: int = 300) -> dict[str, Any]:
@@ -335,6 +362,11 @@ class AdminDataService:
                 return None
             session.expunge(row)
             return row
+
+    def media_file_payload(self, media_id: int) -> tuple[bytes | None, str | None]:
+        from bot.services.media_service import MediaStorageService
+
+        return MediaStorageService(self.settings, self.database).file_payload(media_id)
 
     def invoices(self, limit: int = 300) -> dict[str, Any]:
         with self.database.orm.session() as session:
@@ -828,6 +860,8 @@ class AdminDataService:
             "mime_type": row.mime_type,
             "original_file_name": row.original_file_name,
             "storage_path": row.storage_path,
+            "content_hash": row.content_hash,
+            "stored_in_database": bool(row.file_bytes),
             "file_size": row.file_size,
             "caption": row.caption,
             "metadata": metadata,
@@ -927,6 +961,29 @@ class AdminDataService:
             .order_by(desc(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)))
         ).all()
         return [{"provider": provider or "unknown", "tokens": int(tokens or 0)} for provider, tokens in rows]
+
+    def _hourly_usage_chart(self, session, since: datetime, days: int) -> list[dict[str, Any]]:
+        rows = session.execute(
+            select(UsageLogORM.created_at, UsageLogORM.total_tokens)
+            .where(UsageLogORM.created_at >= since)
+        ).all()
+        buckets = {hour: {"hour": hour, "requests": 0, "tokens": 0} for hour in range(24)}
+        for created_at, total_tokens in rows:
+            parsed = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            hour = parsed.astimezone(UTC).hour
+            buckets[hour]["requests"] += 1
+            buckets[hour]["tokens"] += int(total_tokens or 0)
+        divisor = max(1, days)
+        return [
+            {
+                "hour": f"{hour:02d}:00",
+                "avg_requests": round(bucket["requests"] / divisor, 2),
+                "avg_tokens": round(bucket["tokens"] / divisor, 2),
+            }
+            for hour, bucket in buckets.items()
+        ]
 
     def _date_key(self, value: datetime | str) -> str:
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))

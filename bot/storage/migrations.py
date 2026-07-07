@@ -503,4 +503,14 @@ MIGRATIONS: list[tuple[str, str]] = [
             ON media_files(user_id, media_kind, created_at);
         """,
     ),
+    (
+        "018_media_blobs_and_hashes",
+        """
+        ALTER TABLE media_files ADD COLUMN content_hash TEXT;
+        ALTER TABLE media_files ADD COLUMN file_bytes BLOB;
+
+        CREATE INDEX IF NOT EXISTS idx_media_files_content_hash
+            ON media_files(content_hash);
+        """,
+    ),
 ]

@@ -19,6 +19,11 @@
   <div class="card metric">رویداد سهمیه امروز<b>{{ snapshot.quota_events_today }}</b></div>
 </div>
 
+<div class="card">
+  <h3>Hourly average usage</h3>
+  <canvas id="hourlyUsageChart"></canvas>
+</div>
+
 <div class="grid two">
   <div class="card">
     <h3>رشد و فعالیت ۱۴ روز اخیر</h3>
@@ -138,6 +143,7 @@
 <script>
   const dailyRows = {{ snapshot.daily_chart | tojson }};
   const providerRows = {{ snapshot.provider_token_chart | tojson }};
+  const hourlyRows = {{ snapshot.hourly_usage_chart | tojson }};
   const labels = dailyRows.map(row => row.date.slice(5));
   if (window.Chart) {
     new Chart(document.getElementById("dailyChart"), {
@@ -160,6 +166,23 @@
         datasets: [{data: providerRows.map(row => row.tokens), backgroundColor: ["#2563eb","#7c3aed","#16a34a","#d97706","#dc2626","#0891b2"]}]
       },
       options: {responsive: true, plugins: {legend: {position: "bottom"}}}
+    });
+
+    new Chart(document.getElementById("hourlyUsageChart"), {
+      type: "bar",
+      data: {
+        labels: hourlyRows.map(row => row.hour),
+        datasets: [
+          {label: "Avg requests", data: hourlyRows.map(row => row.avg_requests), backgroundColor: "rgba(37,99,235,.45)", yAxisID: "y"},
+          {label: "Avg tokens", data: hourlyRows.map(row => row.avg_tokens), borderColor: "#d97706", backgroundColor: "rgba(217,119,6,.12)", type: "line", tension: .35, yAxisID: "y1"}
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: {mode: "index", intersect: false},
+        plugins: {legend: {position: "bottom"}},
+        scales: {y: {beginAtZero: true}, y1: {beginAtZero: true, position: "right", grid: {drawOnChartArea: false}}}
+      }
     });
   }
 </script>

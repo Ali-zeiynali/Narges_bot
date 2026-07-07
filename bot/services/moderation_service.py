@@ -3,8 +3,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
-from bot.storage.database import Database
 from bot.services.debug_service import DebugService
+from bot.storage.database import Database
 from bot.storage.orm import UserBlockORM, UserWarningEventORM
 
 
@@ -98,11 +98,12 @@ class ModerationService:
         now = datetime.now(UTC)
         count = self.warning_count(user_id) + 1
         blocked_until = self._block_until_for_count(user_id, count, now)
+        clean_reason = reason.strip()[:240]
         with self.database.orm.session() as session:
             session.add(
                 UserWarningEventORM(
                     user_id=user_id,
-                    reason=reason.strip()[:240],
+                    reason=clean_reason,
                     source=source,
                     source_message_id=source_message_id,
                     warning_count_after=count,
@@ -112,12 +113,18 @@ class ModerationService:
             if blocked_until:
                 block = session.get(UserBlockORM, user_id)
                 if block is None:
-                    block = UserBlockORM(user_id=user_id, warning_count=count, blocked_until=blocked_until, reason=reason.strip()[:240], updated_at=now)
+                    block = UserBlockORM(
+                        user_id=user_id,
+                        warning_count=count,
+                        blocked_until=blocked_until,
+                        reason=clean_reason,
+                        updated_at=now,
+                    )
                     session.add(block)
                 else:
                     block.warning_count = count
                     block.blocked_until = blocked_until
-                    block.reason = reason.strip()[:240]
+                    block.reason = clean_reason
                     block.updated_at = now
 
         result = WarningResult(
@@ -135,26 +142,38 @@ class ModerationService:
 
     def warning_message(self, warning_count: int, blocked_until: datetime | None) -> str:
         base = (
-            "🔴 هشدار رسمی\n\n"
-            "کاربر عزیز، شما به خاطر رفتار نامناسب اخطار دریافت کردید.\n"
+            "هشدار رسمی\n\n"
+            "شما به خاطر رفتار نامناسب اخطار دریافت کردید.\n"
             "در صورت ادامه این رفتار، حساب شما مسدود خواهد شد.\n\n"
             f"تعداد اخطارها: {warning_count}"
         )
         if blocked_until:
-            return (
-                f"{base}\n"
-                f"وضعیت: مسدود تا {blocked_until.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
-            )
+            return f"{base}\nوضعیت: مسدود، زمان باقی‌مانده: {self._remaining_text(self._as_datetime(blocked_until))}"
         return base
 
     def block_message(self, status: BlockStatus) -> str:
-        until = status.blocked_until.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC") if status.blocked_until else "نامشخص"
+        blocked_until = self._as_datetime(status.blocked_until) if status.blocked_until else None
         return (
-            "🔴 حساب شما موقتاً مسدود است.\n\n"
+            "حساب شما مسدود است.\n\n"
             f"تعداد اخطارها: {status.warning_count}\n"
-            f"پایان مسدودی: {until}\n"
-            "بعد از پایان زمان مسدودی می‌توانید دوباره از ربات استفاده کنید."
+            f"زمان باقی‌مانده: {self._remaining_text(blocked_until)}\n"
+            "بعد از پایان مسدودی دوباره می‌توانید از ربات استفاده کنید."
         )
+
+    def _remaining_text(self, blocked_until: datetime | None) -> str:
+        if blocked_until is None:
+            return "نامشخص"
+        remaining_seconds = max(0, int((blocked_until - datetime.now(UTC)).total_seconds()))
+        if remaining_seconds <= 0:
+            return "کمتر از یک دقیقه"
+        days, remainder = divmod(remaining_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = max(1, remainder // 60) if days == 0 and hours == 0 else remainder // 60
+        if days > 0:
+            return f"{days} روز و {hours} ساعت" if hours else f"{days} روز"
+        if hours > 0:
+            return f"{hours} ساعت و {minutes} دقیقه"
+        return f"{minutes} دقیقه"
 
     def _block_until_for_count(self, user_id: int, count: int, now: datetime) -> datetime | None:
         if count < 3:
@@ -171,4 +190,4 @@ class ModerationService:
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
-        return parsed
+        return parsed.astimezone(UTC)

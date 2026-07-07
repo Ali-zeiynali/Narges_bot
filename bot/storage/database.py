@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from bot.storage.migrations import MIGRATIONS
@@ -33,6 +34,7 @@ class Database:
     def migrate(self) -> None:
         if not self.is_sqlite:
             self.orm.ensure_schema()
+            self._ensure_runtime_schema()
             return
         with closing(self.connect()) as connection:
             connection.execute(
@@ -57,8 +59,29 @@ class Database:
                 )
             connection.commit()
         self.orm.ensure_schema()
+        self._ensure_runtime_schema()
 
     def execute(self, sql: str, params: Iterable[object] = ()) -> None:
         with closing(self.connect()) as connection:
             connection.execute(sql, tuple(params))
             connection.commit()
+
+    def _ensure_runtime_schema(self) -> None:
+        if self.orm.dialect_name == "postgresql":
+            statements = [
+                "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
+                "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS file_bytes BYTEA",
+                "CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)",
+            ]
+            with self.orm.engine.begin() as connection:
+                for statement in statements:
+                    connection.execute(text(statement))
+        elif self.orm.dialect_name == "sqlite":
+            with closing(self.connect()) as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(media_files)").fetchall()}
+                if "content_hash" not in columns:
+                    connection.execute("ALTER TABLE media_files ADD COLUMN content_hash TEXT")
+                if "file_bytes" not in columns:
+                    connection.execute("ALTER TABLE media_files ADD COLUMN file_bytes BLOB")
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)")
+                connection.commit()

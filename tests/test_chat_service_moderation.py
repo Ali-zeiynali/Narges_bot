@@ -149,7 +149,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
             message_datetime=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
         )
 
-        self.assertIn("🔴", result.reply.messages[0].text)
+        self.assertIn("هشدار رسمی", result.reply.messages[0].text)
         self.assertEqual(self.moderation.warning_count(1), 1)
         self.assertEqual(self.quota.remaining_today(1), 40)
 

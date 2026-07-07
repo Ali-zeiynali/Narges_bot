@@ -26,6 +26,7 @@ class TelegramOutboundMessage(BaseModel):
 
     text: str = Field(min_length=1, max_length=1200)
     delay_seconds: float = Field(default=0.4, ge=0, le=8)
+    image_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("text")
     @classmethod
@@ -78,6 +79,15 @@ class EventSuggestion(BaseModel):
     duration_minutes: int = Field(ge=15, le=180)
 
 
+class ImageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    needed: bool = False
+    reason: str | None = Field(default=None, max_length=240)
+    prompt: str | None = Field(default=None, max_length=300)
+    caption: str | None = Field(default=None, max_length=800)
+
+
 class NargesReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -87,6 +97,7 @@ class NargesReply(BaseModel):
     memory_suggestions: list[MemorySuggestion] = Field(default_factory=list, max_length=12)
     warning_suggestion: WarningSuggestion | None = None
     event_suggestion: EventSuggestion | None = None
+    image_request: ImageRequest | None = None
 
     @model_validator(mode="after")
     def validate_message_batch(self) -> "NargesReply":
@@ -168,6 +179,18 @@ class NargesReply(BaseModel):
         )
         if not isinstance(normalized.get("event_suggestion"), dict):
             normalized["event_suggestion"] = None
+        image_request = normalized.get("image_request") or normalized.get("photo_request")
+        if isinstance(image_request, dict):
+            normalized["image_request"] = {
+                "needed": bool(image_request.get("needed", True)),
+                "reason": image_request.get("reason"),
+                "prompt": image_request.get("prompt") or image_request.get("description"),
+                "caption": image_request.get("caption") or image_request.get("text"),
+            }
+        elif image_request:
+            normalized["image_request"] = {"needed": True, "prompt": str(image_request)[:300]}
+        else:
+            normalized["image_request"] = None
         allowed = set(cls.model_fields)
         return {key: value for key, value in normalized.items() if key in allowed}
 

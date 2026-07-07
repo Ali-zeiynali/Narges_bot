@@ -109,7 +109,7 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.assertEqual(self.service.list_active(1), [])
 
-    def test_model_candidates_are_accepted_when_not_directly_supported(self) -> None:
+    def test_model_candidates_are_rejected_when_not_directly_supported(self) -> None:
         suggestion = MemorySuggestion(
             action="create",
             kind="preference",
@@ -119,9 +119,21 @@ class MemoryServiceTests(unittest.TestCase):
 
         self.service.apply_candidates(1, 10, "assistant said so", [suggestion], assistant_sourced=False, model_sourced=True)
 
+        self.assertEqual(self.service.list_active(1), [])
+
+    def test_model_candidates_are_accepted_when_supported_by_user_text(self) -> None:
+        suggestion = MemorySuggestion(
+            action="create",
+            kind="preference",
+            summary="User likes bananas.",
+            confidence=0.95,
+        )
+
+        self.service.apply_candidates(1, 10, "I like bananas", [suggestion], assistant_sourced=False, model_sourced=True)
+
         memories = self.service.list_active(1)
         self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0].summary, "User likes invented assistant fact.")
+        self.assertEqual(memories[0].summary, "User likes bananas.")
 
     def test_guessing_intent_blocks_memory(self) -> None:
         suggestion = MemorySuggestion(

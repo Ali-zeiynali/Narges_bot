@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -75,6 +76,34 @@ class AdminBackupTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertGreaterEqual(report["inserted"], 2)
         self.assertGreaterEqual(report["skipped"], 1)
+
+    def test_users_sort_handles_mixed_naive_and_aware_datetimes(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "mixed.sqlite3"))
+        database.migrate()
+        with database.orm.session() as session:
+            session.add(
+                UserORM(
+                    telegram_id=10,
+                    username="aware",
+                    first_name="Aware",
+                    created_at=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
+                    updated_at=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
+                )
+            )
+            session.add(
+                UserORM(
+                    telegram_id=20,
+                    username="naive",
+                    first_name="Naive",
+                    created_at=datetime(2026, 7, 6, 12, 0),
+                    updated_at=datetime(2026, 7, 6, 12, 0),
+                )
+            )
+        service = AdminDataService(database, make_settings())
+
+        users = service.users(sort="created")
+
+        self.assertEqual([item["telegram_id"] for item in users], [20, 10])
 
 
 if __name__ == "__main__":

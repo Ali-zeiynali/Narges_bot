@@ -119,6 +119,9 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         media = service.media_file(media_id)
         if media is None:
             raise HTTPException(status_code=404)
+        payload, mime_type = service.media_file_payload(media_id)
+        if payload:
+            return Response(content=payload, media_type=mime_type or media.mime_type or "application/octet-stream")
         path = Path(media.storage_path)
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=404)

@@ -57,11 +57,13 @@
       <h4><a href="/admin/users/{{ item.user_id }}">{{ item.user_name }}</a></h4>
       <div class="media-meta">
         #{{ item.id }} · {{ item.media_kind }} · {{ item.mime_type or "-" }}<br>
+        {{ "DB" if item.stored_in_database else "file" }} - {{ item.file_size or "-" }} bytes<br>
         {{ item.created_at|dt }}
       </div>
       {% if item.caption %}<p><b>متن کاربر:</b><br>{{ item.caption }}</p>{% endif %}
       {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
       {% if item.original_file_name %}<div class="media-meta ltr">{{ item.original_file_name }}</div>{% endif %}
+      {% if item.content_hash %}<div class="media-meta ltr">sha256: {{ item.content_hash[:16] }}...</div>{% endif %}
       <details>
         <summary>جزئیات</summary>
         <pre>{{ item.metadata | json_pretty }}</pre>

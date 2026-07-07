@@ -52,6 +52,22 @@ class NargesReplyModelTests(unittest.TestCase):
         self.assertEqual(reply.messages[0].text, "Plain Telegram answer")
         self.assertEqual(reply.memory_suggestions, [])
 
+    def test_image_request_is_normalized(self) -> None:
+        reply = NargesReply.validate_provider_payload(
+            {
+                "text": "اینم برای تو",
+                "image_request": {
+                    "needed": True,
+                    "reason": "user asked for a selfie",
+                    "prompt": "casual selfie",
+                    "caption": "اینم عکس",
+                },
+            }
+        )
+
+        self.assertTrue(reply.image_request.needed)
+        self.assertEqual(reply.image_request.prompt, "casual selfie")
+
     def test_invalid_memory_suggestion_shape_is_normalized(self) -> None:
         reply = NargesReply.validate_provider_payload(
             {

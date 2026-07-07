@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
+from typing import TYPE_CHECKING
 
 from bot.models.ai import NargesReply, ResponseMode, TelegramOutboundMessage
 from bot.models.context import BuiltContext
@@ -18,11 +19,15 @@ from bot.services.debug_service import DebugService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QuotaCheck, QuotaService
+from bot.services.request_trace import RequestTrace
 from bot.services.style_linter import StyleLinter
 from bot.services.usage_service import UsageService
 from bot.services.validation import MessageValidator
 from bot.utils.text_safety import clamp_repeated_chars
 from bot.utils.tokens import estimate_tokens
+
+if TYPE_CHECKING:
+    from bot.services.media_service import BotImageCatalog
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +65,7 @@ class ChatService:
         style_linter: StyleLinter,
         quota_service: QuotaService,
         global_state_service: GlobalStateService | None = None,
+        bot_image_catalog: "BotImageCatalog | None" = None,
     ) -> None:
         self.validator = validator
         self.persona_compiler = persona_compiler
@@ -75,6 +81,7 @@ class ChatService:
         self.style_linter = style_linter
         self.quota_service = quota_service
         self.global_state_service = global_state_service
+        self.bot_image_catalog = bot_image_catalog
 
     async def answer(
         self,
@@ -85,31 +92,43 @@ class ChatService:
         message_datetime: datetime | None = None,
         user_profile=None,
         reserved_quota_check: QuotaCheck | None = None,
+        trace: RequestTrace | None = None,
     ) -> ChatTurnResult:
+        owns_trace = trace is None
+        trace = trace or RequestTrace("chat_turn", {"user_id": user_id, "chat_id": chat_id, "message_id": message_id})
         message_datetime = (message_datetime or datetime.now(UTC)).astimezone(UTC)
-        text = clamp_repeated_chars(text)
-        validation = self.validator.validate(text, "")
-        if not validation.ok:
-            raise UserFacingError(validation.message)
-        if self.global_state_service:
-            global_state = self.global_state_service.get()
-            if not global_state.ai_enabled:
-                raise UserFacingError(global_state.ai_disabled_message)
+        with trace.step("validate_input"):
+            block_status = self.moderation_service.get_block_status(user_id)
+            if block_status.blocked:
+                raise UserFacingError(self.moderation_service.block_message(block_status))
+            text = clamp_repeated_chars(text)
+            validation = self.validator.validate(text, "")
+            if not validation.ok:
+                raise UserFacingError(validation.message)
+            if self.global_state_service:
+                global_state = self.global_state_service.get()
+                if not global_state.ai_enabled:
+                    raise UserFacingError(global_state.ai_disabled_message)
 
-        state = self.narges_state_service.get_active()
-        context = self.context_builder.build(user_id, text, [])
-        memories = self.memory_service.retrieve_for_context(
-            user_id,
-            text=context.pending_user_thread or text,
-            intent=context.recent_intent,
-            pending_user_thread=context.pending_user_thread,
-        )
-        context = self.context_builder.build(user_id, text, memories)
+        with trace.step("load_state"):
+            state = self.narges_state_service.get_active()
+        with trace.step("build_context_initial"):
+            context = self.context_builder.build(user_id, text, [])
+        with trace.step("retrieve_memories"):
+            memories = self.memory_service.retrieve_for_context(
+                user_id,
+                text=context.pending_user_thread or text,
+                intent=context.recent_intent,
+                pending_user_thread=context.pending_user_thread,
+            )
+        with trace.step("build_context_final", memory_count=len(memories)):
+            context = self.context_builder.build(user_id, text, memories)
         short_term_messages: list[dict[str, str]] = []
         search_results: list[dict[str, str]] = []
 
         quota_started_here = reserved_quota_check is None
-        quota_check = reserved_quota_check or await self.quota_service.begin_generation(user_id)
+        with trace.step("quota_begin", reserved=reserved_quota_check is not None):
+            quota_check = reserved_quota_check or await self.quota_service.begin_generation(user_id)
         if not quota_check.ok:
             raise UserFacingError(quota_check.message)
 
@@ -120,17 +139,18 @@ class ChatService:
         provider_failed = False
         final_usage: dict[str, int | None] = {}
         try:
-            compiled, messages, input_token_estimate, memories, short_term_messages, search_results = self._compile_under_budget(
-                text=text,
-                state=state,
-                memories=memories,
-                context=context,
-                short_term_messages=short_term_messages,
-                search_results=search_results,
-                remaining_quota=quota_check.remaining,
-                message_datetime=message_datetime,
-                user_profile=user_profile,
-            )
+            with trace.step("compile_prompt", memory_count=len(memories)):
+                compiled, messages, input_token_estimate, memories, short_term_messages, search_results = self._compile_under_budget(
+                    text=text,
+                    state=state,
+                    memories=memories,
+                    context=context,
+                    short_term_messages=short_term_messages,
+                    search_results=search_results,
+                    remaining_quota=quota_check.remaining,
+                    message_datetime=message_datetime,
+                    user_profile=user_profile,
+                )
             self.debug_service.log(
                 "model_request_prepared",
                 {
@@ -144,10 +164,15 @@ class ChatService:
                 },
                 user_id=user_id,
             )
-            recent_for_lint = self.history_service.recent_assistant_replies(user_id, limit=5)
-            last_assistant = self.history_service.last_assistant_reply(user_id)
-            result = await self._complete_with_retries(messages)
-            result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant)
+            with trace.step("load_lint_history"):
+                recent_for_lint = self.history_service.recent_assistant_replies(user_id, limit=5)
+                last_assistant = self.history_service.last_assistant_reply(user_id)
+            with trace.step("provider_complete", estimated_input_tokens=input_token_estimate):
+                result = await self._complete_with_retries(messages)
+            with trace.step("style_retry_if_needed"):
+                result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant)
+            with trace.step("attach_requested_image"):
+                result = await self._attach_requested_image_if_needed(result, messages)
         except Exception:
             logger.exception("model_response_failed user_id=%s chat_id=%s", user_id, chat_id)
             provider_failed = True
@@ -211,71 +236,103 @@ class ChatService:
             usage_for_storage["prompt_tokens"] = prompt_tokens
             usage_for_storage["total_tokens"] = total_tokens
             final_usage = usage_for_storage
-            self.history_service.add(
-                user_id,
-                "user",
-                text,
-                chat_id=chat_id,
-                telegram_message_id=message_id,
-                created_at=message_datetime,
-                input_tokens=input_token_estimate,
-                intent=context.recent_intent,
-                ai_request_payload={
-                    "messages": messages,
-                    "compiled_sections": list(compiled.sections) if compiled else [],
-                    "estimated_input_tokens": input_token_estimate,
-                    "message_datetime": message_datetime.isoformat(),
+            user_ai_request_payload = {
+                "messages": messages,
+                "compiled_sections": list(compiled.sections) if compiled else [],
+                "estimated_input_tokens": input_token_estimate,
+                "message_datetime": message_datetime.isoformat(),
+                "request_contract": {
+                    "static": "persona, engine rules, current Narges state",
+                    "user_scoped": "profile, relevant memories, conversation context, current user message",
+                    "memory_count": len(memories),
                 },
-            )
-            self.history_service.add(
-                user_id,
-                "assistant",
-                clean_assistant_text,
-                chat_id=chat_id,
-                provider=result.provider,
-                model=result.model,
-                message_type=assistant_history_message_type,
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                provider_response_id=result.provider_response_id,
-                intent=context.recent_intent,
-            )
-            if assistant_history_message_type == "chat":
-                memory_suggestions = [] if context.recent_intent == "guessing" else result.reply.memory_suggestions
-                self.memory_service.process_model_suggestions(
+            }
+            with trace.step("store_history"):
+                self.history_service.add(
                     user_id,
-                    message_id,
+                    "user",
                     text,
-                    memory_suggestions,
-                    metadata={
-                        "intent": context.recent_intent,
-                        "mode": context.state.mode,
-                        "active_memory_count": len(memories),
-                        "pending_user_thread": context.pending_user_thread,
+                    chat_id=chat_id,
+                    telegram_message_id=message_id,
+                    created_at=message_datetime,
+                    input_tokens=input_token_estimate,
+                    intent=context.recent_intent,
+                    ai_request_payload=user_ai_request_payload,
+                )
+                self.history_service.add(
+                    user_id,
+                    "assistant",
+                    clean_assistant_text,
+                    chat_id=chat_id,
+                    provider=result.provider,
+                    model=result.model,
+                    message_type=assistant_history_message_type,
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    provider_response_id=result.provider_response_id,
+                    intent=context.recent_intent,
+                    ai_request_payload={
+                        "source": "assistant_response",
+                        "request": user_ai_request_payload,
+                        "provider": result.provider,
+                        "model": result.model,
+                        "usage": usage_for_storage,
+                        "conversation_state": result.reply.conversation_state.value,
                     },
                 )
-            self.context_builder.observe_turn(
-                user_id=user_id,
-                user_text=text,
-                assistant_text=clean_assistant_text,
-                assistant_intent=context.recent_intent,
-                conversation_state=result.reply.conversation_state.value,
-                message_datetime=message_datetime,
-            )
-            if self.context_builder.should_refresh_summary(user_id):
-                await asyncio.to_thread(self.context_builder.refresh_summary_with_llm, user_id, self.groq_client)
-            self.usage_service.log(
-                user_id,
-                chat_id,
-                input_token_estimate + self.validator.settings.groq_max_completion_tokens,
-                usage_for_storage,
-                provider=result.provider,
-                model=result.model,
-            )
+            if assistant_history_message_type == "chat":
+                memory_suggestions = [] if context.recent_intent == "guessing" else result.reply.memory_suggestions
+                with trace.step("process_memory_suggestions", suggestion_count=len(memory_suggestions)):
+                    self.memory_service.process_model_suggestions(
+                        user_id,
+                        message_id,
+                        text,
+                        memory_suggestions,
+                        metadata={
+                            "intent": context.recent_intent,
+                            "mode": context.state.mode,
+                            "active_memory_count": len(memories),
+                            "pending_user_thread": context.pending_user_thread,
+                        },
+                    )
+            with trace.step("observe_context"):
+                self.context_builder.observe_turn(
+                    user_id=user_id,
+                    user_text=text,
+                    assistant_text=clean_assistant_text,
+                    assistant_intent=context.recent_intent,
+                    conversation_state=result.reply.conversation_state.value,
+                    message_datetime=message_datetime,
+                )
+            with trace.step("refresh_summary_if_needed"):
+                if self.context_builder.should_refresh_summary(user_id):
+                    await asyncio.to_thread(self.context_builder.refresh_summary_with_llm, user_id, self.groq_client)
+            with trace.step("log_usage"):
+                self.usage_service.log(
+                    user_id,
+                    chat_id,
+                    input_token_estimate + self.validator.settings.groq_max_completion_tokens,
+                    usage_for_storage,
+                    provider=result.provider,
+                    model=result.model,
+                )
         finally:
             if quota_started_here:
-                await self.quota_service.finish_generation(user_id)
+                with trace.step("quota_finish"):
+                    await self.quota_service.finish_generation(user_id)
+            if owns_trace:
+                self.debug_service.trace(
+                    "request_trace",
+                    trace.finish(
+                        phase="chat_turn",
+                        provider=result.provider if "result" in locals() else None,
+                        model=result.model if "result" in locals() else None,
+                        provider_failed=provider_failed,
+                        estimated_input_tokens=input_token_estimate,
+                    ),
+                    user_id=user_id,
+                )
 
         return ChatTurnResult(
             reply=result.reply,
@@ -471,6 +528,55 @@ class ChatService:
                 if attempt < attempts:
                     await asyncio.sleep(min(2 * attempt, 5))
         raise last_error or RuntimeError("model failed")
+
+    async def _attach_requested_image_if_needed(self, result: GroqResult, messages: list[dict[str, str]]) -> GroqResult:
+        request = result.reply.image_request
+        if not request or not request.needed or self.bot_image_catalog is None:
+            return result
+        catalog = self.bot_image_catalog.items_for_model()
+        if not catalog:
+            return result
+        try:
+            selection = await asyncio.to_thread(
+                self.groq_client.complete_image_selection,
+                original_messages=messages,
+                image_request=request.model_dump(mode="json"),
+                image_catalog=catalog,
+            )
+        except Exception:
+            logger.exception("image_selection_failed")
+            return result
+        if not selection.image_id or not self.bot_image_catalog.has_image(selection.image_id):
+            return result
+        selected_caption = selection.caption or request.caption
+        messages_with_image = list(result.reply.messages)
+        last_message = messages_with_image[-1]
+        messages_with_image[-1] = last_message.model_copy(
+            update={
+                "text": self._trim_image_caption(selected_caption or last_message.text),
+                "image_id": selection.image_id,
+            }
+        )
+        usage = dict(result.usage)
+        for key, value in selection.usage.items():
+            if value is None:
+                continue
+            usage[key] = int(usage.get(key) or 0) + int(value)
+        return GroqResult(
+            reply=result.reply.model_copy(update={"messages": messages_with_image}),
+            raw_text=result.raw_text,
+            usage=usage,
+            provider=result.provider,
+            model=result.model,
+            provider_response_id=result.provider_response_id,
+        )
+
+    def _trim_image_caption(self, text: str) -> str:
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        caption = "\n".join(lines[:6]).strip()
+        if len(caption) > 1000:
+            caption = caption[:997].rstrip() + "..."
+        return caption or "اینم عکس."
 
     def _fallback_reply(self, long_user_message: bool = False) -> NargesReply:
         return NargesReply(

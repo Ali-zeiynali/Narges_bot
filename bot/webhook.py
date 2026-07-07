@@ -1,6 +1,5 @@
 import logging
 from contextlib import asynccontextmanager
-from time import perf_counter
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +9,7 @@ from bot.application import BotApplication, create_bot_application
 from bot.config import load_settings
 from bot.update_queue import EnqueueStatus, InMemoryRateLimiter, TelegramUpdateQueue, UpdateIdempotencyStore
 from bot.worker import TelegramUpdateWorker
+from bot.services.request_trace import RequestTrace
 
 
 logger = logging.getLogger(__name__)
@@ -80,22 +80,33 @@ async def telegram_webhook(
     if state.queue is None:
         raise HTTPException(status_code=503, detail="queue is not ready")
 
-    started = perf_counter()
+    trace = RequestTrace("telegram_webhook")
     try:
-        payload = await request.json()
+        with trace.step("read_json"):
+            payload = await request.json()
     except Exception:
         logger.warning("webhook_invalid_json")
         return JSONResponse({"ok": True, "status": EnqueueStatus.INVALID.value})
     if not isinstance(payload, dict):
         return JSONResponse({"ok": True, "status": EnqueueStatus.INVALID.value})
 
-    result = await state.queue.enqueue(payload)
-    elapsed_ms = int((perf_counter() - started) * 1000)
+    with trace.step("enqueue"):
+        result = await state.queue.enqueue(payload)
+    trace_payload = trace.finish(update_id=result.update_id, status=result.status.value, phase="webhook")
+    elapsed_ms = trace_payload["total_ms"]
+    if state.app:
+        state.app.debug_service.trace(
+            "request_trace",
+            trace_payload,
+            user_id=result.user_id,
+        )
     if elapsed_ms > 100:
         logger.warning("webhook_slow_enqueue update_id=%s elapsed_ms=%s status=%s", result.update_id, elapsed_ms, result.status.value)
     else:
         logger.info("webhook_enqueued update_id=%s elapsed_ms=%s status=%s", result.update_id, elapsed_ms, result.status.value)
 
+    if result.status == EnqueueStatus.FULL:
+        raise HTTPException(status_code=503, detail="update queue is full")
     return JSONResponse({"ok": True, "status": result.status.value})
 
 

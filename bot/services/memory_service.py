@@ -488,10 +488,12 @@ class MemoryPolicyGate:
             return MemoryDecision(True, "explicit save")
         if action == "create" and self._duplicate(existing, suggestion):
             return MemoryDecision(False, "duplicate memory")
-        if model_sourced:
-            return MemoryDecision(True, "accepted model memory")
         if intent in {"guessing", "continuation"}:
             return MemoryDecision(False, f"blocked for {intent} intent")
+        if model_sourced:
+            if self._source_or_existing_supports(source_text, suggestion, existing, action):
+                return MemoryDecision(True, "accepted supported model memory")
+            return MemoryDecision(False, "model memory unsupported by user text")
         if self._is_ambiguous_source(source_compact):
             return MemoryDecision(False, "ambiguous source text")
         return MemoryDecision(True, "accepted")

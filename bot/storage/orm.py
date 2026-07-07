@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, create_engine
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, LargeBinary, String, Text, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
@@ -189,12 +189,17 @@ class MediaFileORM(Base):
     mime_type: Mapped[str | None] = mapped_column(String(128))
     original_file_name: Mapped[str | None] = mapped_column(String(256))
     storage_path: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
     file_size: Mapped[int | None] = mapped_column(Integer)
     caption: Mapped[str | None] = mapped_column(Text)
     metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
-    __table_args__ = (Index("idx_media_files_user_kind_created", "user_id", "media_kind", "created_at"),)
+    __table_args__ = (
+        Index("idx_media_files_user_kind_created", "user_id", "media_kind", "created_at"),
+        Index("idx_media_files_content_hash", "content_hash"),
+    )
 
 
 class AiProviderKeyStatusORM(Base):
@@ -432,7 +437,7 @@ class DatabaseSessionManager:
         engine_kwargs = {"future": True, "pool_pre_ping": True}
         if parsed.drivername.startswith("sqlite") and parsed.database == ":memory:":
             engine_kwargs.update({"poolclass": StaticPool, "connect_args": {"check_same_thread": False}})
-        else:
+        elif parsed.drivername.startswith("sqlite"):
             engine_kwargs.update({"poolclass": NullPool})
         self.engine = create_engine(url, **engine_kwargs)
         self.session_factory = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False, future=True)

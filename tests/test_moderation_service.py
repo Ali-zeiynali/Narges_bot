@@ -24,7 +24,8 @@ class ModerationServiceTests(unittest.TestCase):
 
         self.assertEqual(result.warning_count, 3)
         self.assertTrue(status.blocked)
-        self.assertIn("🔴", result.message)
+        self.assertIn("مسدود", result.message)
+        self.assertIn("روز", self.service.block_message(status))
 
     def test_fifth_warning_blocks_for_about_one_month(self) -> None:
         for index in range(5):

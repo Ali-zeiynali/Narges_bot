@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from bot.config import Settings
-from bot.services.media_service import MediaStorageService
+from bot.services.media_service import BotImageCatalog, MediaStorageService
 from bot.storage.database import Database
 from bot.storage.orm import MediaFileORM
 
@@ -96,6 +96,37 @@ class MediaStorageServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(self.service.image_count_today(1), 1)
+
+    def test_bot_image_catalog_uses_database_payload_when_file_is_missing(self) -> None:
+        image_path = self.tmp_path / "source.jpg"
+        image_path.write_bytes(b"fake-jpeg")
+        catalog_path = self.tmp_path / "catalog.json"
+        catalog_path.write_text(
+            """
+            {
+              "images": [
+                {
+                  "id": "selfie_test",
+                  "path": "source.jpg",
+                  "mime_type": "image/jpeg",
+                  "description": "عکس معمولی سلفی",
+                  "tags": ["selfie"]
+                }
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+        settings = make_settings(self.tmp_path)
+        settings = Settings(**{**settings.__dict__, "bot_image_catalog_path": str(catalog_path), "bot_image_dir": str(self.tmp_path)})
+        catalog = BotImageCatalog(settings, self.database)
+        catalog.ensure_seeded()
+        image_path.unlink()
+
+        payload = catalog.payload("selfie_test")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload.content, b"fake-jpeg")
 
 
 if __name__ == "__main__":

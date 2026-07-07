@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -72,6 +73,8 @@ class StoredMedia:
     mime_type: str | None
     original_file_name: str | None
     storage_path: str
+    content_hash: str | None
+    file_bytes: bytes | None
     file_size: int | None
     caption: str | None
     created_at: datetime
@@ -92,6 +95,24 @@ class VisionProviderConfig:
     use_proxy: bool = True
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class BotImageCatalogItem:
+    id: str
+    path: str
+    description: str
+    mime_type: str
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BotImagePayload:
+    image_id: str
+    content: bytes
+    mime_type: str
+    filename: str
+    description: str
 
 
 class MediaStorageService:
@@ -189,6 +210,49 @@ class MediaStorageService:
             metadata["vision_described_at"] = datetime.now(UTC).isoformat()
             row.metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
 
+    def cached_vision_description(self, media: StoredMedia) -> str | None:
+        if not media.content_hash:
+            return None
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MediaFileORM)
+                .where(
+                    MediaFileORM.content_hash == media.content_hash,
+                    MediaFileORM.media_kind == "image",
+                    MediaFileORM.id != media.id,
+                )
+                .order_by(MediaFileORM.id.desc())
+                .limit(20)
+            ).all()
+        for row in rows:
+            metadata = self._loads_metadata(row.metadata_json)
+            description = str(metadata.get("vision_description") or "").strip()
+            if description:
+                return description
+        return None
+
+    def file_payload(self, media_id: int) -> tuple[bytes | None, str | None]:
+        with self.database.orm.session() as session:
+            row = session.get(MediaFileORM, media_id)
+            if row is None:
+                return None, None
+            if row.file_bytes:
+                return bytes(row.file_bytes), row.mime_type
+            if row.content_hash:
+                duplicate = session.scalar(
+                    select(MediaFileORM)
+                    .where(MediaFileORM.content_hash == row.content_hash, MediaFileORM.file_bytes.is_not(None))
+                    .order_by(MediaFileORM.id.asc())
+                    .limit(1)
+                )
+                if duplicate and duplicate.file_bytes:
+                    return bytes(duplicate.file_bytes), row.mime_type or duplicate.mime_type
+            if row.storage_path:
+                path = Path(row.storage_path)
+                if path.exists() and path.is_file():
+                    return path.read_bytes(), row.mime_type
+        return None, None
+
     async def _store_telegram_file(
         self,
         *,
@@ -221,6 +285,18 @@ class MediaStorageService:
         if target_path.stat().st_size > max_bytes:
             target_path.unlink(missing_ok=True)
             raise MediaStorageError("downloaded media file is too large")
+        file_bytes = target_path.read_bytes()
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
+        duplicate_id = self._duplicate_media_id(content_hash)
+        target_path.unlink(missing_ok=True)
+        metadata = {
+            "telegram_file_path": telegram_file.file_path,
+            "reported_file_size": reported_file_size,
+            "stored_in_database": True,
+            "content_hash": content_hash,
+        }
+        if duplicate_id:
+            metadata["duplicate_of_media_id"] = duplicate_id
         return self._record(
             user_id=user_id,
             chat_id=chat_id,
@@ -229,13 +305,12 @@ class MediaStorageService:
             media_kind=media_kind,
             mime_type=mime_type,
             original_file_name=original_file_name,
-            storage_path=str(target_path.resolve()),
-            file_size=target_path.stat().st_size,
+            storage_path="",
+            content_hash=content_hash,
+            file_bytes=file_bytes,
+            file_size=len(file_bytes),
             caption=caption,
-            metadata={
-                "telegram_file_path": telegram_file.file_path,
-                "reported_file_size": reported_file_size,
-            },
+            metadata=metadata,
             created_at=created_at,
         )
 
@@ -250,6 +325,8 @@ class MediaStorageService:
         mime_type: str | None,
         original_file_name: str | None,
         storage_path: str,
+        content_hash: str | None,
+        file_bytes: bytes | None,
         file_size: int | None,
         caption: str | None,
         metadata: dict[str, Any],
@@ -265,6 +342,8 @@ class MediaStorageService:
                 mime_type=mime_type,
                 original_file_name=original_file_name,
                 storage_path=storage_path,
+                content_hash=content_hash,
+                file_bytes=file_bytes,
                 file_size=file_size,
                 caption=caption,
                 metadata_json=json.dumps(metadata, ensure_ascii=False, default=str),
@@ -282,6 +361,8 @@ class MediaStorageService:
                 mime_type=row.mime_type,
                 original_file_name=row.original_file_name,
                 storage_path=row.storage_path,
+                content_hash=row.content_hash,
+                file_bytes=file_bytes,
                 file_size=row.file_size,
                 caption=row.caption,
                 created_at=row.created_at,
@@ -295,6 +376,16 @@ class MediaStorageService:
         except json.JSONDecodeError:
             return {"raw": raw}
         return value if isinstance(value, dict) else {"value": value}
+
+    def _duplicate_media_id(self, content_hash: str) -> int | None:
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(MediaFileORM.id)
+                .where(MediaFileORM.content_hash == content_hash)
+                .order_by(MediaFileORM.id.asc())
+                .limit(1)
+            )
+        return int(row) if row else None
 
     def _suffix_for(self, media_kind: str, mime_type: str | None, original_file_name: str | None, telegram_file_path: str | None) -> str:
         normalized_mime = (mime_type or "").lower()
@@ -325,6 +416,186 @@ class MediaStorageService:
         return "media"
 
 
+class BotImageCatalog:
+    def __init__(self, settings: Settings, database: Database) -> None:
+        self.settings = settings
+        self.database = database
+        self.catalog_path = Path(getattr(settings, "bot_image_catalog_path", "images/catalog.json"))
+        self.image_dir = Path(getattr(settings, "bot_image_dir", "images"))
+
+    def items_for_model(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": item.id,
+                "description": item.description,
+                "tags": list(item.tags),
+            }
+            for item in self.load_items()
+        ]
+
+    def has_image(self, image_id: str) -> bool:
+        return any(item.id == image_id for item in self.load_items())
+
+    def payload(self, image_id: str) -> BotImagePayload | None:
+        item = self._item_by_id(image_id)
+        if item is None:
+            return None
+        db_payload = self._database_payload(item)
+        if db_payload is not None:
+            return db_payload
+        path = self._resolve_path(item.path)
+        if not path.exists() or not path.is_file():
+            return None
+        content = path.read_bytes()
+        if not content:
+            return None
+        self._try_seed_item(item, content)
+        return BotImagePayload(
+            image_id=item.id,
+            content=content,
+            mime_type=item.mime_type,
+            filename=path.name,
+            description=item.description,
+        )
+
+    def ensure_seeded(self) -> None:
+        try:
+            items = self.load_items()
+        except Exception as exc:
+            logger.warning("bot_image_catalog_load_failed path=%s error=%s", self.catalog_path, exc)
+            return
+        for item in items:
+            path = self._resolve_path(item.path)
+            if not path.exists() or not path.is_file():
+                logger.warning("bot_image_catalog_missing_file image_id=%s path=%s", item.id, path)
+                continue
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                logger.warning("bot_image_catalog_read_failed image_id=%s error=%s", item.id, exc)
+                continue
+            if content:
+                self._try_seed_item(item, content)
+
+    def load_items(self) -> list[BotImageCatalogItem]:
+        if not self.catalog_path.exists():
+            return []
+        raw = json.loads(self.catalog_path.read_text(encoding="utf-8-sig"))
+        entries = raw.get("images", raw if isinstance(raw, list) else [])
+        items: list[BotImageCatalogItem] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            image_id = str(entry.get("id") or "").strip()
+            path = str(entry.get("path") or "").strip()
+            description = str(entry.get("description") or "").strip()
+            if not image_id or not path or not description:
+                continue
+            mime_type = str(entry.get("mime_type") or mimetypes.guess_type(path)[0] or "image/jpeg").strip()
+            tags = tuple(str(tag).strip() for tag in entry.get("tags", []) if str(tag).strip())
+            items.append(BotImageCatalogItem(image_id, path, description, mime_type, tags))
+        return items
+
+    def _item_by_id(self, image_id: str) -> BotImageCatalogItem | None:
+        image_id = (image_id or "").strip()
+        for item in self.load_items():
+            if item.id == image_id:
+                return item
+        return None
+
+    def _resolve_path(self, value: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        if path.parts and path.parts[0] == self.image_dir.name:
+            return path
+        return self.image_dir / path
+
+    def _database_payload(self, item: BotImageCatalogItem) -> BotImagePayload | None:
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MediaFileORM)
+                .where(MediaFileORM.media_kind == "bot_image", MediaFileORM.file_bytes.is_not(None))
+                .order_by(MediaFileORM.id.desc())
+                .limit(100)
+            ).all()
+        for row in rows:
+            metadata = self._loads_metadata(row.metadata_json)
+            if metadata.get("catalog_id") != item.id or not row.file_bytes:
+                continue
+            filename = row.original_file_name or Path(item.path).name or f"{item.id}.jpg"
+            return BotImagePayload(
+                image_id=item.id,
+                content=bytes(row.file_bytes),
+                mime_type=row.mime_type or item.mime_type,
+                filename=filename,
+                description=item.description,
+            )
+        return None
+
+    def _try_seed_item(self, item: BotImageCatalogItem, content: bytes) -> None:
+        content_hash = hashlib.sha256(content).hexdigest()
+        with suppress_database_errors("bot_image_catalog_seed_failed", item.id):
+            with self.database.orm.session() as session:
+                exists = session.scalar(
+                    select(MediaFileORM.id)
+                    .where(MediaFileORM.media_kind == "bot_image", MediaFileORM.content_hash == content_hash)
+                    .limit(1)
+                )
+                if exists:
+                    return
+                session.add(
+                    MediaFileORM(
+                        user_id=0,
+                        chat_id=None,
+                        telegram_message_id=None,
+                        telegram_file_id=f"local:{item.id}",
+                        media_kind="bot_image",
+                        mime_type=item.mime_type,
+                        original_file_name=Path(item.path).name,
+                        storage_path=str(self._resolve_path(item.path)),
+                        content_hash=content_hash,
+                        file_bytes=content,
+                        file_size=len(content),
+                        caption=item.description,
+                        metadata_json=json.dumps(
+                            {
+                                "catalog_id": item.id,
+                                "description": item.description,
+                                "source": "local_image_catalog",
+                                "stored_in_database": True,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        created_at=datetime.now(UTC),
+                    )
+                )
+
+    def _loads_metadata(self, raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+        return value if isinstance(value, dict) else {"value": value}
+
+
+class suppress_database_errors:
+    def __init__(self, event: str, image_id: str) -> None:
+        self.event = event
+        self.image_id = image_id
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, _traceback) -> bool:
+        if exc is None:
+            return False
+        logger.warning("%s image_id=%s error=%s", self.event, self.image_id, exc)
+        return True
+
+
 class VisionClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -338,10 +609,14 @@ class VisionClient:
     def describe_image(self, media: StoredMedia) -> str:
         if not media.mime_type or media.mime_type.lower() not in SUPPORTED_IMAGE_MIME_TYPES:
             raise VisionProviderError("unsupported image mime type")
-        image_path = Path(media.storage_path)
-        if not image_path.exists() or image_path.stat().st_size <= 0:
+        image_bytes = media.file_bytes
+        if image_bytes is None and media.storage_path:
+            image_path = Path(media.storage_path)
+            if image_path.exists() and image_path.stat().st_size > 0:
+                image_bytes = image_path.read_bytes()
+        if not image_bytes:
             raise VisionProviderError("stored image is missing")
-        image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:{media.mime_type};base64,{image_b64}"
         prompt = (
             "این تصویر را برای استفاده در یک گفتگوی فارسی توصیف کن. "

@@ -52,7 +52,7 @@ class PersonaCompiler:
             "state_rules": {
                 "allowed_values": ["normal", "sexual"],
                 "previous_state": conversation_state,
-                "instruction": "Each structured response should set conversation_state to normal or sexual. The next request will receive the value you choose now. This state selection should only be based on user_message, not memory, if user_message was sexual and normal otherwise.",
+                "instruction": "Each structured response should set conversation_state to normal or sexual. Set sexual only when current_user_message itself is explicitly sexual. Do not keep sexual because of previous context, persona text, memories, vague affection, or older messages.",
             },
             "hard_rules": [
                 "The conversation model may manage user memory with memory_suggestions.",
@@ -60,7 +60,8 @@ class PersonaCompiler:
                 "If inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and keep memory_suggestions empty.",
                 "Use active memories naturally; do not repeat them as a list in the reply.",
                 "Memory lines include created_at and expires_at. Use those timestamps silently for recency; mention time only when it matters.",
-                "Prefer adding expires_in_days for temporary moods, events, conflicts, plans, or short-lived user states; leave it null for stable identity, preferences, projects, goals, constraints, boundaries, and interaction style.",
+                "Pay attention to memory created_at, updated_at, and expires_at. Prefer the most recently updated active memory when memories conflict.",
+                "Prefer adding expires_in_days for temporary moods, events, conflicts, plans, reminders, unresolved short-lived topics, or short-lived user states; leave it null for stable identity, preferences, projects, goals, constraints, boundaries, and interaction style.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
                 "Keep replies short. never code or technical detail.",
             ],

@@ -18,7 +18,7 @@ from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupMessageScheduler, GroupService
 from bot.services.groq_client import GroqChatClient
 from bot.services.history_service import HistoryService
-from bot.services.media_service import MediaStorageService, VisionClient
+from bot.services.media_service import BotImageCatalog, MediaStorageService, VisionClient
 from bot.services.memory_service import MemoryService
 from bot.services.menu_service import MenuService
 from bot.services.moderation_service import ModerationService
@@ -46,6 +46,7 @@ class BotApplication:
     bot: Bot
     dispatcher: Dispatcher
     menu_service: MenuService
+    debug_service: DebugService
     narges_state_scheduler: NargesStateScheduler
     group_service: GroupService
     reengagement_service: ReengagementService
@@ -54,12 +55,21 @@ class BotApplication:
     async def startup(self) -> None:
         await self.menu_service.setup_commands(self.bot)
         self.background_tasks = [
-            asyncio.create_task(self.narges_state_scheduler.run_forever(), name="narges-state-scheduler"),
-            asyncio.create_task(GroupMessageScheduler(self.group_service, self.bot).run_forever(), name="group-scheduler"),
+            asyncio.create_task(
+                self._run_resilient("narges-state-scheduler", self.narges_state_scheduler.run_forever),
+                name="narges-state-scheduler",
+            ),
+            asyncio.create_task(
+                self._run_resilient("group-scheduler", GroupMessageScheduler(self.group_service, self.bot).run_forever),
+                name="group-scheduler",
+            ),
         ]
         if self.settings.reengagement_enabled:
             self.background_tasks.append(
-                asyncio.create_task(ReengagementScheduler(self.reengagement_service, self.bot).run_forever(), name="reengagement-scheduler")
+                asyncio.create_task(
+                    self._run_resilient("reengagement-scheduler", ReengagementScheduler(self.reengagement_service, self.bot).run_forever),
+                    name="reengagement-scheduler",
+                )
             )
         logger.info(
             "bot_application_started model=%s persona_version=%s proxy_enabled=%s",
@@ -76,6 +86,16 @@ class BotApplication:
                 await task
         await self.bot.session.close()
         logger.info("bot_application_stopped")
+
+    async def _run_resilient(self, name: str, runner) -> None:
+        while True:
+            try:
+                await runner()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("background_task_crashed name=%s restarting", name)
+                await asyncio.sleep(5)
 
 
 def create_bot_application(settings: Settings | None = None) -> BotApplication:
@@ -101,6 +121,8 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     narges_state_scheduler = NargesStateScheduler(narges_state_service, groq_client)
     history_service = HistoryService(database)
     media_storage_service = MediaStorageService(settings, database)
+    bot_image_catalog = BotImageCatalog(settings, database)
+    bot_image_catalog.ensure_seeded()
     vision_client = VisionClient(settings)
     context_builder = ContextBuilder(database, history_service)
     chat_service = ChatService(
@@ -118,6 +140,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         style_linter=StyleLinter(),
         quota_service=quota_service,
         global_state_service=global_state_service,
+        bot_image_catalog=bot_image_catalog,
     )
 
     dispatcher = Dispatcher()
@@ -137,6 +160,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         debug_service=debug_service,
         group_service=group_service,
         media_storage_service=media_storage_service,
+        bot_image_catalog=bot_image_catalog,
         vision_client=vision_client,
         settings=settings,
     )
@@ -150,6 +174,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         bot=bot,
         dispatcher=dispatcher,
         menu_service=menu_service,
+        debug_service=debug_service,
         narges_state_scheduler=narges_state_scheduler,
         group_service=group_service,
         reengagement_service=ReengagementService(database, settings),

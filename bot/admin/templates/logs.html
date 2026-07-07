@@ -12,7 +12,12 @@
       <tr>
         <td>{{ d.event }}</td>
         <td><a href="/admin/users/{{ d.user_id }}">{{ user_names.get(d.user_id, "کاربر " ~ d.user_id) }}</a></td>
-        <td><pre><code>{{ d.payload }}</code></pre></td>
+        <td>
+          <details>
+            <summary>نمایش payload</summary>
+            <pre><code>{{ d.payload }}</code></pre>
+          </details>
+        </td>
         <td>{{ d.created_at|dt }}</td>
       </tr>
       {% endfor %}

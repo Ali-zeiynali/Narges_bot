@@ -35,6 +35,17 @@ class HistoryService:
         text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         preview = text[:240]
         now = (created_at or datetime.now(UTC)).astimezone(UTC)
+        payload = ai_request_payload or {
+            "source": "history_service",
+            "role": role,
+            "message_type": message_type,
+            "chat_id": chat_id,
+            "telegram_message_id": telegram_message_id,
+            "provider": provider,
+            "model": model,
+            "stored_at": now.isoformat(),
+            "note": "No model request was created for this message; this is the audit payload.",
+        }
         with self.database.orm.session() as session:
             session.add(ConversationHistoryORM(user_id=user_id, role=role, text_hash=text_hash, text_preview=preview, created_at=now))
             row = ConversationMessageORM(
@@ -50,7 +61,7 @@ class HistoryService:
                     provider_response_id=provider_response_id,
                     safety_metadata_json=json.dumps(safety_metadata, ensure_ascii=False, default=str) if safety_metadata else None,
                     tone_metadata_json=json.dumps(tone_metadata, ensure_ascii=False, default=str) if tone_metadata else None,
-                    ai_request_payload_json=json.dumps(ai_request_payload, ensure_ascii=False, default=str) if ai_request_payload else None,
+                    ai_request_payload_json=json.dumps(payload, ensure_ascii=False, default=str),
                     intent=intent,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,

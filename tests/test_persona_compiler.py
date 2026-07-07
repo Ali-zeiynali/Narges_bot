@@ -21,7 +21,7 @@ class PersonaCompilerTests(unittest.TestCase):
         self.assertEqual(compiled.sections, ("core_base",))
         self.assertIn("JSON", compiled.system_prompt)
         self.assertIn("current_message_datetime", compiled.system_prompt)
-        self.assertIn("سن: ۱۹ سال", compiled.system_prompt)
+        self.assertIn("سن: ۱7 سال", compiled.system_prompt)
 
     def test_cache_clears_when_version_changes(self) -> None:
         cache = PersonaCache()

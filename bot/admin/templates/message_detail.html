@@ -59,7 +59,7 @@
   {% if ai_request.messages %}
   <table><tr><th>role</th><th>content</th></tr>{% for item in ai_request.messages %}<tr><td>{{ item.role }}</td><td><pre><code>{{ item.content }}</code></pre></td></tr>{% endfor %}</table>
   {% else %}
-  <p class="muted">برای این پیام payload ذخیره نشده است.</p>
+  <pre><code>{{ ai_request | json_pretty }}</code></pre>
   {% endif %}
 </div>
 <div class="card"><h3>Payload کامل</h3><pre><code>{{ ai_request | json_pretty }}</code></pre></div>

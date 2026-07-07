@@ -1,14 +1,15 @@
 ﻿import asyncio
 import json
 import logging
-from dataclasses import asdict, is_dataclass
+import mimetypes
+from dataclasses import asdict, is_dataclass, replace
 from datetime import UTC
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, ChatMemberUpdated, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
 from pydantic import BaseModel
 
 from bot.config import Settings
@@ -26,6 +27,7 @@ from bot.services.media_service import (
     MediaStorageError,
     MediaStorageService,
     StoredMedia,
+    BotImageCatalog,
     VisionClient,
 )
 from bot.services.memory_service import MemoryService
@@ -35,6 +37,7 @@ from bot.services.narges_state_service import NargesStateService
 from bot.services.name_service import NameService
 from bot.services.quota_service import QuotaService
 from bot.services.required_channel_service import RequiredChannelService
+from bot.services.request_trace import RequestTrace
 from bot.services.user_service import UserService
 from bot.utils.text_safety import clamp_repeated_chars, meaningful_length
 
@@ -58,6 +61,7 @@ def register_handlers(
     debug_service: DebugService,
     group_service: GroupService | None,
     media_storage_service: MediaStorageService,
+    bot_image_catalog: BotImageCatalog,
     vision_client: VisionClient,
     settings: Settings,
 ) -> None:
@@ -229,8 +233,29 @@ def register_handlers(
         status = moderation_service.get_block_status(user_id)
         if not status.blocked:
             return True
+        history_service.add(
+            user_id,
+            "user",
+            blocked_message_text(message),
+            chat_id=message.chat.id,
+            telegram_message_id=message.message_id,
+            created_at=message.date,
+            message_type="blocked",
+            ai_request_payload={
+                "source": "blocked_gate",
+                "sent_to_model": False,
+                "content_type": str(message.content_type),
+                "blocked_until": status.blocked_until.isoformat() if status.blocked_until else None,
+            },
+        )
         await message.answer(moderation_service.block_message(status))
         return False
+
+    def blocked_message_text(message: Message) -> str:
+        text = clamp_repeated_chars((message.text or message.caption or "").strip())
+        if text:
+            return text
+        return f"[blocked_{message.content_type}]"
 
     async def ask_for_name(message: Message) -> None:
         user_id = message.from_user.id if message.from_user else 0
@@ -407,18 +432,30 @@ def register_handlers(
         return UNSUPPORTED_MEDIA_MESSAGE
 
     async def run_chat_turn(message: Message, bot: Bot, text_value: str, profile, reserved_quota_check=None):
+        trace = RequestTrace(
+            "handler_chat_turn",
+            {
+                "user_id": message.from_user.id,
+                "chat_id": message.chat.id,
+                "telegram_message_id": message.message_id,
+                "has_reserved_quota": reserved_quota_check is not None,
+            },
+        )
         stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(keep_typing(bot, message.chat.id, stop_typing))
+        with trace.step("start_typing"):
+            typing_task = asyncio.create_task(keep_typing(bot, message.chat.id, stop_typing))
         try:
-            return await chat_service.answer(
-                message.from_user.id,
-                message.chat.id,
-                message.message_id,
-                text_value,
-                message.date,
-                user_profile=profile,
-                reserved_quota_check=reserved_quota_check,
-            )
+            with trace.step("chat_service_answer"):
+                return await chat_service.answer(
+                    message.from_user.id,
+                    message.chat.id,
+                    message.message_id,
+                    text_value,
+                    message.date,
+                    user_profile=profile,
+                    reserved_quota_check=reserved_quota_check,
+                    trace=trace,
+                )
         except UserFacingError as exc:
             text = str(exc)
             stop_typing.set()
@@ -434,6 +471,11 @@ def register_handlers(
             stop_typing.set()
             with suppress(asyncio.CancelledError):
                 await typing_task
+            debug_service.trace(
+                "request_trace",
+                trace.finish(phase="handler_chat_turn", content_chars=len(text_value)),
+                user_id=message.from_user.id,
+            )
 
     async def deliver_chat_result(message: Message, bot: Bot, result, profile) -> None:
         logger.info(
@@ -445,7 +487,10 @@ def register_handlers(
         )
         for item in result.reply.messages:
             await asyncio.sleep(item.delay_seconds)
-            await message.answer(item.text)
+            if item.image_id:
+                await send_photo_with_retries(message, bot, item.image_id, item.text)
+            else:
+                await send_text_with_retries(message, item.text)
         if profile and not profile.gender:
             today = message.date.astimezone(UTC).date().isoformat()
             if user_service.should_send_gender_nudge(message.from_user.id, today):
@@ -460,6 +505,43 @@ def register_handlers(
         if inviter_id:
             quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
             await notify_referral_reward(bot, inviter_id, message.from_user.id)
+
+    async def send_text_with_retries(message: Message, text: str, attempts: int = 3) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt == 1:
+                    await message.reply(text, allow_sending_without_reply=True)
+                else:
+                    await message.answer(text)
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning("answer_send_failed attempt=%s chat_id=%s error=%s", attempt, message.chat.id, exc)
+                await asyncio.sleep(min(attempt, 3))
+        logger.error("answer_send_exhausted chat_id=%s error=%s", message.chat.id, last_error)
+
+    async def send_photo_with_retries(message: Message, bot: Bot, image_id: str, caption: str, attempts: int = 3) -> None:
+        payload = bot_image_catalog.payload(image_id)
+        if payload is None:
+            await send_text_with_retries(message, caption)
+            return
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                file = BufferedInputFile(payload.content, filename=payload.filename)
+                await bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=file,
+                    caption=caption[:1024] or payload.description[:1024],
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning("photo_send_failed image_id=%s attempt=%s chat_id=%s error=%s", image_id, attempt, message.chat.id, exc)
+                await asyncio.sleep(min(attempt, 3))
+        logger.error("photo_send_exhausted image_id=%s chat_id=%s error=%s", image_id, message.chat.id, last_error)
+        await send_text_with_retries(message, caption)
 
     async def handle_ready_image(message: Message, bot: Bot, stored_media: StoredMedia, profile) -> None:
         if media_storage_service.image_count_today(message.from_user.id) > settings.image_daily_limit:
@@ -476,8 +558,26 @@ def register_handlers(
             with suppress(Exception):
                 await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             try:
-                description = await asyncio.to_thread(vision_client.describe_image, stored_media)
-                media_storage_service.set_vision_description(stored_media.id, description)
+                cached_description = media_storage_service.cached_vision_description(stored_media)
+                if cached_description:
+                    description = cached_description
+                    media_storage_service.set_vision_description(stored_media.id, description)
+                    debug_service.trace(
+                        "media_vision_cache_hit",
+                        {
+                            "media_id": stored_media.id,
+                            "content_hash": stored_media.content_hash,
+                            "telegram_message_id": stored_media.telegram_message_id,
+                        },
+                        user_id=message.from_user.id,
+                    )
+                else:
+                    if stored_media.file_bytes is None:
+                        payload, _mime_type = media_storage_service.file_payload(stored_media.id)
+                        if payload:
+                            stored_media = replace(stored_media, file_bytes=payload)
+                    description = await asyncio.to_thread(vision_client.describe_image, stored_media)
+                    media_storage_service.set_vision_description(stored_media.id, description)
             except Exception:
                 logger.exception("vision_description_failed user_id=%s media_id=%s", message.from_user.id, stored_media.id)
                 record_media_message(message, stored_media, "vision failed")
@@ -970,6 +1070,8 @@ def register_handlers(
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
             return
+        if not await ensure_not_blocked_for_model(message):
+            return
         try:
             stored_media = await media_storage_service.store_photo(bot, message)
         except MediaStorageError as exc:
@@ -996,6 +1098,12 @@ def register_handlers(
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
+            return
+        if not await ensure_not_blocked_for_model(message):
+            return
+        mime_type = (message.document.mime_type or mimetypes.guess_type(message.document.file_name or "")[0] or "").lower()
+        if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
+            await answer_unsupported_media(message, UNSUPPORTED_MEDIA_MESSAGE)
             return
         try:
             stored_media = await media_storage_service.store_document(bot, message)
@@ -1028,13 +1136,32 @@ def register_handlers(
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
             return
-        try:
-            stored_media = await media_storage_service.store_unsupported_media(bot, message)
-        except MediaStorageError as exc:
-            await message.answer(media_storage_error_message(exc))
+        if not await ensure_not_blocked_for_model(message):
             return
-        record_media_message(message, stored_media, "unsupported media")
         text = UNSUPPORTED_AUDIO_MESSAGE if (message.voice or message.audio or message.video or message.video_note) else UNSUPPORTED_MEDIA_MESSAGE
+        if message.voice:
+            try:
+                stored_media = await media_storage_service.store_unsupported_media(bot, message)
+            except MediaStorageError as exc:
+                await message.answer(media_storage_error_message(exc))
+                return
+            record_media_message(message, stored_media, "unsupported voice")
+        else:
+            history_service.add(
+                message.from_user.id,
+                "user",
+                "[unsupported_media] not stored",
+                chat_id=message.chat.id,
+                telegram_message_id=message.message_id,
+                created_at=message.date,
+                message_type="media",
+                ai_request_payload={
+                    "source": "unsupported_media",
+                    "stored": False,
+                    "reason": "only images and voice are stored",
+                    "content_type": message.content_type,
+                },
+            )
         await answer_unsupported_media(message, text)
 
     @dispatcher.callback_query(F.data == "capacity:phone")
@@ -1099,6 +1226,8 @@ def register_handlers(
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         if not await ensure_membership(message, bot):
             return
+        if not await ensure_not_blocked_for_model(message):
+            return
         if message.contact.user_id != message.from_user.id:
             await message.answer(
                 "این شماره متعلق به اکانت تلگرام تو نیست. فقط با دکمه ارسال شماره موبایل اکانت خودت قابل قبول است.",
@@ -1131,6 +1260,8 @@ def register_handlers(
             return
         if profile is None or profile.onboarding_state != OnboardingState.READY:
             await ask_for_name(message)
+            return
+        if not await ensure_not_blocked_for_model(message):
             return
         pending_card_invoice = billing_service.latest_pending_card_invoice(message.from_user.id)
         if pending_card_invoice and looks_like_receipt_message(text_value):
@@ -1166,9 +1297,6 @@ def register_handlers(
         if meaningful_length(text_value) < 2:
             await message.answer("متوجه نشدمم دوباره بگو")
             return
-        if not await ensure_not_blocked_for_model(message):
-            return
-
         result = await run_chat_turn(message, bot, text_value, profile)
         if result:
             await deliver_chat_result(message, bot, result, profile)

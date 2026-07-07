@@ -86,6 +86,8 @@ class Settings:
     billing_card_number: str | None = None
     vision_providers_config: str = "config/vision_providers.json"
     media_storage_dir: str = "data/media"
+    bot_image_catalog_path: str = "images/catalog.json"
+    bot_image_dir: str = "images"
     image_daily_limit: int = 10
     max_image_file_bytes: int = 8 * 1024 * 1024
     max_media_file_bytes: int = 32 * 1024 * 1024
@@ -197,6 +199,8 @@ def load_settings() -> Settings:
         ),
         vision_providers_config=os.getenv("VISION_PROVIDERS_CONFIG", "config/vision_providers.json").strip(),
         media_storage_dir=os.getenv("MEDIA_STORAGE_DIR", "data/media").strip(),
+        bot_image_catalog_path=os.getenv("BOT_IMAGE_CATALOG_PATH", "images/catalog.json").strip(),
+        bot_image_dir=os.getenv("BOT_IMAGE_DIR", "images").strip(),
         image_daily_limit=int_env("IMAGE_DAILY_LIMIT", 10, 1, 100),
         max_image_file_bytes=int_env("MAX_IMAGE_FILE_BYTES", 8 * 1024 * 1024, 1024, 50 * 1024 * 1024),
         max_media_file_bytes=int_env("MAX_MEDIA_FILE_BYTES", 32 * 1024 * 1024, 1024, 200 * 1024 * 1024),
