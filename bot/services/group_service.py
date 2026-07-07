@@ -22,6 +22,7 @@ from bot.storage.orm import ConversationMessageORM, GroupChatORM, GroupEngineEve
 logger = logging.getLogger(__name__)
 
 ACTIVE_BOT_STATUSES = {"member", "administrator", "creator"}
+HIDDEN_BOT_STATUSES = {"left", "kicked", "rejected"}
 GROUP_AUTO_REACTION_COOLDOWN_SECONDS = 2 * 60 * 60
 
 
@@ -44,11 +45,15 @@ class GroupService:
         username: str | None,
         chat_type: str,
         bot_status: str | None = None,
+        member_count: int | None = None,
         active: bool | None = None,
     ) -> None:
         now = datetime.now(UTC)
+        normalized_status = (bot_status or "").strip().lower() or None
         if active is None:
-            active = bot_status in ACTIVE_BOT_STATUSES if bot_status else True
+            active = normalized_status in ACTIVE_BOT_STATUSES if normalized_status else True
+        if normalized_status in HIDDEN_BOT_STATUSES:
+            active = False
         with self.database.orm.session() as session:
             row = session.get(GroupChatORM, chat_id)
             if row is None:
@@ -57,7 +62,8 @@ class GroupService:
                     title=title,
                     username=username,
                     chat_type=chat_type,
-                    bot_status=bot_status,
+                    bot_status=normalized_status,
+                    member_count=member_count,
                     active=active,
                     created_at=now,
                     updated_at=now,
@@ -68,14 +74,20 @@ class GroupService:
             row.title = title or row.title
             row.username = username or row.username
             row.chat_type = chat_type or row.chat_type
-            row.bot_status = bot_status or row.bot_status
+            if normalized_status and not (normalized_status == "member" and row.bot_status in {"administrator", "creator"}):
+                row.bot_status = normalized_status
+            if member_count is not None:
+                row.member_count = int(member_count)
             row.active = active
             row.updated_at = now
             row.last_seen_at = now
 
     def list_groups(self, only_active: bool = False) -> list[GroupChatORM]:
         with self.database.orm.session() as session:
-            statement = select(GroupChatORM).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)
+            statement = select(GroupChatORM).where(
+                GroupChatORM.active.is_(True),
+                GroupChatORM.bot_status.not_in(HIDDEN_BOT_STATUSES) | GroupChatORM.bot_status.is_(None),
+            ).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)
             if only_active:
                 statement = statement.where(GroupChatORM.active.is_(True))
             return list(session.scalars(statement).all())
@@ -85,7 +97,12 @@ class GroupService:
             return [
                 int(value)
                 for value in session.scalars(
-                    select(GroupChatORM.chat_id).where(GroupChatORM.active.is_(True)).order_by(GroupChatORM.chat_id)
+                    select(GroupChatORM.chat_id)
+                    .where(
+                        GroupChatORM.active.is_(True),
+                        GroupChatORM.bot_status.not_in(HIDDEN_BOT_STATUSES) | GroupChatORM.bot_status.is_(None),
+                    )
+                    .order_by(GroupChatORM.chat_id)
                 ).all()
             ]
 

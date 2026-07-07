@@ -16,14 +16,13 @@
       <select name="chat_id">
         <option value="">همه گروه‌ها</option>
         {% for g in groups %}
-          <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}</option>
+          <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}{% if g.member_count %} ({{ g.member_count }}){% endif %}</option>
         {% endfor %}
       </select>
     </label>
     <label>بخش
       <select name="section">
         <option value="all" {% if section == "all" %}selected{% endif %}>همه</option>
-        <option value="observed" {% if section == "observed" %}selected{% endif %}>پیام‌های دیده‌شده</option>
         <option value="mentions" {% if section == "mentions" %}selected{% endif %}>منشن/ریپلای مستقیم</option>
         <option value="photos" {% if section == "photos" %}selected{% endif %}>عکس‌های بررسی‌شده</option>
         <option value="auto" {% if section == "auto" %}selected{% endif %}>واکنش‌های خودکار</option>
@@ -39,7 +38,6 @@
 
 <div class="grid">
   <div class="card metric">همه<b>{{ counts.all }}</b></div>
-  <div class="card metric">دیده‌شده<b>{{ counts.observed }}</b></div>
   <div class="card metric">عکس/منشن<b>{{ counts.photos + counts.mentions }}</b></div>
   <div class="card metric">خودکار/ارسالی<b>{{ counts.auto + counts.scheduled }}</b></div>
 </div>
@@ -51,7 +49,7 @@
       <select name="chat_id">
         <option value="">انتخاب گروه</option>
         {% for g in groups %}
-          <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}</option>
+          <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}{% if g.member_count %} ({{ g.member_count }}){% endif %}</option>
         {% endfor %}
       </select>
     </label>

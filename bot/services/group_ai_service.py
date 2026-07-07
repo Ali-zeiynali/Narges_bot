@@ -132,12 +132,14 @@ class GroupAIService:
         message_datetime: datetime,
         user_profile: Any,
         bot_identity: dict[str, Any],
+        media_id: int | None = None,
     ) -> GroupAIResult:
         memories = self.memory_service.retrieve_for_context(user_id, text=description, intent="group_photo", pending_user_thread="")
         payload = {
             "task": "reply_to_standalone_group_photo",
             "bot_identity": bot_identity,
             "photo_description": description,
+            "media_id": media_id,
             "sender_profile": self._compact_user_profile(user_profile),
             "sender_memories": [memory.summary for memory in memories],
             "rules": [

@@ -14,6 +14,7 @@ from bot.models.state import NargesSelfStateCandidate
 from bot.services.global_state_service import GlobalStateService
 from bot.services.history_service import HistoryService
 from bot.services.billing_service import BillingService
+from bot.services.group_service import HIDDEN_BOT_STATUSES
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
@@ -195,7 +196,7 @@ class AdminDataService:
             hourly_usage_chart=hourly_usage_chart,
         )
 
-    def users(self, sort: str = "last_seen", query: str = "") -> list[dict[str, Any]]:
+    def users(self, sort: str = "last_seen", query: str = "", active_only: bool = False) -> list[dict[str, Any]]:
         with self.database.orm.session() as session:
             rows = session.scalars(select(UserORM)).all()
             last_seen_pairs = session.execute(
@@ -215,6 +216,8 @@ class AdminDataService:
                 for value in [row.telegram_id, row.username, row.first_name, row.last_name, row.display_name, row.phone_number]
             ).lower()
             if needle and needle not in haystack:
+                continue
+            if active_only and row.telegram_id not in last_seen:
                 continue
             quota = self.quota_service.account_quota(row.telegram_id)
             items.append(
@@ -237,15 +240,16 @@ class AdminDataService:
             "warnings": lambda item: item["warnings"],
             "quota": lambda item: item["daily_remaining"] + item["extra_remaining"],
             "created": lambda item: sort_datetime(item["created_at"]),
+            "gender": lambda item: (0 if item["gender"] else 1, str(item["gender"] or "")),
         }.get(sort, lambda item: sort_datetime(item["last_seen"]))
-        return sorted(items, key=sort_key, reverse=True)
+        return sorted(items, key=sort_key, reverse=sort != "gender")
 
     def user_detail(self, user_id: int) -> dict[str, Any]:
         with self.database.orm.session() as session:
             user = session.get(UserORM, user_id)
             messages = session.scalars(
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.user_id == user_id, ~ConversationMessageORM.message_type.like("group_%"))
+                .where(ConversationMessageORM.user_id == user_id)
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(30)
             ).all()
@@ -272,6 +276,7 @@ class AdminDataService:
             memory_audits = session.scalars(select(MemoryAuditLogORM).where(MemoryAuditLogORM.user_id == user_id).order_by(desc(MemoryAuditLogORM.id)).limit(40)).all()
             media = session.scalars(select(MediaFileORM).where(MediaFileORM.user_id == user_id).order_by(desc(MediaFileORM.id)).limit(40)).all()
             media_by_message = self._media_by_message(session, messages)
+            media_assistant_replies = self._assistant_replies_for_media(session, media)
         return {
             "user": user,
             "quota": self.quota_service.account_quota(user_id),
@@ -283,7 +288,7 @@ class AdminDataService:
             "quota_events": quota_events,
             "invoices": invoices,
             "memory_audits": memory_audits,
-            "media": [self._media_row(row) for row in media],
+            "media": [self._media_row(row, assistant_replies=media_assistant_replies) for row in media],
             "media_by_message": media_by_message,
             "usage_total_tokens": int(usage_totals[2] or 0),
             "usage_prompt_tokens": int(usage_totals[0] or 0),
@@ -319,12 +324,13 @@ class AdminDataService:
         with self.database.orm.session() as session:
             statement = (
                 select(ConversationMessageORM)
-                .where(~ConversationMessageORM.message_type.like("group_%"))
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(limit)
             )
             if user_id is not None:
                 statement = statement.where(ConversationMessageORM.user_id == user_id)
+            else:
+                statement = statement.where(~ConversationMessageORM.message_type.like("group_%"))
             rows = session.scalars(statement).all()
             user_names = self._user_name_map(session, [row.user_id for row in rows])
             media_by_message = self._media_by_message(session, rows)
@@ -334,7 +340,6 @@ class AdminDataService:
         limit = max(20, min(limit, 1000))
         section = (section or "all").strip()
         message_types = {
-            "observed": ["group_observed"],
             "mentions": ["group_mention"],
             "photos": ["group_photo"],
             "auto": ["group_auto"],
@@ -343,7 +348,10 @@ class AdminDataService:
         with self.database.orm.session() as session:
             message_statement = (
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.message_type.like("group_%"))
+                .where(
+                    ConversationMessageORM.message_type.like("group_%"),
+                    ConversationMessageORM.message_type != "group_observed",
+                )
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(limit)
             )
@@ -353,19 +361,26 @@ class AdminDataService:
                 event_statement = event_statement.where(GroupEngineEventORM.chat_id == chat_id)
             if message_types:
                 message_statement = message_statement.where(ConversationMessageORM.message_type.in_(message_types))
+            groups = list(session.scalars(self._visible_groups_statement()).all())
+            visible_chat_ids = [int(group.chat_id) for group in groups]
+            if visible_chat_ids:
+                message_statement = message_statement.where(ConversationMessageORM.chat_id.in_(visible_chat_ids))
+                event_statement = event_statement.where(GroupEngineEventORM.chat_id.in_(visible_chat_ids))
+            else:
+                message_statement = message_statement.where(False)
+                event_statement = event_statement.where(False)
             rows = session.scalars(message_statement).all()
             events = session.scalars(event_statement).all()
-            groups = list(session.scalars(select(GroupChatORM).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)).all())
             group_names = self._group_name_map(groups)
             user_names = self._user_name_map(session, [row.user_id for row in rows] + [event.user_id for event in events if event.user_id])
             media_by_message = self._media_by_message(session, rows)
             counts = {
-                "all": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type.like("group_%"))) or 0,
-                "observed": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_observed")) or 0,
-                "mentions": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_mention")) or 0,
-                "photos": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_photo")) or 0,
-                "auto": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_auto")) or 0,
-                "scheduled": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type.in_(("group_scheduled", "group_admin")))) or 0,
+                "all": self._group_message_count(session, visible_chat_ids, None),
+                "observed": 0,
+                "mentions": self._group_message_count(session, visible_chat_ids, ("group_mention",)),
+                "photos": self._group_message_count(session, visible_chat_ids, ("group_photo",)),
+                "auto": self._group_message_count(session, visible_chat_ids, ("group_auto",)),
+                "scheduled": self._group_message_count(session, visible_chat_ids, ("group_scheduled", "group_admin")),
             }
         return {
             "messages": rows,
@@ -426,7 +441,8 @@ class AdminDataService:
                 statement = statement.where(MediaFileORM.media_kind == kind)
             rows = session.scalars(statement).all()
             user_names = self._user_name_map(session, [row.user_id for row in rows])
-        items = [self._media_row(row, user_names) for row in rows]
+            assistant_replies = self._assistant_replies_for_media(session, rows)
+        items = [self._media_row(row, user_names, assistant_replies) for row in rows]
         if needle:
             items = [
                 item
@@ -788,13 +804,18 @@ class AdminDataService:
             return [
                 int(value)
                 for value in session.scalars(
-                    select(GroupChatORM.chat_id).where(GroupChatORM.active.is_(True)).order_by(GroupChatORM.chat_id)
+                    select(GroupChatORM.chat_id)
+                    .where(
+                        GroupChatORM.active.is_(True),
+                        GroupChatORM.bot_status.not_in(HIDDEN_BOT_STATUSES) | GroupChatORM.bot_status.is_(None),
+                    )
+                    .order_by(GroupChatORM.chat_id)
                 ).all()
             ]
 
     def group_chats(self) -> list[GroupChatORM]:
         with self.database.orm.session() as session:
-            return list(session.scalars(select(GroupChatORM).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)).all())
+            return list(session.scalars(self._visible_groups_statement()).all())
 
     def scheduled_group_messages(self) -> list[ScheduledGroupMessageORM]:
         with self.database.orm.session() as session:
@@ -920,6 +941,32 @@ class AdminDataService:
             for group in groups
         }
 
+    def _visible_groups_statement(self):
+        return (
+            select(GroupChatORM)
+            .where(
+                GroupChatORM.active.is_(True),
+                GroupChatORM.bot_status.not_in(HIDDEN_BOT_STATUSES) | GroupChatORM.bot_status.is_(None),
+            )
+            .order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)
+        )
+
+    def _group_message_count(self, session, chat_ids: list[int], message_types: tuple[str, ...] | None) -> int:
+        if not chat_ids:
+            return 0
+        statement = (
+            select(func.count())
+            .select_from(ConversationMessageORM)
+            .where(
+                ConversationMessageORM.message_type.like("group_%"),
+                ConversationMessageORM.message_type != "group_observed",
+                ConversationMessageORM.chat_id.in_(chat_ids),
+            )
+        )
+        if message_types:
+            statement = statement.where(ConversationMessageORM.message_type.in_(message_types))
+        return int(session.scalar(statement) or 0)
+
     def _group_event_row(
         self,
         row: GroupEngineEventORM,
@@ -941,29 +988,97 @@ class AdminDataService:
 
     def _media_by_message(self, session, messages: list[ConversationMessageORM | None]) -> dict[int, list[dict[str, Any]]]:
         pairs = [
-            (row.id, row.user_id, row.telegram_message_id)
+            (row.id, row.chat_id, row.user_id, row.telegram_message_id)
             for row in messages
             if row is not None and row.telegram_message_id is not None
         ]
         if not pairs:
             return {}
-        user_ids = sorted({int(user_id) for _message_id, user_id, _telegram_id in pairs})
-        telegram_ids = sorted({int(telegram_id) for _message_id, _user_id, telegram_id in pairs})
+        chat_ids = sorted({int(chat_id) for _message_id, chat_id, _user_id, _telegram_id in pairs if chat_id is not None})
+        user_ids = sorted({int(user_id) for _message_id, _chat_id, user_id, _telegram_id in pairs})
+        telegram_ids = sorted({int(telegram_id) for _message_id, _chat_id, _user_id, telegram_id in pairs})
         rows = session.scalars(
             select(MediaFileORM).where(
                 MediaFileORM.user_id.in_(user_ids),
                 MediaFileORM.telegram_message_id.in_(telegram_ids),
+                MediaFileORM.chat_id.in_(chat_ids) if chat_ids else True,
             )
         ).all()
-        bucket: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        assistant_replies = self._assistant_replies_for_media(session, rows)
+        bucket: dict[tuple[int | None, int, int], list[dict[str, Any]]] = {}
         for row in rows:
-            bucket.setdefault((int(row.user_id), int(row.telegram_message_id or 0)), []).append(self._media_row(row))
+            bucket.setdefault((row.chat_id, int(row.user_id), int(row.telegram_message_id or 0)), []).append(self._media_row(row, assistant_replies=assistant_replies))
         return {
-            int(message_id): bucket.get((int(user_id), int(telegram_id or 0)), [])
-            for message_id, user_id, telegram_id in pairs
+            int(message_id): bucket.get((chat_id, int(user_id), int(telegram_id or 0)), [])
+            for message_id, chat_id, user_id, telegram_id in pairs
         }
 
-    def _media_row(self, row: MediaFileORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
+    def _assistant_replies_for_media(self, session, media_rows: list[MediaFileORM]) -> dict[int, dict[str, Any]]:
+        keys = [
+            (row.id, row.chat_id, row.user_id, row.telegram_message_id)
+            for row in media_rows
+            if row.telegram_message_id is not None
+        ]
+        if not keys:
+            return {}
+        user_ids = sorted({int(user_id) for _media_id, _chat_id, user_id, _telegram_id in keys})
+        telegram_ids = sorted({int(telegram_id) for _media_id, _chat_id, _user_id, telegram_id in keys})
+        chat_ids = sorted({int(chat_id) for _media_id, chat_id, _user_id, _telegram_id in keys if chat_id is not None})
+        user_messages = session.scalars(
+            select(ConversationMessageORM).where(
+                ConversationMessageORM.role == "user",
+                ConversationMessageORM.user_id.in_(user_ids),
+                ConversationMessageORM.telegram_message_id.in_(telegram_ids),
+                ConversationMessageORM.chat_id.in_(chat_ids) if chat_ids else True,
+            )
+        ).all()
+        user_by_key = {
+            (row.chat_id, int(row.user_id), int(row.telegram_message_id or 0)): row
+            for row in user_messages
+        }
+        if not user_by_key:
+            return {}
+        assistant_rows = session.scalars(
+            select(ConversationMessageORM)
+            .where(
+                ConversationMessageORM.role == "assistant",
+                ConversationMessageORM.user_id.in_(user_ids),
+                ConversationMessageORM.chat_id.in_(chat_ids) if chat_ids else True,
+            )
+            .order_by(ConversationMessageORM.id.asc())
+            .limit(3000)
+        ).all()
+        replies: dict[int, dict[str, Any]] = {}
+        for media_id, chat_id, user_id, telegram_id in keys:
+            user_message = user_by_key.get((chat_id, int(user_id), int(telegram_id or 0)))
+            if user_message is None:
+                continue
+            assistant = next(
+                (
+                    row
+                    for row in assistant_rows
+                    if row.chat_id == chat_id
+                    and int(row.user_id) == int(user_id)
+                    and int(row.id) > int(user_message.id)
+                ),
+                None,
+            )
+            if assistant is not None:
+                replies[int(media_id)] = {
+                    "id": assistant.id,
+                    "text": assistant.text,
+                    "provider": assistant.provider,
+                    "model": assistant.model,
+                    "created_at": assistant.created_at,
+                }
+        return replies
+
+    def _media_row(
+        self,
+        row: MediaFileORM,
+        user_names: dict[int, str] | None = None,
+        assistant_replies: dict[int, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         metadata = self._loads_json(row.metadata_json)
         return {
             "id": row.id,
@@ -982,6 +1097,7 @@ class AdminDataService:
             "caption": row.caption,
             "metadata": metadata,
             "vision_description": metadata.get("vision_description") or metadata.get("description") or "",
+            "assistant_reply": (assistant_replies or {}).get(int(row.id)),
             "created_at": row.created_at,
         }
 

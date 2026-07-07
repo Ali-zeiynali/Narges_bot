@@ -138,6 +138,7 @@
         <div class="media-meta">{{ item.created_at|dt }}</div>
         {% if item.caption %}<p>{{ item.caption }}</p>{% endif %}
         {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
+        {% if item.assistant_reply %}<p><b>جواب مدل:</b><br>{{ item.assistant_reply.text }}</p>{% endif %}
       </div>
     </article>
     {% endfor %}

@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -6,6 +7,35 @@ from sqlalchemy import func, select
 from bot.services.debug_service import DebugService
 from bot.storage.database import Database
 from bot.storage.orm import UserBlockORM, UserWarningEventORM
+
+
+PROMPT_INJECTION_PATTERNS = [
+    r"\b(ignore|forget|disregard|override|bypass|skip|discard)\b.{0,80}\b(previous|prior|above|system|developer|instruction|instructions|prompt|prompts|rules|role)\b",
+    r"\b(system|developer|assistant)\s+(prompt|message|role|instruction|instructions)\b",
+    r"\b(prompt|prompts|model|role)\b.{0,80}\b(reveal|show|print|dump|leak|expose|change|override|bypass|ignore)\b",
+    r"\b(act as|pretend to be|you are now|new role|roleplay as)\b",
+    r"(فراموش|نادیده|دور|کنار|بیخیال).{0,40}(دستور|قانون|پرامپت|پیام|قبلی|سیستم|دولوپر|توسعه)",
+    r"(پرامپت|پرومپت|prompt|مدل|model|role|رول|نقش).{0,50}(لو بده|نشان بده|نشون بده|چاپ کن|عوض کن|تغییر بده|نادیده بگیر|دور بزن|استخراج)",
+    r"(دستورهای قبلی|دستور قبلی|قوانین قبلی|پیام سیستم|پیام دولوپر|system prompt|developer message)",
+    r"(از این به بعد|الان تو|حالا تو).{0,40}(نقش|role|رول|مدل|بات|ادمین)",
+]
+
+SEXUAL_OR_PROFANITY_HINTS = {
+    "sex",
+    "sexual",
+    "porn",
+    "nude",
+    "naked",
+    "nsfw",
+    "fuck",
+    "shit",
+    "سکس",
+    "جنسی",
+    "پورن",
+    "برهنه",
+    "لخت",
+    "فحش",
+}
 
 
 @dataclass(frozen=True)
@@ -60,6 +90,17 @@ class ModerationService:
 
     def apply_manual_warning(self, user_id: int, reason: str) -> WarningResult:
         return self._apply_warning(user_id, reason, source="admin_panel", source_message_id=None)
+
+    def security_warning_reason(self, text: str) -> str | None:
+        normalized = self._normalize_security_text(text)
+        if not normalized:
+            return None
+        if self._has_only_sexual_or_profanity_signal(normalized):
+            return None
+        for pattern in PROMPT_INJECTION_PATTERNS:
+            if re.search(pattern, normalized, flags=re.IGNORECASE | re.DOTALL):
+                return "prompt/role injection attempt"
+        return None
 
     def delete_warning(self, user_id: int, warning_id: int) -> bool:
         with self.database.orm.session() as session:
@@ -191,3 +232,14 @@ class ModerationService:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+    def _normalize_security_text(self, text: str | None) -> str:
+        normalized = (text or "").lower()
+        normalized = normalized.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
+        return " ".join(normalized.split())
+
+    def _has_only_sexual_or_profanity_signal(self, normalized: str) -> bool:
+        has_sensitive = any(re.search(pattern, normalized, flags=re.IGNORECASE | re.DOTALL) for pattern in PROMPT_INJECTION_PATTERNS)
+        if has_sensitive:
+            return False
+        return any(word in normalized for word in SEXUAL_OR_PROFANITY_HINTS)

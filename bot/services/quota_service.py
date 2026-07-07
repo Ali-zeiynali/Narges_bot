@@ -12,7 +12,7 @@ from bot.storage.orm import QuotaEventORM
 
 
 QUOTA_UNIT_SCALE = 5
-GROUP_REPLY_COST_UNITS = 3
+GROUP_REPLY_COST_UNITS = 1
 BUSY_MESSAGE = "عجول نباش! صبر کن قبلی رو جواب بدم."
 
 

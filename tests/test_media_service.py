@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -127,6 +128,52 @@ class MediaStorageServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(payload)
         self.assertEqual(payload.content, b"fake-jpeg")
+
+    def test_bot_image_catalog_matches_user_media_by_hash(self) -> None:
+        image_path = self.tmp_path / "source.jpg"
+        image_path.write_bytes(b"same-image")
+        catalog_path = self.tmp_path / "catalog.json"
+        catalog_path.write_text(
+            """
+            {
+              "images": [
+                {
+                  "id": "selfie_test",
+                  "path": "source.jpg",
+                  "mime_type": "image/jpeg",
+                  "description": "Narges selfie",
+                  "tags": ["selfie"]
+                }
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+        settings = make_settings(self.tmp_path)
+        settings = Settings(**{**settings.__dict__, "bot_image_catalog_path": str(catalog_path), "bot_image_dir": str(self.tmp_path)})
+        catalog = BotImageCatalog(settings, self.database)
+        catalog.ensure_seeded()
+        stored = self.service._record(
+            user_id=1,
+            chat_id=1,
+            telegram_message_id=10,
+            telegram_file_id="user-photo",
+            media_kind="image",
+            mime_type="image/jpeg",
+            original_file_name=None,
+            storage_path="",
+            content_hash=hashlib.sha256(b"same-image").hexdigest(),
+            file_bytes=b"same-image",
+            file_size=len(b"same-image"),
+            caption=None,
+            metadata={},
+            created_at=datetime.now(UTC),
+        )
+
+        match = catalog.matching_bot_image(stored)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["catalog_id"], "selfie_test")
 
 
 if __name__ == "__main__":

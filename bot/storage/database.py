@@ -71,6 +71,7 @@ class Database:
             statements = [
                 "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
                 "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS file_bytes BYTEA",
+                "ALTER TABLE group_chats ADD COLUMN IF NOT EXISTS member_count INTEGER",
                 "CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)",
             ]
             with self.orm.engine.begin() as connection:
@@ -84,4 +85,7 @@ class Database:
                 if "file_bytes" not in columns:
                     connection.execute("ALTER TABLE media_files ADD COLUMN file_bytes BLOB")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)")
+                group_columns = {row["name"] for row in connection.execute("PRAGMA table_info(group_chats)").fetchall()}
+                if group_columns and "member_count" not in group_columns:
+                    connection.execute("ALTER TABLE group_chats ADD COLUMN member_count INTEGER")
                 connection.commit()

@@ -253,6 +253,7 @@ class GroupChatORM(Base):
     username: Mapped[str | None] = mapped_column(String(128))
     chat_type: Mapped[str] = mapped_column(String(32))
     bot_status: Mapped[str | None] = mapped_column(String(64))
+    member_count: Mapped[int | None] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

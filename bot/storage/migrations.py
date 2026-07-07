@@ -533,4 +533,10 @@ MIGRATIONS: list[tuple[str, str]] = [
             ON group_engine_events(user_id, event_type, created_at);
         """,
     ),
+    (
+        "020_group_member_count",
+        """
+        ALTER TABLE group_chats ADD COLUMN member_count INTEGER;
+        """,
+    ),
 ]

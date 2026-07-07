@@ -89,9 +89,14 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         return render(request, "dashboard.html", {"snapshot": service.dashboard()})
 
     @app.get(route("/users"), response_class=HTMLResponse)
-    async def users(request: Request, sort: str = "last_seen", q: str = "") -> HTMLResponse:
+    async def users(request: Request, sort: str = "last_seen", q: str = "", active_only: str = "") -> HTMLResponse:
         require_admin(request)
-        return render(request, "users.html", {"users": service.users(sort=sort, query=q), "sort": sort, "q": q})
+        only_active = active_only.lower() in {"1", "true", "on", "yes"}
+        return render(
+            request,
+            "users.html",
+            {"users": service.users(sort=sort, query=q, active_only=only_active), "sort": sort, "q": q, "active_only": only_active},
+        )
 
     @app.get(route("/users/{user_id}"), response_class=HTMLResponse)
     async def user_detail(request: Request, user_id: int) -> HTMLResponse:

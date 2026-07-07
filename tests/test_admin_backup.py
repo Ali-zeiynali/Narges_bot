@@ -9,7 +9,7 @@ from bot.admin.services import AdminDataService
 from bot.config import Settings
 from bot.services.history_service import HistoryService
 from bot.storage.database import Database
-from bot.storage.orm import ConversationMessageORM, UserORM
+from bot.storage.orm import ConversationMessageORM, GroupChatORM, MediaFileORM, UserORM
 
 
 def make_settings() -> Settings:
@@ -104,6 +104,174 @@ class AdminBackupTests(unittest.TestCase):
         users = service.users(sort="created")
 
         self.assertEqual([item["telegram_id"] for item in users], [20, 10])
+
+    def test_gender_sort_places_missing_gender_last(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "gender.sqlite3"))
+        database.migrate()
+        with database.orm.session() as session:
+            session.add(UserORM(telegram_id=10, username="none", first_name="None", gender=None))
+            session.add(UserORM(telegram_id=20, username="male", first_name="Male", gender="male"))
+            session.add(UserORM(telegram_id=30, username="female", first_name="Female", gender="female"))
+        service = AdminDataService(database, make_settings())
+
+        users = service.users(sort="gender")
+
+        self.assertEqual([item["telegram_id"] for item in users], [30, 20, 10])
+
+    def test_active_only_user_filter_keeps_users_with_messages(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "active-users.sqlite3"))
+        database.migrate()
+        with database.orm.session() as session:
+            session.add(UserORM(telegram_id=10, username="inactive", first_name="Inactive"))
+            session.add(UserORM(telegram_id=20, username="active", first_name="Active"))
+        HistoryService(database).add(20, "user", "hello")
+        service = AdminDataService(database, make_settings())
+
+        users = service.users(active_only=True)
+
+        self.assertEqual([item["telegram_id"] for item in users], [20])
+
+    def test_hidden_group_statuses_are_removed_from_admin_group_views(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "groups.sqlite3"))
+        database.migrate()
+        now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+        with database.orm.session() as session:
+            session.add(GroupChatORM(chat_id=1, title="Active", chat_type="supergroup", bot_status="member", active=True, last_seen_at=now))
+            session.add(GroupChatORM(chat_id=2, title="Left", chat_type="supergroup", bot_status="left", active=False, last_seen_at=now))
+        service = AdminDataService(database, make_settings())
+
+        groups = service.group_chats()
+        group_messages = service.group_messages()
+
+        self.assertEqual([group.chat_id for group in groups], [1])
+        self.assertEqual([group.chat_id for group in group_messages["groups"]], [1])
+        self.assertEqual(service.target_group_ids(), [1])
+
+    def test_user_messages_include_group_rows_only_when_user_filtered(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "user-group-messages.sqlite3"))
+        database.migrate()
+        now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+        with database.orm.session() as session:
+            session.add(UserORM(telegram_id=1, username="u", first_name="U"))
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=1,
+                    telegram_message_id=1,
+                    role="user",
+                    message_type="chat",
+                    text="private",
+                    text_hash="p",
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=-100,
+                    telegram_message_id=2,
+                    role="user",
+                    message_type="group_mention",
+                    text="group",
+                    text_hash="g",
+                    created_at=now,
+                )
+            )
+        service = AdminDataService(database, make_settings())
+
+        filtered = service.messages(user_id=1)["messages"]
+        global_messages = service.messages()["messages"]
+        detail = service.user_detail(1)["messages"]
+
+        self.assertEqual({row.text for row in filtered}, {"private", "group"})
+        self.assertEqual([row.text for row in global_messages], ["private"])
+        self.assertEqual({row.text for row in detail}, {"private", "group"})
+
+    def test_group_messages_exclude_observed_rows(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "group-panel.sqlite3"))
+        database.migrate()
+        now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+        with database.orm.session() as session:
+            session.add(GroupChatORM(chat_id=-100, title="Group", chat_type="supergroup", bot_status="member", active=True, last_seen_at=now))
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=-100,
+                    telegram_message_id=1,
+                    role="user",
+                    message_type="group_observed",
+                    text="ordinary",
+                    text_hash="o",
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=-100,
+                    telegram_message_id=2,
+                    role="user",
+                    message_type="group_mention",
+                    text="mention",
+                    text_hash="m",
+                    created_at=now,
+                )
+            )
+        service = AdminDataService(database, make_settings())
+
+        messages = service.group_messages()
+
+        self.assertEqual([row.text for row in messages["messages"]], ["mention"])
+        self.assertEqual(messages["counts"]["all"], 1)
+        self.assertEqual(messages["counts"]["observed"], 0)
+
+    def test_media_gallery_includes_following_assistant_reply(self) -> None:
+        database = Database(str(Path(self.tmp.name) / "media.sqlite3"))
+        database.migrate()
+        now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+        with database.orm.session() as session:
+            session.add(UserORM(telegram_id=1, username="u", first_name="U"))
+            session.add(
+                MediaFileORM(
+                    user_id=1,
+                    chat_id=1,
+                    telegram_message_id=10,
+                    telegram_file_id="photo",
+                    media_kind="image",
+                    mime_type="image/jpeg",
+                    storage_path="",
+                    file_size=4,
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=1,
+                    telegram_message_id=10,
+                    role="user",
+                    message_type="chat",
+                    text="[image]",
+                    text_hash="u",
+                    created_at=now,
+                )
+            )
+            session.add(
+                ConversationMessageORM(
+                    user_id=1,
+                    chat_id=1,
+                    role="assistant",
+                    message_type="chat",
+                    text="model answer",
+                    text_hash="a",
+                    created_at=now,
+                )
+            )
+        service = AdminDataService(database, make_settings())
+
+        media = service.media()["media"]
+
+        self.assertEqual(media[0]["assistant_reply"]["text"], "model answer")
 
 
 if __name__ == "__main__":

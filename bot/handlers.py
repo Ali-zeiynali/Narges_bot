@@ -219,7 +219,18 @@ def register_handlers(
         except Exception:
             return {"bot_id": None, "username": "@narges_aibot", "expected_username": "@narges_aibot"}
 
-    def track_group_message(message: Message) -> None:
+    async def group_member_count(bot: Bot, chat_id: int) -> int | None:
+        for method_name in ("get_chat_member_count", "get_chat_members_count"):
+            method = getattr(bot, method_name, None)
+            if method is None:
+                continue
+            try:
+                return int(await method(chat_id))
+            except Exception:
+                logger.debug("group_member_count_unavailable chat_id=%s method=%s", chat_id, method_name, exc_info=True)
+        return None
+
+    async def track_group_message(message: Message, bot: Bot) -> None:
         if group_service is None or not is_group_chat_type(getattr(message.chat, "type", None)):
             return
         group_service.upsert_group(
@@ -227,6 +238,8 @@ def register_handlers(
             title=getattr(message.chat, "title", None),
             username=getattr(message.chat, "username", None),
             chat_type=str(message.chat.type),
+            bot_status="member",
+            member_count=await group_member_count(bot, message.chat.id),
             active=True,
         )
 
@@ -615,8 +628,21 @@ def register_handlers(
             with suppress(Exception):
                 await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             try:
-                cached_description = media_storage_service.cached_vision_description(stored_media)
-                if cached_description:
+                matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
+                if matched_bot_image:
+                    description = "کاربر عکس نرگس را ارسال کرده است."
+                    media_storage_service.set_vision_description(stored_media.id, description)
+                    debug_service.trace(
+                        "media_matches_bot_image",
+                        {
+                            "media_id": stored_media.id,
+                            "catalog_id": matched_bot_image.get("catalog_id"),
+                            "content_hash": stored_media.content_hash,
+                            "telegram_message_id": stored_media.telegram_message_id,
+                        },
+                        user_id=message.from_user.id,
+                    )
+                elif cached_description := media_storage_service.cached_vision_description(stored_media):
                     description = cached_description
                     media_storage_service.set_vision_description(stored_media.id, description)
                     debug_service.trace(
@@ -672,7 +698,7 @@ def register_handlers(
         )
 
     @dispatcher.my_chat_member()
-    async def my_chat_member_handler(event: ChatMemberUpdated) -> None:
+    async def my_chat_member_handler(event: ChatMemberUpdated, bot: Bot) -> None:
         if group_service is None or not is_group_chat_type(getattr(event.chat, "type", None)):
             return
         status = getattr(event.new_chat_member.status, "value", str(event.new_chat_member.status))
@@ -682,34 +708,41 @@ def register_handlers(
             username=getattr(event.chat, "username", None),
             chat_type=str(event.chat.type),
             bot_status=status,
+            member_count=await group_member_count(bot, event.chat.id),
             active=status in {"member", "administrator", "creator"},
         )
 
     @dispatcher.message(F.chat.type.in_({"group", "supergroup"}))
     async def group_message_handler(message: Message, bot: Bot) -> None:
-        track_group_message(message)
+        await track_group_message(message, bot)
         if group_service is None or group_ai_service is None or not message.from_user or message.from_user.is_bot:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
-        observed_text = group_text(message)
-        if not observed_text and message.photo:
-            observed_text = "[photo]"
-        if observed_text:
-            group_service.record_observed_message(
-                chat_id=message.chat.id,
-                user_id=message.from_user.id,
-                telegram_message_id=message.message_id,
-                text=observed_text,
-                created_at=message.date,
-                metadata={"content_type": message.content_type},
-            )
-
         identity = await bot_identity(bot)
         bot_username = str(identity.get("username") or "@narges_aibot").lstrip("@")
         triggered = is_narges_mentioned(message, bot_username) or is_reply_to_bot(message, identity.get("bot_id"))
+        standalone_photo = is_standalone_group_photo(message)
+        stored_group_media: StoredMedia | None = None
+        if message.photo:
+            try:
+                stored_group_media = await media_storage_service.store_photo(bot, message)
+            except MediaStorageError as exc:
+                logger.info("group_photo_store_skipped chat_id=%s error=%s", message.chat.id, exc)
 
         if triggered and is_reasonable_group_mention(message):
             if not await ensure_not_blocked_for_model(message):
+                return
+            security_reason = moderation_service.security_warning_reason(group_text(message))
+            if security_reason:
+                warning = moderation_service.apply_model_warning(message.from_user.id, security_reason, message.message_id)
+                await message.reply(warning.message, allow_sending_without_reply=True)
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_security_blocked",
+                    telegram_message_id=message.message_id,
+                    metadata={"reason": security_reason},
+                )
                 return
             if group_service.event_count_since(event_type="mention_response", chat_id=message.chat.id, seconds=60) >= 3:
                 return
@@ -762,7 +795,7 @@ def register_handlers(
                 await quota_service.finish_generation(message.from_user.id)
             return
 
-        if is_standalone_group_photo(message):
+        if standalone_photo:
             photo_cooldown = 5 * 60 * 60
             if group_service.cooldown_active(message.chat.id, "photo_seen", photo_cooldown):
                 return
@@ -787,9 +820,12 @@ def register_handlers(
                     event_type="photo_seen",
                     telegram_message_id=message.message_id,
                 )
-                stored_media = await media_storage_service.store_photo(bot, message)
-                cached_description = media_storage_service.cached_vision_description(stored_media)
-                if cached_description:
+                stored_media = stored_group_media or await media_storage_service.store_photo(bot, message)
+                matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
+                if matched_bot_image:
+                    description = "کاربر عکس نرگس را ارسال کرده است."
+                    media_storage_service.set_vision_description(stored_media.id, description)
+                elif cached_description := media_storage_service.cached_vision_description(stored_media):
                     description = cached_description
                     media_storage_service.set_vision_description(stored_media.id, description)
                 else:
@@ -804,6 +840,7 @@ def register_handlers(
                     message_datetime=message.date,
                     user_profile=profile,
                     bot_identity=identity,
+                    media_id=stored_media.id,
                 )
                 quota_service.consume_group_reply(message.from_user.id)
                 group_service.record_engine_event(

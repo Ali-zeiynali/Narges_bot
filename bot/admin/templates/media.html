@@ -62,6 +62,7 @@
       </div>
       {% if item.caption %}<p><b>متن کاربر:</b><br>{{ item.caption }}</p>{% endif %}
       {% if item.vision_description %}<p><b>Vision:</b><br>{{ item.vision_description }}</p>{% endif %}
+      {% if item.assistant_reply %}<p><b>جواب مدل:</b><br>{{ item.assistant_reply.text }}</p>{% endif %}
       {% if item.original_file_name %}<div class="media-meta ltr">{{ item.original_file_name }}</div>{% endif %}
       {% if item.content_hash %}<div class="media-meta ltr">sha256: {{ item.content_hash[:16] }}...</div>{% endif %}
       <details>

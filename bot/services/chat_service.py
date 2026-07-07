@@ -235,6 +235,10 @@ class ChatService:
                 global_state = self.global_state_service.get()
                 if not global_state.ai_enabled:
                     raise UserFacingError(global_state.ai_disabled_message)
+            security_reason = self.moderation_service.security_warning_reason(text)
+            if security_reason:
+                warning_result = self.moderation_service.apply_model_warning(user_id, security_reason, message_id)
+                raise UserFacingError(warning_result.message)
 
         with trace.step("load_state"):
             state = self.narges_state_service.get_active()
@@ -650,6 +654,8 @@ class ChatService:
         return " ".join((text or "").lower().split())
 
     def _should_apply_model_warning(self, user_text: str, reason: str | None) -> bool:
+        if self.moderation_service.security_warning_reason(user_text):
+            return True
         user_text_lower = self._normalize_warning_text(user_text)
         user_has_security_or_danger = any(
             self._normalize_warning_text(keyword) in user_text_lower for keyword in SECURITY_WARNING_KEYWORDS

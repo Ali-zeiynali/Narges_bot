@@ -17,9 +17,11 @@
       <option value="last_seen" {% if sort=="last_seen" %}selected{% endif %}>آخرین استفاده</option>
       <option value="warnings" {% if sort=="warnings" %}selected{% endif %}>اخطار</option>
       <option value="quota" {% if sort=="quota" %}selected{% endif %}>ظرفیت باقی‌مانده</option>
+      <option value="gender" {% if sort=="gender" %}selected{% endif %}>جنسیت</option>
       <option value="created" {% if sort=="created" %}selected{% endif %}>تاریخ عضویت</option>
     </select>
   </label>
+  <label><input style="width:auto" type="checkbox" name="active_only" value="1" {% if active_only %}checked{% endif %}> فقط کاربران فعال</label>
   <button>اعمال</button>
 </form>
 

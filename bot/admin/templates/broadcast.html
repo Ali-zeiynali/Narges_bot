@@ -71,9 +71,9 @@
 <div class="card">
   <h3>گروه‌های ثبت‌شده</h3>
   <table>
-    <tr><th>شناسه</th><th>عنوان</th><th>نوع</th><th>وضعیت بات</th><th>فعال</th><th>آخرین مشاهده</th></tr>
+    <tr><th>شناسه</th><th>عنوان</th><th>نوع</th><th>اعضا</th><th>وضعیت بات</th><th>فعال</th><th>آخرین مشاهده</th></tr>
     {% for g in groups %}
-    <tr><td class="ltr">{{ g.chat_id }}</td><td>{{ g.title or "-" }}</td><td>{{ g.chat_type }}</td><td>{{ g.bot_status or "-" }}</td><td>{{ "بله" if g.active else "نه" }}</td><td>{{ g.last_seen_at|dt }}</td></tr>
+    <tr><td class="ltr">{{ g.chat_id }}</td><td>{{ g.title or "-" }}</td><td>{{ g.chat_type }}</td><td class="ltr">{{ g.member_count or "-" }}</td><td>{{ g.bot_status or "-" }}</td><td>{{ "بله" if g.active else "نه" }}</td><td>{{ g.last_seen_at|dt }}</td></tr>
     {% endfor %}
   </table>
 </div>

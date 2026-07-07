@@ -436,6 +436,29 @@ class BotImageCatalog:
     def has_image(self, image_id: str) -> bool:
         return any(item.id == image_id for item in self.load_items())
 
+    def matching_bot_image(self, media: StoredMedia) -> dict[str, Any] | None:
+        if not media.content_hash:
+            return None
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(MediaFileORM)
+                .where(
+                    MediaFileORM.media_kind == "bot_image",
+                    MediaFileORM.content_hash == media.content_hash,
+                )
+                .order_by(MediaFileORM.id.asc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        metadata = self._loads_metadata(row.metadata_json)
+        return {
+            "id": row.id,
+            "catalog_id": metadata.get("catalog_id"),
+            "description": metadata.get("description") or row.caption or "",
+            "content_hash": row.content_hash,
+        }
+
     def payload(self, image_id: str) -> BotImagePayload | None:
         item = self._item_by_id(image_id)
         if item is None:

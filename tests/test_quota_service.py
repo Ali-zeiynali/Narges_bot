@@ -80,15 +80,15 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.service.reply_cost(reply), 1)
 
-    async def test_group_reply_consumes_three_units(self) -> None:
+    async def test_group_reply_consumes_one_unit(self) -> None:
         started = await self.service.begin_group_generation(1)
         self.assertTrue(started.ok)
 
         consumed = self.service.consume_group_reply(1)
         await self.service.finish_generation(1)
 
-        self.assertEqual(consumed, 3)
-        self.assertEqual(self.service.account_quota(1).daily_remaining, 12)
+        self.assertEqual(consumed, 1)
+        self.assertEqual(self.service.account_quota(1).daily_remaining, 14)
 
     async def test_rate_limit_blocks_after_starts(self) -> None:
         first = await self.service.begin_generation(1)
