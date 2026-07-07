@@ -35,7 +35,9 @@ class PersonaCompiler:
         user_gender: str | None = None,
     ) -> CompiledPersona:
         conversation_state = self._conversation_state(context)
-        sexual_gender = user_gender if conversation_state == "sexual" and user_gender in {"male", "female"} else None
+        sexual_gender = None
+        if conversation_state == "sexual":
+            sexual_gender = user_gender if user_gender in {"male", "female"} else "adult"
         section_name = f"static:{conversation_state}:{sexual_gender or 'base'}"
         cache_version = f"{self.version}:{self._persona_fingerprint()}"
         cached = self.cache.get(cache_version, section_name)

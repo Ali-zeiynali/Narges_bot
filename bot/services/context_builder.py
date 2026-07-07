@@ -23,24 +23,134 @@ SHORT_MESSAGE_CHARS = 90
 THREAD_LOOKBACK_MESSAGES = 3
 SEXUAL_TRIGGER_WORDS = {
     "سکس",
+    "سکسی",
     "جنسی",
     "شهوت",
     "تحریک",
+    "تحریکم",
+    "تحریکت",
     "بوس",
+    "بوسم",
+    "ببوس",
     "بغل",
     "بدن",
     "لب",
+    "گردن",
+    "سینه",
+    "پستان",
+    "ممه",
     "کص",
     "کس",
     "کون",
     "کیر",
+    "واژن",
+    "آلت",
+    "دیک",
     "حشری",
     "هورنی",
     "خیس",
+    "لخت",
+    "برهنه",
+    "نود",
+    "پورن",
+    "لاس",
+    "معاشقه",
+    "رابطه جنسی",
+    "دخول",
+    "ارضا",
+    "ارضام",
+    "ارضات",
+    "بمال",
+    "بمالم",
+    "بخور",
+    "لیس",
+    "ساک",
+    "بکن",
+    "بکنم",
+    "میخوامت",
+    "می خوامت",
     "sex",
     "sexual",
+    "sexy",
+    "nsfw",
+    "erotic",
     "kiss",
     "horny",
+    "nude",
+    "naked",
+    "fuck",
+    "dick",
+    "pussy",
+    "ass",
+    "boob",
+    "breast",
+    "wet",
+    "cum",
+    "bj",
+    "oral",
+}
+SEXUAL_BODY_WORDS = {
+    "بدن",
+    "لب",
+    "گردن",
+    "سینه",
+    "پستان",
+    "ممه",
+    "کص",
+    "کس",
+    "کون",
+    "کیر",
+    "واژن",
+    "آلت",
+    "دیک",
+    "ران",
+    "body",
+    "lip",
+    "neck",
+    "boob",
+    "breast",
+    "pussy",
+    "dick",
+    "ass",
+}
+SEXUAL_ACTION_WORDS = {
+    "بوس",
+    "ببوس",
+    "بغل",
+    "لمس",
+    "بمال",
+    "بخور",
+    "لیس",
+    "ساک",
+    "تحریک",
+    "ارضا",
+    "بکن",
+    "بخواب",
+    "kiss",
+    "touch",
+    "lick",
+    "fuck",
+    "suck",
+}
+SEXUAL_INTENT_WORDS = {
+    "میخوام",
+    "میخام",
+    "می خوام",
+    "می خواهم",
+    "دلم میخواد",
+    "دلم می خواد",
+    "دوست دارم",
+    "بیا",
+    "بریم",
+    "بکنیم",
+    "برام",
+    "باهام",
+    "میخوامت",
+    "می خوامت",
+    "want",
+    "wanna",
+    "let's",
+    "with me",
 }
 
 
@@ -221,45 +331,25 @@ class ContextBuilder:
         return value if value in {"normal", "sexual"} else "normal"
 
     def _has_sexual_trigger(self, text: str) -> bool:
-        lowered = (text or "").lower()
-        if not lowered:
+        normalized = self._normalize_trigger_text(text)
+        if not normalized:
             return False
-        explicit_words = {
-            "sex",
-            "sexual",
-            "horny",
-            "nude",
-            "naked",
-            "سکس",
-            "جنسی",
-            "شهوت",
-            "حشری",
-            "پورن",
-            "لخت",
-            "برهنه",
-        }
-        if any(word in lowered for word in explicit_words):
+        compact = normalized.replace(" ", "")
+        normalized_triggers = [self._normalize_trigger_text(word) for word in SEXUAL_TRIGGER_WORDS]
+        if any(word and (word in normalized or word.replace(" ", "") in compact) for word in normalized_triggers):
             return True
-        body_words = {
-            "کس",
-            "کص",
-            "کون",
-            "کیر",
-            "واژن",
-            "آلت",
-        }
-        action_words = {
-            "بکن",
-            "بخور",
-            "بمال",
-            "بساک",
-            "لمس",
-            "تحریک",
-            "ارضا",
-        }
-        has_body = any(word in lowered for word in body_words)
-        has_action = any(word in lowered for word in action_words)
-        return has_body and has_action
+        body_words = [self._normalize_trigger_text(word) for word in SEXUAL_BODY_WORDS]
+        action_words = [self._normalize_trigger_text(word) for word in SEXUAL_ACTION_WORDS]
+        intent_words = [self._normalize_trigger_text(word) for word in SEXUAL_INTENT_WORDS]
+        has_body = any(word and word in normalized for word in body_words)
+        has_action = any(word and word in normalized for word in action_words)
+        has_intent = any(word and (word in normalized or word.replace(" ", "") in compact) for word in intent_words)
+        return (has_body and has_action) or (has_intent and (has_body or has_action))
+
+    def _normalize_trigger_text(self, text: str) -> str:
+        normalized = (text or "").lower()
+        normalized = normalized.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
+        return re.sub(r"\s+", " ", normalized).strip()
 
     def _mode_for_intent(self, intent: str) -> str:
         if intent == "technical":

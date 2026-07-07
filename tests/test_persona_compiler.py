@@ -21,7 +21,7 @@ class PersonaCompilerTests(unittest.TestCase):
         self.assertEqual(compiled.sections, ("core_base",))
         self.assertIn("JSON", compiled.system_prompt)
         self.assertIn("current_message_datetime", compiled.system_prompt)
-        self.assertIn("سن: ۱7 سال", compiled.system_prompt)
+        self.assertIn("سن: ۱۸ سال", compiled.system_prompt)
 
     def test_cache_clears_when_version_changes(self) -> None:
         cache = PersonaCache()
@@ -83,17 +83,27 @@ class PersonaCompilerTests(unittest.TestCase):
             context=sexual_context,
             user_gender="female",
         )
+        adult_sexual = compiler.compile(
+            "hello",
+            NargesSelfState(updated_at=datetime.now(UTC)),
+            [],
+            [],
+            context=sexual_context,
+            user_gender=None,
+        )
 
         self.assertEqual(base.sections, ("core_base",))
         self.assertEqual(male.sections, ("core_base",))
         self.assertEqual(female.sections, ("core_base",))
         self.assertEqual(male_sexual.sections, ("core_base", "core_male_sex"))
         self.assertEqual(female_sexual.sections, ("core_base", "core_female_sex"))
+        self.assertEqual(adult_sexual.sections, ("core_base", "core_adult_sex"))
         self.assertNotEqual(base.system_prompt, male.system_prompt)
         self.assertNotEqual(base.system_prompt, female.system_prompt)
         self.assertIn('"target": "male_user"', male.system_prompt)
         self.assertIn('"target": "female_user"', female.system_prompt)
         self.assertIn('"previous_state": "sexual"', male_sexual.system_prompt)
+        self.assertIn("حالت جنسی عمومی", adult_sexual.system_prompt)
 
     def test_runtime_context_does_not_include_raw_history(self) -> None:
         context = BuiltContext(

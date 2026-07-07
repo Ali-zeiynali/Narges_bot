@@ -36,6 +36,131 @@ logger = logging.getLogger(__name__)
 HARD_MAX_MODEL_TOKENS_PER_TURN = 5500
 PREFERRED_MAX_INPUT_TOKENS = 2400
 
+SEXUAL_WARNING_EXCLUSION_KEYWORDS = {
+    "sex",
+    "sexual",
+    "porn",
+    "porno",
+    "nude",
+    "naked",
+    "nsfw",
+    "erotic",
+    "horny",
+    "kiss",
+    "sexy",
+    "سکس",
+    "سکسی",
+    "جنسی",
+    "پورن",
+    "برهنه",
+    "لخت",
+    "نود",
+    "شهوت",
+    "حشری",
+    "هورنی",
+    "بوس",
+    "کیر",
+    "کص",
+    "کس",
+    "کون",
+    "واژن",
+    "آلت",
+}
+
+SECURITY_WARNING_KEYWORDS = {
+    "api key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "database",
+    "dump database",
+    "dump users",
+    "leak database",
+    "db access",
+    "sql injection",
+    "drop database",
+    "dump table",
+    "xss",
+    "csrf",
+    "rce",
+    "shell",
+    "reverse shell",
+    "malware",
+    "virus",
+    "phishing",
+    "keylogger",
+    "exploit",
+    "bypass",
+    "jailbreak",
+    "ignore previous",
+    "ignore instructions",
+    "prompt injection",
+    "system prompt",
+    "developer message",
+    "hidden prompt",
+    "admin access",
+    "admin panel",
+    "unauthorized",
+    "privilege escalation",
+    "delete database",
+    "drop table",
+    "wipe data",
+    "webhook secret",
+    "provider key",
+    "dangerous",
+    "weapon",
+    "bomb",
+    "explosive",
+    "توکن",
+    "سکرت",
+    "راز سیستم",
+    "رمز",
+    "پسورد",
+    "گذرواژه",
+    "اعتبارنامه",
+    "کلید api",
+    "کلید ای پی آی",
+    "ای پی آی کی",
+    "دیتابیس",
+    "پایگاه داده",
+    "دامپ دیتابیس",
+    "اطلاعات کاربران",
+    "جدول کاربران",
+    "تزریق sql",
+    "اس کیو ال",
+    "اکسپلویت",
+    "بدافزار",
+    "ویروس",
+    "فیشینگ",
+    "کی لاگر",
+    "شل",
+    "اجرای دستور",
+    "دستور سیستم",
+    "دور زدن",
+    "جیل‌بریک",
+    "جیل بریک",
+    "نادیده بگیر",
+    "دستور قبلی",
+    "پرامپت سیستم",
+    "پیام دولوپر",
+    "پرامپت مخفی",
+    "دسترسی ادمین",
+    "پنل ادمین",
+    "دسترسی غیرمجاز",
+    "نفوذ",
+    "هک",
+    "حذف دیتابیس",
+    "پاک کردن دیتابیس",
+    "حذف داده",
+    "بمب",
+    "مواد منفجره",
+    "سلاح",
+    "خطرناک",
+}
+
 
 class UserFacingError(Exception):
     pass
@@ -183,21 +308,29 @@ class ChatService:
             if not provider_failed:
                 warning = result.reply.warning_suggestion
                 if warning and warning.level == "firm":
-                    warning_result = self.moderation_service.apply_model_warning(
-                        user_id,
-                        warning.reason or "security boundary violation",
-                        message_id,
-                    )
-                    result = GroqResult(
-                        reply=self._warning_reply(warning_result.message),
-                        raw_text="{}",
-                        usage=result.usage,
-                        provider=result.provider,
-                        model=result.model,
-                    )
-                    provider_failed = True
-                    assistant_history_message_type = "warning"
-                elif not self.quota_service.can_consume_reply(user_id, result.reply):
+                    if self._should_apply_model_warning(text, warning.reason):
+                        warning_result = self.moderation_service.apply_model_warning(
+                            user_id,
+                            warning.reason or "security boundary violation",
+                            message_id,
+                        )
+                        result = GroqResult(
+                            reply=self._warning_reply(warning_result.message),
+                            raw_text="{}",
+                            usage=result.usage,
+                            provider=result.provider,
+                            model=result.model,
+                        )
+                        provider_failed = True
+                        assistant_history_message_type = "warning"
+                    else:
+                        logger.info(
+                            "model_warning_ignored user_id=%s message_id=%s reason=%s",
+                            user_id,
+                            message_id,
+                            warning.reason,
+                        )
+                if not provider_failed and not self.quota_service.can_consume_reply(user_id, result.reply):
                     result = GroqResult(
                         reply=self._quota_fallback_reply(),
                         raw_text="{}",
@@ -207,7 +340,7 @@ class ChatService:
                     )
                     provider_failed = True
                     assistant_history_message_type = "system"
-                else:
+                elif not provider_failed:
                     if result.reply.event_suggestion:
                         logger.info("event_suggestion_ignored_from_chat_model user_id=%s", user_id)
                     self.quota_service.consume_successful_reply(user_id, result.reply)
@@ -514,6 +647,22 @@ class ChatService:
 
     def _normalize_for_similarity(self, text: str) -> str:
         return " ".join((text or "").lower().split())
+
+    def _should_apply_model_warning(self, user_text: str, reason: str | None) -> bool:
+        user_text_lower = self._normalize_warning_text(user_text)
+        user_has_security_or_danger = any(
+            self._normalize_warning_text(keyword) in user_text_lower for keyword in SECURITY_WARNING_KEYWORDS
+        )
+        if user_has_security_or_danger:
+            return True
+        if any(self._normalize_warning_text(keyword) in user_text_lower for keyword in SEXUAL_WARNING_EXCLUSION_KEYWORDS):
+            return False
+        return False
+
+    def _normalize_warning_text(self, text: str | None) -> str:
+        normalized = (text or "").lower()
+        normalized = normalized.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
+        return " ".join(normalized.split())
 
     async def _complete_with_retries(self, messages: list[dict[str, str]], attempts: int = 3) -> GroqResult:
         last_error: Exception | None = None

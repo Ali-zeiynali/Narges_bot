@@ -67,6 +67,20 @@ class FakeWarningGroqClient:
         return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
+class FakeSexualWarningGroqClient:
+    def complete(self, messages):
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "باشه، فهمیدم.", "delay_seconds": 0}],
+                "memory_suggestions": [],
+                "warning_suggestion": {"level": "firm", "reason": "sexual wording"},
+                "event_suggestion": None,
+            }
+        )
+        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+
+
 class FakeMemorySuggestionGroqClient:
     def complete(self, messages):
         reply = NargesReply.model_validate(
@@ -121,10 +135,13 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.quota = QuotaService(self.database, self.settings)
         self.moderation = ModerationService(self.database)
         self.debug = DebugService(self.database, self.settings)
-        self.service = ChatService(
+        self.service = self.make_service(FakeWarningGroqClient())
+
+    def make_service(self, groq_client) -> ChatService:
+        return ChatService(
             validator=MessageValidator(self.settings),
             persona_compiler=PersonaCompiler("v"),
-            groq_client=FakeWarningGroqClient(),  # type: ignore[arg-type]
+            groq_client=groq_client,  # type: ignore[arg-type]
             narges_state_service=NargesStateService(self.database),
             memory_service=MemoryService(self.database),
             history_service=self.history,
@@ -153,22 +170,23 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.moderation.warning_count(1), 1)
         self.assertEqual(self.quota.remaining_today(1), 40)
 
-    async def test_chat_model_memory_suggestions_are_validated_and_saved_once(self) -> None:
-        service = ChatService(
-            validator=MessageValidator(self.settings),
-            persona_compiler=PersonaCompiler("v"),
-            groq_client=FakeMemorySuggestionGroqClient(),  # type: ignore[arg-type]
-            narges_state_service=NargesStateService(self.database),
-            memory_service=MemoryService(self.database),
-            history_service=self.history,
-            context_builder=ContextBuilder(self.database, self.history),
-            conversation_search_tool=ConversationSearchTool(self.history),
-            moderation_service=self.moderation,
-            debug_service=self.debug,
-            usage_service=UsageService(self.database, "m"),
-            style_linter=StyleLinter(),
-            quota_service=self.quota,
+    async def test_sexual_model_warning_is_ignored(self) -> None:
+        service = self.make_service(FakeSexualWarningGroqClient())
+
+        result = await service.answer(
+            user_id=4,
+            chat_id=1,
+            message_id=103,
+            text="سکس و حرف جنسی",
+            message_datetime=datetime(2026, 7, 5, 12, 0, tzinfo=UTC),
         )
+
+        self.assertEqual(result.reply.messages[0].text, "باشه، فهمیدم.")
+        self.assertEqual(self.moderation.warning_count(4), 0)
+        self.assertEqual(self.quota.remaining_today(4), 39)
+
+    async def test_chat_model_memory_suggestions_are_validated_and_saved_once(self) -> None:
+        service = self.make_service(FakeMemorySuggestionGroqClient())
 
         await service.answer(
             user_id=2,
@@ -183,21 +201,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("black tea", memories[0].summary)
 
     async def test_unsupported_model_memory_suggestions_are_rejected(self) -> None:
-        service = ChatService(
-            validator=MessageValidator(self.settings),
-            persona_compiler=PersonaCompiler("v"),
-            groq_client=FakeUnsupportedMemorySuggestionGroqClient(),  # type: ignore[arg-type]
-            narges_state_service=NargesStateService(self.database),
-            memory_service=MemoryService(self.database),
-            history_service=self.history,
-            context_builder=ContextBuilder(self.database, self.history),
-            conversation_search_tool=ConversationSearchTool(self.history),
-            moderation_service=self.moderation,
-            debug_service=self.debug,
-            usage_service=UsageService(self.database, "m"),
-            style_linter=StyleLinter(),
-            quota_service=self.quota,
-        )
+        service = self.make_service(FakeUnsupportedMemorySuggestionGroqClient())
 
         await service.answer(
             user_id=3,

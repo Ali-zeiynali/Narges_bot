@@ -90,6 +90,16 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
 
+    def test_persian_sexual_request_forces_sexual_state(self) -> None:
+        context = self.builder.build(1, "میخوام ببوسمت و لمست کنم", [])
+
+        self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
+
+    def test_body_and_action_phrase_forces_sexual_state(self) -> None:
+        context = self.builder.build(1, "بدنت رو لمس کنم", [])
+
+        self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
+
 
 if __name__ == "__main__":
     unittest.main()
