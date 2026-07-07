@@ -335,16 +335,27 @@ class ContextBuilder:
         if not normalized:
             return False
         compact = normalized.replace(" ", "")
+        tokens = set(re.findall(r"[\wآ-ی]+", normalized, flags=re.UNICODE))
         normalized_triggers = [self._normalize_trigger_text(word) for word in SEXUAL_TRIGGER_WORDS]
-        if any(word and (word in normalized or word.replace(" ", "") in compact) for word in normalized_triggers):
+        if any(self._contains_trigger(normalized, compact, tokens, word) for word in normalized_triggers):
             return True
         body_words = [self._normalize_trigger_text(word) for word in SEXUAL_BODY_WORDS]
         action_words = [self._normalize_trigger_text(word) for word in SEXUAL_ACTION_WORDS]
         intent_words = [self._normalize_trigger_text(word) for word in SEXUAL_INTENT_WORDS]
-        has_body = any(word and word in normalized for word in body_words)
-        has_action = any(word and word in normalized for word in action_words)
-        has_intent = any(word and (word in normalized or word.replace(" ", "") in compact) for word in intent_words)
+        has_body = any(self._contains_trigger(normalized, compact, tokens, word) for word in body_words)
+        has_action = any(self._contains_trigger(normalized, compact, tokens, word) for word in action_words)
+        has_intent = any(self._contains_trigger(normalized, compact, tokens, word) for word in intent_words)
         return (has_body and has_action) or (has_intent and (has_body or has_action))
+
+    def _contains_trigger(self, normalized: str, compact: str, tokens: set[str], word: str) -> bool:
+        if not word:
+            return False
+        compact_word = word.replace(" ", "")
+        if compact_word in {"کس", "کص"}:
+            return word in tokens or compact_word in tokens
+        if " " in word:
+            return word in normalized or compact_word in compact
+        return word in normalized or compact_word in compact
 
     def _normalize_trigger_text(self, text: str) -> str:
         normalized = (text or "").lower()

@@ -101,5 +101,11 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
 
 
+    def test_photo_request_does_not_match_short_sexual_word_inside_image(self) -> None:
+        context = self.builder.build(1, "\u0639\u06a9\u0633 \u0628\u062f\u0647 \u0627\u0632 \u062e\u0648\u062f\u062a", [])
+
+        self.assertEqual(context.for_prompt()["state"]["mode"], "normal")
+
+
 if __name__ == "__main__":
     unittest.main()

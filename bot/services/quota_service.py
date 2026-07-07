@@ -12,6 +12,7 @@ from bot.storage.orm import QuotaEventORM
 
 
 QUOTA_UNIT_SCALE = 5
+GROUP_REPLY_COST_UNITS = 3
 BUSY_MESSAGE = "عجول نباش! صبر کن قبلی رو جواب بدم."
 
 
@@ -66,6 +67,26 @@ class QuotaService:
             self._record_event(user_id, "turn_start", 0)
             return check
 
+    async def begin_group_generation(self, user_id: int) -> QuotaCheck:
+        async with self._lock:
+            if self._debug_bypass(user_id):
+                return QuotaCheck(True, "", 10**9)
+            if user_id in self._active_generations:
+                return QuotaCheck(False, BUSY_MESSAGE, self.account_quota(user_id).effective_remaining)
+            account = self.account_quota(user_id)
+            if account.effective_remaining < GROUP_REPLY_COST_UNITS:
+                return QuotaCheck(False, "Group reply quota is not enough.", account.effective_remaining)
+            if account.extra_remaining <= 0:
+                short_count = self._count_since(user_id, "group_turn_start", self.settings.rate_limit_short_window_seconds)
+                if short_count >= max(2, self.settings.rate_limit_short_count // 2):
+                    return QuotaCheck(False, "Group replies are rate limited for a moment.", account.effective_remaining)
+                long_count = self._count_since(user_id, "group_turn_start", self.settings.rate_limit_long_window_seconds)
+                if long_count >= max(4, self.settings.rate_limit_long_count // 2):
+                    return QuotaCheck(False, "Group replies are rate limited for a few minutes.", account.effective_remaining)
+            self._active_generations.add(user_id)
+            self._record_event(user_id, "group_turn_start", 0)
+            return QuotaCheck(True, "", account.effective_remaining)
+
     async def active_generation_check(self, user_id: int) -> QuotaCheck | None:
         async with self._lock:
             if self._debug_bypass(user_id) or user_id not in self._active_generations:
@@ -117,6 +138,18 @@ class QuotaService:
         kind = "quota_consume" if account.daily_remaining >= cost and account.monthly_remaining >= cost else "extra_consume"
         self._record_event(user_id, kind, cost)
         self._debug("quota_consumed", user_id, {"kind": kind, "cost_units": cost, "remaining": self.account_quota(user_id)})
+        return cost
+
+    def consume_group_reply(self, user_id: int, cost: int = GROUP_REPLY_COST_UNITS) -> int:
+        if self._debug_bypass(user_id):
+            return 0
+        cost = max(1, int(cost))
+        account = self.account_quota(user_id)
+        if account.effective_remaining < cost:
+            return 0
+        kind = "quota_consume" if account.daily_remaining >= cost and account.monthly_remaining >= cost else "extra_consume"
+        self._record_event(user_id, kind, cost)
+        self._debug("group_quota_consumed", user_id, {"kind": kind, "cost_units": cost, "remaining": self.account_quota(user_id)})
         return cost
 
     def can_consume_reply(self, user_id: int, reply: NargesReply) -> bool:

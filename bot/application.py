@@ -16,6 +16,7 @@ from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
 from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupMessageScheduler, GroupService
+from bot.services.group_ai_service import GroupAIService
 from bot.services.groq_client import GroqChatClient
 from bot.services.history_service import HistoryService
 from bot.services.media_service import BotImageCatalog, MediaStorageService, VisionClient
@@ -49,6 +50,7 @@ class BotApplication:
     debug_service: DebugService
     narges_state_scheduler: NargesStateScheduler
     group_service: GroupService
+    group_ai_service: GroupAIService
     reengagement_service: ReengagementService
     background_tasks: list[asyncio.Task] = field(default_factory=list)
 
@@ -60,7 +62,7 @@ class BotApplication:
                 name="narges-state-scheduler",
             ),
             asyncio.create_task(
-                self._run_resilient("group-scheduler", GroupMessageScheduler(self.group_service, self.bot).run_forever),
+                self._run_resilient("group-scheduler", GroupMessageScheduler(self.group_service, self.bot, self.group_ai_service).run_forever),
                 name="group-scheduler",
             ),
         ]
@@ -142,6 +144,14 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         global_state_service=global_state_service,
         bot_image_catalog=bot_image_catalog,
     )
+    group_ai_service = GroupAIService(
+        groq_client=groq_client,
+        narges_state_service=narges_state_service,
+        memory_service=memory_service,
+        history_service=history_service,
+        debug_service=debug_service,
+        usage_service=UsageService(database, settings.groq_model),
+    )
 
     dispatcher = Dispatcher()
     register_handlers(
@@ -159,6 +169,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         narges_state_service=narges_state_service,
         debug_service=debug_service,
         group_service=group_service,
+        group_ai_service=group_ai_service,
         media_storage_service=media_storage_service,
         bot_image_catalog=bot_image_catalog,
         vision_client=vision_client,
@@ -177,5 +188,6 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         debug_service=debug_service,
         narges_state_scheduler=narges_state_scheduler,
         group_service=group_service,
+        group_ai_service=group_ai_service,
         reengagement_service=ReengagementService(database, settings),
     )

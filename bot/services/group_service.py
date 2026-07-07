@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiogram import Bot
-from sqlalchemy import desc, select
+try:
+    from aiogram.types import ReplyParameters
+except Exception:  # pragma: no cover - depends on aiogram minor version
+    ReplyParameters = None  # type: ignore[assignment]
+from sqlalchemy import desc, func, select
 
 from bot.storage.database import Database
-from bot.storage.orm import GroupChatORM, ScheduledGroupMessageORM
+from bot.storage.orm import ConversationMessageORM, GroupChatORM, GroupEngineEventORM, ScheduledGroupMessageORM
 
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_BOT_STATUSES = {"member", "administrator", "creator"}
+GROUP_AUTO_REACTION_COOLDOWN_SECONDS = 2 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,102 @@ class GroupService:
                     select(GroupChatORM.chat_id).where(GroupChatORM.active.is_(True)).order_by(GroupChatORM.chat_id)
                 ).all()
             ]
+
+    def record_observed_message(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        telegram_message_id: int,
+        text: str,
+        created_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        text = " ".join((text or "").split()).strip()
+        if not text:
+            return
+        now = (created_at or datetime.now(UTC)).astimezone(UTC)
+        payload = {
+            "source": "group_observer",
+            "chat_id": chat_id,
+            "telegram_message_id": telegram_message_id,
+            **(metadata or {}),
+        }
+        with self.database.orm.session() as session:
+            session.add(
+                ConversationMessageORM(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    telegram_message_id=telegram_message_id,
+                    role="user",
+                    message_type="group_observed",
+                    text=text[:1600],
+                    text_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    ai_request_payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+                    created_at=now,
+                )
+            )
+
+    def recent_observed_messages(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(ConversationMessageORM)
+                .where(
+                    ConversationMessageORM.chat_id == chat_id,
+                    ConversationMessageORM.message_type == "group_observed",
+                    ConversationMessageORM.role == "user",
+                )
+                .order_by(desc(ConversationMessageORM.created_at), desc(ConversationMessageORM.id))
+                .limit(max(1, min(limit, 10)))
+            ).all()
+        return [
+            {
+                "user_id": row.user_id,
+                "message_id": row.telegram_message_id,
+                "text": row.text,
+                "created_at": row.created_at.isoformat() if isinstance(row.created_at, datetime) else str(row.created_at),
+            }
+            for row in reversed(rows)
+        ]
+
+    def record_engine_event(
+        self,
+        *,
+        chat_id: int,
+        event_type: str,
+        user_id: int | None = None,
+        telegram_message_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self.database.orm.session() as session:
+            session.add(
+                GroupEngineEventORM(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    event_type=event_type,
+                    telegram_message_id=telegram_message_id,
+                    metadata_json=json.dumps(metadata, ensure_ascii=False, default=str) if metadata else None,
+                    created_at=datetime.now(UTC),
+                )
+            )
+
+    def event_count_since(self, *, event_type: str, seconds: int, chat_id: int | None = None, user_id: int | None = None) -> int:
+        since = datetime.now(UTC) - timedelta(seconds=seconds)
+        with self.database.orm.session() as session:
+            statement = (
+                select(func.count())
+                .select_from(GroupEngineEventORM)
+                .where(GroupEngineEventORM.event_type == event_type, GroupEngineEventORM.created_at >= since)
+            )
+            if chat_id is not None:
+                statement = statement.where(GroupEngineEventORM.chat_id == chat_id)
+            if user_id is not None:
+                statement = statement.where(GroupEngineEventORM.user_id == user_id)
+            value = session.scalar(statement)
+        return int(value or 0)
+
+    def cooldown_active(self, chat_id: int, event_type: str, seconds: int) -> bool:
+        return self.event_count_since(event_type=event_type, chat_id=chat_id, seconds=seconds) > 0
 
     def create_schedule(self, text: str, interval_minutes: int, enabled: bool = True) -> int:
         now = datetime.now(UTC)
@@ -180,9 +283,10 @@ async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str) -> li
 
 
 class GroupMessageScheduler:
-    def __init__(self, group_service: GroupService, bot: Bot, poll_seconds: int = 60) -> None:
+    def __init__(self, group_service: GroupService, bot: Bot, group_ai_service: Any | None = None, poll_seconds: int = 60) -> None:
         self.group_service = group_service
         self.bot = bot
+        self.group_ai_service = group_ai_service
         self.poll_seconds = poll_seconds
 
     async def run_forever(self) -> None:
@@ -206,3 +310,65 @@ class GroupMessageScheduler:
                 sent,
                 failed,
             )
+        if self.group_ai_service is not None:
+            await self._run_auto_reactions()
+
+    async def _run_auto_reactions(self) -> None:
+        try:
+            bot_user = await self.bot.get_me()
+            bot_identity = {
+                "bot_id": bot_user.id,
+                "username": f"@{bot_user.username}" if bot_user.username else "@narges_aibot",
+                "expected_username": "@narges_aibot",
+            }
+        except Exception:
+            bot_identity = {"username": "@narges_aibot", "expected_username": "@narges_aibot"}
+        for group in self.group_service.list_groups(only_active=True):
+            if self.group_service.cooldown_active(group.chat_id, "auto_reaction_check", GROUP_AUTO_REACTION_COOLDOWN_SECONDS):
+                continue
+            recent = self.group_service.recent_observed_messages(group.chat_id, limit=5)
+            if len(recent) < 3:
+                continue
+            self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction_check")
+            try:
+                result = await self.group_ai_service.choose_auto_reaction(
+                    chat_id=group.chat_id,
+                    group_title=group.title,
+                    recent_messages=recent,
+                    bot_identity=bot_identity,
+                )
+            except Exception:
+                logger.exception("group_auto_reaction_failed chat_id=%s", group.chat_id)
+                self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction_failed")
+                continue
+            if result is None:
+                self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction_skipped")
+                continue
+            text = "\n".join(item.text for item in result.reply.messages).strip()
+            if not text:
+                continue
+            try:
+                if ReplyParameters is None:
+                    raise TypeError("ReplyParameters is not available")
+                await self.bot.send_message(
+                    chat_id=group.chat_id,
+                    text=text,
+                    reply_parameters=ReplyParameters(message_id=result.selected_message_id, allow_sending_without_reply=True),
+                )
+                self.group_service.record_engine_event(
+                    chat_id=group.chat_id,
+                    event_type="auto_reaction",
+                    telegram_message_id=result.selected_message_id,
+                    metadata={"provider": result.provider, "model": result.model},
+                )
+            except TypeError:
+                await self.bot.send_message(
+                    chat_id=group.chat_id,
+                    text=text,
+                    reply_to_message_id=result.selected_message_id,
+                    allow_sending_without_reply=True,
+                )
+                self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction", telegram_message_id=result.selected_message_id)
+            except Exception:
+                logger.exception("group_auto_reaction_send_failed chat_id=%s", group.chat_id)
+                self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction_send_failed")

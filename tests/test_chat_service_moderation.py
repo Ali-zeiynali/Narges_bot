@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -156,6 +157,27 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_direct_photo_command_creates_backend_image_request(self) -> None:
+        request = self.service._direct_photo_request_from_messages(
+            [
+                {"role": "user", "content": json.dumps({"user_message": "\u0639\u06a9\u0633 \u0628\u062f\u0647 \u0627\u0632 \u062e\u0648\u062f\u062a"}, ensure_ascii=False)}
+            ]
+        )
+
+        self.assertIsNotNone(request)
+        self.assertTrue(request.needed)
+
+    def test_photo_followup_after_photo_thread_creates_backend_image_request(self) -> None:
+        request = self.service._direct_photo_request_from_messages(
+            [
+                {"role": "system", "content": json.dumps({"pending_user_thread": "\u0639\u06a9\u0633 \u0628\u062f\u0647 \u0627\u0632 \u062e\u0648\u062f\u062a"}, ensure_ascii=False)},
+                {"role": "user", "content": json.dumps({"user_message": "\u062a\u0631\u0648\u062e\u062f\u0627 \u0628\u0641\u0631\u0633\u062a \u062f\u06cc\u06af\u0647"}, ensure_ascii=False)},
+            ]
+        )
+
+        self.assertIsNotNone(request)
+        self.assertTrue(request.needed)
 
     async def test_model_warning_becomes_backend_warning_without_quota_cost(self) -> None:
         result = await self.service.answer(

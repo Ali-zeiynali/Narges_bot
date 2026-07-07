@@ -4,7 +4,7 @@
 <div class="top">
   <div>
     <h2>کاربران</h2>
-    <div class="muted">جستجو، وضعیت ثبت‌نام، موبایل، ظرفیت و آخرین فعالیت کاربران.</div>
+    <div class="muted">جستجو، وضعیت ثبت‌نام، موبایل، جنسیت، ظرفیت و آخرین فعالیت کاربران.</div>
   </div>
 </div>
 
@@ -28,11 +28,10 @@
     <table data-enhance="true">
       <tr>
         <th>کاربر</th>
-        <th>Telegram ID</th>
         <th>Username</th>
+        <th>جنسیت</th>
         <th>موبایل</th>
         <th>وضعیت</th>
-        <th>پلن</th>
         <th>اخطار</th>
         <th>ظرفیت</th>
         <th>آخرین استفاده</th>
@@ -40,11 +39,10 @@
       {% for u in users %}
       <tr>
         <td><a href="/admin/users/{{ u.telegram_id }}"><b>{{ u.name }}</b></a></td>
-        <td class="ltr">{{ u.telegram_id }}</td>
         <td class="ltr">{{ u.username or "-" }}</td>
+        <td>{{ u.gender or "-" }}</td>
         <td class="ltr">{{ u.phone_number or "-" }}</td>
         <td><span class="pill">{{ u.onboarding_state }}</span></td>
-        <td>{{ u.plan }}</td>
         <td>{{ u.warnings }}</td>
         <td>{{ u.daily_remaining }} روزانه + {{ u.extra_remaining }} extra</td>
         <td>{{ u.last_seen|dt }}</td>

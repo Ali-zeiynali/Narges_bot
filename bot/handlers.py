@@ -2,6 +2,7 @@
 import json
 import logging
 import mimetypes
+import re
 from dataclasses import asdict, is_dataclass, replace
 from datetime import UTC
 from contextlib import suppress
@@ -18,6 +19,7 @@ from bot.models.user import OnboardingState, TelegramUserProfile
 from bot.services.billing_service import BillingService
 from bot.services.chat_service import ChatService, UserFacingError
 from bot.services.debug_service import DebugService
+from bot.services.group_ai_service import GroupAIService
 from bot.services.group_service import GroupService
 from bot.services.history_service import HistoryService
 from bot.services.media_service import (
@@ -60,6 +62,7 @@ def register_handlers(
     narges_state_service: NargesStateService,
     debug_service: DebugService,
     group_service: GroupService | None,
+    group_ai_service: GroupAIService | None,
     media_storage_service: MediaStorageService,
     bot_image_catalog: BotImageCatalog,
     vision_client: VisionClient,
@@ -162,6 +165,59 @@ def register_handlers(
 
     def is_group_chat_type(chat_type: str | None) -> bool:
         return chat_type in {"group", "supergroup"}
+
+    def group_text(message: Message) -> str:
+        return clamp_repeated_chars((message.text or message.caption or "").strip())
+
+    def compact_reply_context(message: Message) -> str | None:
+        replied = message.reply_to_message
+        if not replied:
+            return None
+        author = getattr(replied.from_user, "username", None) or getattr(replied.from_user, "first_name", None) or "unknown"
+        text = clamp_repeated_chars((replied.text or replied.caption or "").strip())
+        if not text:
+            text = f"[{replied.content_type}]"
+        return f"{author}: {text[:700]}"
+
+    def is_narges_mentioned(message: Message, bot_username: str = "narges_aibot") -> bool:
+        text = group_text(message)
+        lowered = text.lower()
+        normalized = re.sub(r"[\u200c\s_]+", "", lowered)
+        if "نرگس" in normalized or f"@{bot_username.lower()}" in lowered or "@narges_aibot" in lowered:
+            return True
+        for entity in (message.entities or message.caption_entities or []):
+            if getattr(entity, "type", None) == "mention":
+                offset = int(getattr(entity, "offset", 0) or 0)
+                length = int(getattr(entity, "length", 0) or 0)
+                if text[offset : offset + length].lower() in {f"@{bot_username.lower()}", "@narges_aibot"}:
+                    return True
+        return False
+
+    def is_reply_to_bot(message: Message, bot_id: int | None) -> bool:
+        replied = message.reply_to_message
+        return bool(replied and replied.from_user and bot_id is not None and replied.from_user.id == bot_id)
+
+    def is_reasonable_group_mention(message: Message) -> bool:
+        text = group_text(message)
+        return bool(text and len(text) <= 900 and len(text.split()) <= 160)
+
+    def is_standalone_group_photo(message: Message) -> bool:
+        return bool(
+            message.photo
+            and not message.caption
+            and not message.reply_to_message
+        )
+
+    async def bot_identity(bot: Bot) -> dict:
+        try:
+            me = await bot.get_me()
+            return {
+                "bot_id": me.id,
+                "username": f"@{me.username}" if me.username else "@narges_aibot",
+                "expected_username": "@narges_aibot",
+            }
+        except Exception:
+            return {"bot_id": None, "username": "@narges_aibot", "expected_username": "@narges_aibot"}
 
     def track_group_message(message: Message) -> None:
         if group_service is None or not is_group_chat_type(getattr(message.chat, "type", None)):
@@ -508,9 +564,10 @@ def register_handlers(
 
     async def send_text_with_retries(message: Message, text: str, attempts: int = 3) -> None:
         last_error: Exception | None = None
+        should_reply = is_group_chat_type(getattr(message.chat, "type", None))
         for attempt in range(1, attempts + 1):
             try:
-                if attempt == 1:
+                if attempt == 1 and should_reply:
                     await message.reply(text, allow_sending_without_reply=True)
                 else:
                     await message.answer(text)
@@ -629,8 +686,147 @@ def register_handlers(
         )
 
     @dispatcher.message(F.chat.type.in_({"group", "supergroup"}))
-    async def group_message_handler(message: Message) -> None:
+    async def group_message_handler(message: Message, bot: Bot) -> None:
         track_group_message(message)
+        if group_service is None or group_ai_service is None or not message.from_user or message.from_user.is_bot:
+            return
+        user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        observed_text = group_text(message)
+        if not observed_text and message.photo:
+            observed_text = "[photo]"
+        if observed_text:
+            group_service.record_observed_message(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                telegram_message_id=message.message_id,
+                text=observed_text,
+                created_at=message.date,
+                metadata={"content_type": message.content_type},
+            )
+
+        identity = await bot_identity(bot)
+        bot_username = str(identity.get("username") or "@narges_aibot").lstrip("@")
+        triggered = is_narges_mentioned(message, bot_username) or is_reply_to_bot(message, identity.get("bot_id"))
+
+        if triggered and is_reasonable_group_mention(message):
+            if not await ensure_not_blocked_for_model(message):
+                return
+            if group_service.event_count_since(event_type="mention_response", chat_id=message.chat.id, seconds=60) >= 3:
+                return
+            if group_service.event_count_since(event_type="mention_response", user_id=message.from_user.id, seconds=120) >= 2:
+                return
+            quota_check = await quota_service.begin_group_generation(message.from_user.id)
+            if not quota_check.ok:
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_quota_blocked",
+                    telegram_message_id=message.message_id,
+                    metadata={"remaining": quota_check.remaining},
+                )
+                return
+            try:
+                with suppress(Exception):
+                    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+                profile = user_service.get(message.from_user.id)
+                result = await group_ai_service.answer_mention(
+                    user_id=message.from_user.id,
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    text=group_text(message),
+                    reply_to_text=compact_reply_context(message),
+                    message_datetime=message.date,
+                    user_profile=profile,
+                    bot_identity=identity,
+                )
+                quota_service.consume_group_reply(message.from_user.id)
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_response",
+                    telegram_message_id=message.message_id,
+                    metadata={"provider": result.provider, "model": result.model},
+                )
+                for item in result.reply.messages:
+                    await asyncio.sleep(item.delay_seconds)
+                    await send_text_with_retries(message, item.text)
+            except Exception:
+                logger.exception("group_mention_response_failed chat_id=%s user_id=%s", message.chat.id, message.from_user.id)
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_response_failed",
+                    telegram_message_id=message.message_id,
+                )
+            finally:
+                await quota_service.finish_generation(message.from_user.id)
+            return
+
+        if is_standalone_group_photo(message):
+            photo_cooldown = 5 * 60 * 60
+            if group_service.cooldown_active(message.chat.id, "photo_seen", photo_cooldown):
+                return
+            if group_service.cooldown_active(message.chat.id, "photo_reaction", photo_cooldown):
+                return
+            if group_service.event_count_since(event_type="photo_reaction", user_id=message.from_user.id, seconds=photo_cooldown) >= 1:
+                return
+            quota_check = await quota_service.begin_group_generation(message.from_user.id)
+            if not quota_check.ok:
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="photo_quota_blocked",
+                    telegram_message_id=message.message_id,
+                    metadata={"remaining": quota_check.remaining},
+                )
+                return
+            try:
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="photo_seen",
+                    telegram_message_id=message.message_id,
+                )
+                stored_media = await media_storage_service.store_photo(bot, message)
+                cached_description = media_storage_service.cached_vision_description(stored_media)
+                if cached_description:
+                    description = cached_description
+                    media_storage_service.set_vision_description(stored_media.id, description)
+                else:
+                    description = await asyncio.to_thread(vision_client.describe_image, stored_media)
+                    media_storage_service.set_vision_description(stored_media.id, description)
+                profile = user_service.get(message.from_user.id)
+                result = await group_ai_service.answer_photo(
+                    user_id=message.from_user.id,
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    description=description,
+                    message_datetime=message.date,
+                    user_profile=profile,
+                    bot_identity=identity,
+                )
+                quota_service.consume_group_reply(message.from_user.id)
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="photo_reaction",
+                    telegram_message_id=message.message_id,
+                    metadata={"media_id": stored_media.id, "provider": result.provider, "model": result.model},
+                )
+                for item in result.reply.messages[:1]:
+                    await asyncio.sleep(item.delay_seconds)
+                    await send_text_with_retries(message, item.text)
+            except Exception:
+                logger.exception("group_photo_reaction_failed chat_id=%s user_id=%s", message.chat.id, message.from_user.id)
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="photo_reaction_failed",
+                    telegram_message_id=message.message_id,
+                )
+            finally:
+                await quota_service.finish_generation(message.from_user.id)
+            return
         return
 
     @dispatcher.message(CommandStart())

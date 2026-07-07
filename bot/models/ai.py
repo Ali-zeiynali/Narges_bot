@@ -155,6 +155,7 @@ class NargesReply(BaseModel):
                     {
                         "text": cls._trim_message_text(str(item.get("text") or item.get("content") or "")),
                         "delay_seconds": item.get("delay_seconds", 0.4),
+                        "image_id": item.get("image_id") or item.get("photo_id"),
                     }
                 )
             else:

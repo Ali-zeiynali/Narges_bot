@@ -221,7 +221,7 @@ class AdminDataService:
                     "name": row.display_name or row.first_name or row.username or str(row.telegram_id),
                     "username": row.username,
                     "phone_number": row.phone_number,
-                    "plan": row.plan,
+                    "gender": row.gender,
                     "onboarding_state": row.onboarding_state,
                     "warnings": warnings.get(row.telegram_id, 0),
                     "daily_remaining": quota.daily_remaining // QUOTA_UNIT_SCALE,

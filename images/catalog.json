@@ -4,14 +4,14 @@
       "id": "selfie_1",
       "path": "1.jfif",
       "mime_type": "image/jpeg",
-      "description": "عکس معمولی سلفی",
+      "description": "عکس در کافه طبیعت",
       "tags": ["selfie", "casual"]
     },
     {
       "id": "selfie_2",
       "path": "2.jfif",
       "mime_type": "image/jpeg",
-      "description": "عکس معمولی سلفی",
+      "description": "عکس عمولی در کافه یا طبیعت با لیوان قهوه",
       "tags": ["selfie", "casual"]
     },
     {
@@ -45,6 +45,13 @@
     {
       "id": "selfie_7",
       "path": "12043049.webp",
+      "mime_type": "image/webp",
+      "description": "عکس معمولی سلفی",
+      "tags": ["selfie", "casual"]
+    },
+    {
+      "id": "selfie_8",
+      "path": "8.webp",
       "mime_type": "image/webp",
       "description": "عکس معمولی سلفی",
       "tags": ["selfie", "casual"]

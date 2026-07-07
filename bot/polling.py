@@ -78,6 +78,13 @@ async def _drain_startup_backlog(app, startup_unix_time: float) -> None:
         offset = int(batch[-1].update_id) + 1
         if len(batch) < 100:
             break
+    if offset is not None:
+        await app.bot.get_updates(
+            offset=offset,
+            limit=1,
+            timeout=0,
+            allowed_updates=allowed_updates,
+        )
 
     selected = _latest_backlog_updates(
         updates,

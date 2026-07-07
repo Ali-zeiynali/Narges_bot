@@ -68,6 +68,16 @@ class NargesReplyModelTests(unittest.TestCase):
         self.assertTrue(reply.image_request.needed)
         self.assertEqual(reply.image_request.prompt, "casual selfie")
 
+    def test_direct_message_image_id_is_preserved(self) -> None:
+        reply = NargesReply.validate_provider_payload(
+            {
+                "messages": [{"text": "caption", "image_id": "selfie_1"}],
+                "mode": "normal",
+            }
+        )
+
+        self.assertEqual(reply.messages[0].image_id, "selfie_1")
+
     def test_invalid_memory_suggestion_shape_is_normalized(self) -> None:
         reply = NargesReply.validate_provider_payload(
             {

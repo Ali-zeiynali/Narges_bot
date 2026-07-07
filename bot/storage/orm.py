@@ -275,6 +275,23 @@ class ScheduledGroupMessageORM(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class GroupEngineEventORM(Base):
+    __tablename__ = "group_engine_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        Index("idx_group_engine_events_chat_type_created", "chat_id", "event_type", "created_at"),
+        Index("idx_group_engine_events_user_type_created", "user_id", "event_type", "created_at"),
+    )
+
+
 class UserWarningEventORM(Base):
     __tablename__ = "user_warning_events"
 

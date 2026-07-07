@@ -144,6 +144,7 @@ class GroqChatClient:
             temperature=0.8,
         )
         payload = self._loads_json(raw_text)
+        payload = self._normalize_narges_state_payload(payload)
         return NargesSelfStateCandidate.model_validate(payload), usage
 
     def complete_image_selection(
@@ -187,8 +188,7 @@ class GroqChatClient:
             temperature=0.2,
         )
         payload = self._try_loads_json(raw_text) or {}
-        image_id = payload.get("image_id")
-        caption = payload.get("caption")
+        image_id, caption = self._extract_image_selection_payload(payload)
         return ImageSelectionResult(
             image_id=str(image_id).strip() if image_id else None,
             caption=str(caption).strip()[:900] if caption else None,
@@ -196,6 +196,52 @@ class GroqChatClient:
             provider=provider,
             model=model,
         )
+
+    def _normalize_narges_state_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            payload = {}
+        normalized = dict(payload)
+        text_limits = {
+            "mood": 40,
+            "activity": 80,
+            "location": 80,
+            "note": 180,
+            "reason": 240,
+        }
+        for key, limit in text_limits.items():
+            if normalized.get(key) is not None:
+                normalized[key] = str(normalized[key]).strip()[:limit]
+        for key, limit in {"companions": 80, "mind_topics": 80}.items():
+            value = normalized.get(key)
+            if isinstance(value, list):
+                normalized[key] = [str(item).strip()[:limit] for item in value if str(item).strip()]
+        if normalized.get("is_alone") is True:
+            normalized["companions"] = []
+        if not normalized.get("reason"):
+            normalized["reason"] = "scheduled state update"
+        return normalized
+
+    def _extract_image_selection_payload(self, payload: dict[str, Any]) -> tuple[Any, Any]:
+        image_id = payload.get("image_id")
+        caption = payload.get("caption")
+        if image_id:
+            return image_id, caption
+        image_request = payload.get("image_request")
+        if isinstance(image_request, dict):
+            image_id = image_request.get("image_id") or image_request.get("id")
+            caption = caption or image_request.get("caption") or image_request.get("text")
+            if image_id:
+                return image_id, caption
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                image_id = item.get("image_id") or item.get("photo_id")
+                caption = caption or item.get("text") or item.get("caption")
+                if image_id:
+                    return image_id, caption
+        return image_id, caption
 
     def _complete_json(
         self,

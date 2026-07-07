@@ -1,12 +1,13 @@
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
-from bot.models.ai import NargesReply, ResponseMode, TelegramOutboundMessage
+from bot.models.ai import ImageRequest, NargesReply, ResponseMode, TelegramOutboundMessage
 from bot.models.context import BuiltContext
 from bot.persona.compiler import PersonaCompiler
 from bot.services.context_builder import ContextBuilder
@@ -680,41 +681,94 @@ class ChatService:
 
     async def _attach_requested_image_if_needed(self, result: GroqResult, messages: list[dict[str, str]]) -> GroqResult:
         request = result.reply.image_request
+        forced_request = False
+        if not request:
+            request = self._direct_photo_request_from_messages(messages)
+            forced_request = request is not None
         if not request or not request.needed or self.bot_image_catalog is None:
             return result
         catalog = self.bot_image_catalog.items_for_model()
         if not catalog:
+            if forced_request:
+                return self._replace_last_reply_text(result, "الان عکس آماده ندارم.")
             return result
-        try:
-            selection = await asyncio.to_thread(
-                self.groq_client.complete_image_selection,
-                original_messages=messages,
-                image_request=request.model_dump(mode="json"),
-                image_catalog=catalog,
-            )
-        except Exception:
-            logger.exception("image_selection_failed")
+        image_id = self._select_local_image_id(catalog, request.model_dump(mode="json"), messages)
+        if not image_id:
             return result
-        if not selection.image_id or not self.bot_image_catalog.has_image(selection.image_id):
-            return result
-        selected_caption = selection.caption or request.caption
+        selected_caption = request.caption
+        if self._looks_like_future_photo_promise(selected_caption or result.reply.messages[-1].text):
+            selected_caption = request.caption or "اینم برای تو."
         messages_with_image = list(result.reply.messages)
         last_message = messages_with_image[-1]
         messages_with_image[-1] = last_message.model_copy(
             update={
                 "text": self._trim_image_caption(selected_caption or last_message.text),
-                "image_id": selection.image_id,
+                "image_id": image_id,
             }
         )
         usage = dict(result.usage)
-        for key, value in selection.usage.items():
-            if value is None:
-                continue
-            usage[key] = int(usage.get(key) or 0) + int(value)
         return GroqResult(
             reply=result.reply.model_copy(update={"messages": messages_with_image}),
             raw_text=result.raw_text,
             usage=usage,
+            provider=result.provider,
+            model=result.model,
+            provider_response_id=result.provider_response_id,
+        )
+
+    def _direct_photo_request_from_messages(self, messages: list[dict[str, str]]) -> ImageRequest | None:
+        if not messages:
+            return None
+        try:
+            payload = json.loads(messages[-1].get("content", "{}"))
+        except json.JSONDecodeError:
+            return None
+        user_text = str(payload.get("user_message") or "").strip()
+        full_prompt_text = "\n".join(message.get("content", "") for message in messages)
+        if not self._is_direct_photo_command(user_text) and not self._is_photo_followup_command(user_text, full_prompt_text):
+            return None
+        return ImageRequest(
+            needed=True,
+            reason="user directly asked Narges to send a photo",
+            prompt="casual selfie",
+            caption="اینم برای تو.",
+        )
+
+    def _select_local_image_id(self, catalog: list[dict], image_request: dict, messages: list[dict[str, str]]) -> str | None:
+        ids = [str(item.get("id") or "").strip() for item in catalog if str(item.get("id") or "").strip()]
+        if not ids:
+            return None
+        prompt = json.dumps(image_request, ensure_ascii=False, default=str) + "\n" + "\n".join(message.get("content", "") for message in messages[-2:])
+        digest = sum(ord(char) for char in prompt)
+        return ids[digest % len(ids)]
+
+    def _is_direct_photo_command(self, text: str) -> bool:
+        lowered = (text or "").lower()
+        if not re.search(r"(عکس|سلفی|تصویر|photo|pic|selfie)", lowered):
+            return False
+        return bool(
+            re.search(r"(بده|بفرست|می\s*خوام|می‌خوام|میخوام|نشونم بده|send|give|show)", lowered)
+            or re.search(r"(عکس|سلفی)\s*(خودت|از خودت)", lowered)
+        )
+
+    def _is_photo_followup_command(self, text: str, prompt_text: str) -> bool:
+        lowered = (text or "").lower()
+        full = (prompt_text or "").lower()
+        if not re.search(r"(عکس|سلفی|تصویر|photo|pic|selfie)", full):
+            return False
+        return bool(re.search(r"(بفرست|بده|دیگه|تروخدا|لطفا|لطفاً|send|please|now)", lowered))
+
+    def _looks_like_future_photo_promise(self, text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(word in lowered for word in ("صبر", "بعدا", "بعداً", "بفرستم", "می‌فرستم", "میفرستم", "wait", "later"))
+
+    def _replace_last_reply_text(self, result: GroqResult, text: str) -> GroqResult:
+        messages = list(result.reply.messages)
+        messages[-1] = messages[-1].model_copy(update={"text": text, "image_id": None})
+        return GroqResult(
+            reply=result.reply.model_copy(update={"messages": messages}),
+            raw_text=result.raw_text,
+            usage=result.usage,
             provider=result.provider,
             model=result.model,
             provider_response_id=result.provider_response_id,

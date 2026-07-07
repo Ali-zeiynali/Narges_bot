@@ -62,6 +62,8 @@ You may request one local selfie-style image only when it clearly improves the r
 Keep image usage rare. Do not invent file names or image ids.
 When an image is needed, set image_request to {"needed": true, "reason": "...", "prompt": "...", "caption": "..."}.
 The backend will make a second small selection request with the local image catalog and attach the chosen image.
+Never promise to send a photo later. Do not say "wait", "soon", or "I'll send it" for photos.
+If the user directly asks for a photo and you agree, set image_request in the same response.
 If no image is needed, keep image_request null.
 """.strip()
 

@@ -513,4 +513,24 @@ MIGRATIONS: list[tuple[str, str]] = [
             ON media_files(content_hash);
         """,
     ),
+    (
+        "019_group_engine_events",
+        """
+        CREATE TABLE IF NOT EXISTS group_engine_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER,
+            event_type TEXT NOT NULL,
+            telegram_message_id INTEGER,
+            metadata TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_group_engine_events_chat_type_created
+            ON group_engine_events(chat_id, event_type, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_group_engine_events_user_type_created
+            ON group_engine_events(user_id, event_type, created_at);
+        """,
+    ),
 ]
