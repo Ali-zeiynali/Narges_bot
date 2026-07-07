@@ -160,6 +160,58 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         require_admin(request)
         return render(request, "invoices.html", service.invoices())
 
+    @app.post(route("/invoices/{invoice_id}/approve"))
+    async def approve_invoice(request: Request, invoice_id: str) -> RedirectResponse:
+        require_admin(request)
+        ok, invoice, reason = service.review_invoice(invoice_id, approve=True)
+        if ok and invoice:
+            await notify_invoice_result(settings, invoice.user_id, True, invoice.message_quota)
+        flash = "پرداخت تایید شد" if ok else f"تایید نشد: {reason}"
+        return RedirectResponse(f"/admin/invoices?flash={flash}", status_code=303)
+
+    @app.post(route("/invoices/{invoice_id}/reject"))
+    async def reject_invoice(request: Request, invoice_id: str) -> RedirectResponse:
+        require_admin(request)
+        ok, invoice, reason = service.review_invoice(invoice_id, approve=False)
+        if invoice:
+            await notify_invoice_result(settings, invoice.user_id, False, invoice.message_quota)
+        flash = "پرداخت رد شد" if invoice else f"رد نشد: {reason}"
+        return RedirectResponse(f"/admin/invoices?flash={flash}", status_code=303)
+
+    @app.get(route("/backup"), response_class=HTMLResponse)
+    async def backup_page(request: Request) -> HTMLResponse:
+        require_admin(request)
+        return render(request, "backup.html")
+
+    @app.get(route("/backup/export"))
+    async def backup_export(request: Request) -> Response:
+        require_admin(request)
+        payload = service.export_backup()
+        content = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        filename = f"narges-backup-{payload['created_at'][:10]}.json"
+        return Response(
+            content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post(route("/backup/import"))
+    async def backup_import(request: Request) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        file = form.get("backup_file")
+        if not hasattr(file, "read"):
+            return RedirectResponse("/admin/backup?flash=فایل JSON انتخاب نشده", status_code=303)
+        try:
+            payload = json.loads((await file.read()).decode("utf-8-sig"))
+            report = service.import_backup(payload)
+        except Exception as exc:
+            return RedirectResponse(f"/admin/backup?flash=Import ناموفق: {exc}", status_code=303)
+        return RedirectResponse(
+            f"/admin/backup?flash=Import تمام شد: {report['inserted']} اضافه، {report['skipped']} رد شد",
+            status_code=303,
+        )
+
     @app.get(route("/model"), response_class=HTMLResponse)
     async def model_state(request: Request) -> HTMLResponse:
         require_admin(request)
@@ -350,6 +402,29 @@ async def send_broadcast(settings: Settings, user_ids: list[int], text: str, det
             first_error = next((item.error for item in deliveries if item.error), None)
             return sent, failed, first_error, deliveries
         return await send_messages(bot, user_ids, text)
+    finally:
+        await bot.session.close()
+
+
+async def notify_invoice_result(settings: Settings, user_id: int, approved: bool, message_quota: int) -> None:
+    from bot.telegram_session import create_telegram_session
+
+    session = create_telegram_session(settings.telegram_proxy)
+    bot = Bot(token=settings.telegram_token, session=session)
+    try:
+        if approved:
+            text = (
+                "✅ پرداختت تایید شد\n\n"
+                f"🎉 {message_quota} پیام به ظرفیتت اضافه شد.\n"
+                "از الان می‌تونی استفاده کنی."
+            )
+        else:
+            text = (
+                "❌ پرداخت تایید نشد\n\n"
+                "رسید یا مبلغ با فاکتور هم‌خوانی نداشت.\n"
+                "اگر فکر می‌کنی اشتباه شده، با پشتیبانی پیام بده."
+            )
+        await bot.send_message(user_id, text)
     finally:
         await bot.session.close()
 

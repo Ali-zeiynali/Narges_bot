@@ -83,6 +83,12 @@ class Settings:
     telegram_backlog_latest_only: bool = True
     telegram_backlog_grace_seconds: int = 30
     telegram_backlog_debounce_seconds: float = 2.0
+    billing_card_number: str | None = None
+    vision_providers_config: str = "config/vision_providers.json"
+    media_storage_dir: str = "data/media"
+    image_daily_limit: int = 10
+    max_image_file_bytes: int = 8 * 1024 * 1024
+    max_media_file_bytes: int = 32 * 1024 * 1024
 
 
 def csv_int_env(name: str) -> tuple[int, ...]:
@@ -184,4 +190,14 @@ def load_settings() -> Settings:
         telegram_backlog_latest_only=bool_env("TELEGRAM_BACKLOG_LATEST_ONLY", True),
         telegram_backlog_grace_seconds=int_env("TELEGRAM_BACKLOG_GRACE_SECONDS", 30, 0, 3600),
         telegram_backlog_debounce_seconds=float_env("TELEGRAM_BACKLOG_DEBOUNCE_SECONDS", 2.0, 0, 30),
+        billing_card_number=(
+            os.getenv("BILLING_CARD_NUMBER", "").strip()
+            or os.getenv("PAYMENT_CARD_NUMBER", "").strip()
+            or None
+        ),
+        vision_providers_config=os.getenv("VISION_PROVIDERS_CONFIG", "config/vision_providers.json").strip(),
+        media_storage_dir=os.getenv("MEDIA_STORAGE_DIR", "data/media").strip(),
+        image_daily_limit=int_env("IMAGE_DAILY_LIMIT", 10, 1, 100),
+        max_image_file_bytes=int_env("MAX_IMAGE_FILE_BYTES", 8 * 1024 * 1024, 1024, 50 * 1024 * 1024),
+        max_media_file_bytes=int_env("MAX_MEDIA_FILE_BYTES", 32 * 1024 * 1024, 1024, 200 * 1024 * 1024),
     )

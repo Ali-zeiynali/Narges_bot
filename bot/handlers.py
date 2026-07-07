@@ -91,10 +91,42 @@ def register_handlers(
         return not bool(profile and (profile.phone_number or profile.phone_bonus_claimed))
 
     def capacity_text(profile=None) -> str:
-        lines = ["✨ افزایش ظرفیت", "", "یکی را انتخاب کن:", "⭐ افزایش با Stars"]
+        lines = [
+            "✨ افزایش ظرفیت",
+            "",
+            "یکی را انتخاب کن:",
+            "🎁 دعوت دوستان (پیام رایگان)",
+            "⭐ افزایش با Stars",
+            "💳 خرید پیام",
+        ]
         if phone_bonus_available(profile):
             lines.append("📱 افزایش با شماره موبایل")
         return "\n".join(lines)
+
+    def format_toman(value: int) -> str:
+        return f"{value:,}".replace(",", "٬")
+
+    def card_payment_text(invoice) -> str:
+        plan = billing_service.get_plan(invoice.plan_id)
+        card = settings.billing_card_number or "شماره کارت در .env تنظیم نشده"
+        amount = plan.toman_cost if plan else invoice.toman_cost
+        return (
+            "💳 فاکتور خرید پیام\n\n"
+            f"📦 بسته: {invoice.message_quota} پیام\n"
+            f"💰 مبلغ: {format_toman(amount)} تومان\n"
+            f"🧾 شماره فاکتور: `{invoice.invoice_id}`\n\n"
+            "مبلغ را به کارت زیر واریز کن:\n"
+            f"`{card}`\n\n"
+            "بعد از پرداخت، عکس رسید یا شماره پیگیری را همینجا بفرست.\n"
+            "بعد از بررسی ادمین، نتیجه را همینجا می‌فرستم."
+        )
+
+    def looks_like_receipt_message(text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        if any(word in lowered for word in ("رسید", "پیگیری", "واریز", "کارت به کارت", "پرداخت", "receipt", "paid")):
+            return True
+        digits = "".join(char for char in lowered if char.isdigit())
+        return len(digits) >= 6
 
     def jsonable(value):
         if isinstance(value, BaseModel):
@@ -259,7 +291,8 @@ def register_handlers(
         result = name_service.validate(raw_name, allow_ambiguous=True)
         if not result.ok or not result.normalized:
             await message.answer(
-                f"اسم رو نتونستم درست ذخیره کنم 🌙\n{result.reason or ''}\n\nیه اسم کوتاه و واقعی بنویس؛ مثلا: علی"
+                f"اسم ذخیره نشد 🌙\n{result.reason or ''}\n\nیه اسم فارسی کوتاه بنویس؛ مثلا: نرگس",
+                reply_markup=menu_service.name_retry_keyboard(can_cancel=profile.registration_state == OnboardingState.READY),
             )
             return True
         if profile.registration_state != OnboardingState.READY and profile.onboarding_state == OnboardingState.ASK_NAME_INPUT and not profile.name_confirm_attempted:
@@ -634,6 +667,27 @@ def register_handlers(
             await callback.message.delete()
         await callback.message.answer("باشه ✨\nاسم دلخواهت رو کوتاه بنویس.")
 
+    @dispatcher.callback_query(F.data == "onboarding:name_retry")
+    async def retry_name_callback(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user_service.set_state(callback.from_user.id, OnboardingState.ASK_NAME_INPUT)
+        await callback.answer()
+        await callback.message.answer("اسم فارسی رو دوباره بنویس؛ مثلا: نرگس")
+
+    @dispatcher.callback_query(F.data == "onboarding:name_cancel")
+    async def cancel_name_callback(callback: CallbackQuery, bot: Bot) -> None:
+        if not callback.message:
+            return
+        profile = user_service.get(callback.from_user.id)
+        await callback.answer("لغو شد.")
+        if profile and profile.registration_state == OnboardingState.READY:
+            user_service.set_onboarding_state(callback.from_user.id, OnboardingState.READY)
+            await delete_prompt_message(bot, callback.from_user.id)
+            await callback.message.answer("لغو شد. اسم قبلی دست‌نخورده ماند.", reply_markup=menu_service.reply_menu(can_debug(callback.from_user.id)))
+            return
+        await ask_for_name(callback.message)
+
     @dispatcher.callback_query(F.data == "onboarding:ambiguous_confirm")
     async def ambiguous_name_callback(callback: CallbackQuery, bot: Bot) -> None:
         if not callback.message:
@@ -714,6 +768,16 @@ def register_handlers(
             reply_markup=menu_service.stars_plans_keyboard(),
         )
 
+    @dispatcher.callback_query(F.data == "billing:card_menu")
+    async def billing_card_menu_callback(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        await callback.answer()
+        await callback.message.answer(
+            "💳 خرید پیام\n\nهر ۱۰۰ پیام ۱۵۰ هزار تومان است. بسته آخر تخفیف دارد.\nپلن را انتخاب کن:",
+            reply_markup=menu_service.card_plans_keyboard(),
+        )
+
     @dispatcher.callback_query(F.data == "billing:back")
     async def billing_back_callback(callback: CallbackQuery) -> None:
         if not callback.message:
@@ -730,7 +794,7 @@ def register_handlers(
         if not callback.message:
             return
         user_id = callback.from_user.id
-        plan_id = (callback.data or "").split(":", 2)[2]
+        plan_id = (callback.data or "").removeprefix("billing:card_plan:")
         plan = billing_service.get_plan(plan_id)
         if plan is None:
             await callback.answer("این پلن معتبر نیست.", show_alert=True)
@@ -747,6 +811,56 @@ def register_handlers(
             currency="XTR",
             prices=[LabeledPrice(label=plan.title, amount=plan.stars_cost)],
         )
+
+    @dispatcher.callback_query(F.data.startswith("billing:card_plan:"))
+    async def billing_card_plan_callback(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        user_id = callback.from_user.id
+        plan_id = (callback.data or "").split(":", 2)[2]
+        plan = billing_service.get_plan(plan_id)
+        if plan is None or plan.payment_method != "card":
+            await callback.answer("این پلن معتبر نیست.", show_alert=True)
+            return
+        invoice = billing_service.create_card_invoice(user_id, plan.id)
+        await callback.answer()
+        await callback.message.answer(card_payment_text(invoice))
+
+    @dispatcher.message(F.photo)
+    async def receipt_photo_handler(message: Message, bot: Bot) -> None:
+        if not message.from_user or not message.photo:
+            return
+        user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        if not await ensure_membership(message, bot):
+            return
+        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
+        if not pending:
+            await message.answer("عکس رسیدی برای بررسی ندارم. اول از بخش افزایش ظرفیت یک پلن خرید انتخاب کن.")
+            return
+        invoice = billing_service.attach_card_receipt(message.from_user.id, f"photo:{message.photo[-1].file_id}")
+        if invoice:
+            await message.answer(
+                "🧾 رسیدت ثبت شد.\n\n"
+                "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
+            )
+
+    @dispatcher.message(F.document)
+    async def receipt_document_handler(message: Message, bot: Bot) -> None:
+        if not message.from_user or not message.document:
+            return
+        user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        if not await ensure_membership(message, bot):
+            return
+        pending = billing_service.latest_pending_card_invoice(message.from_user.id)
+        if not pending:
+            await message.answer("فایلی برای بررسی خرید ندارم. اول از بخش افزایش ظرفیت یک پلن خرید انتخاب کن.")
+            return
+        invoice = billing_service.attach_card_receipt(message.from_user.id, f"document:{message.document.file_id}")
+        if invoice:
+            await message.answer(
+                "🧾 رسیدت ثبت شد.\n\n"
+                "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
+            )
 
     @dispatcher.callback_query(F.data == "capacity:phone")
     async def capacity_phone_callback(callback: CallbackQuery) -> None:
@@ -843,6 +957,15 @@ def register_handlers(
         if profile is None or profile.onboarding_state != OnboardingState.READY:
             await ask_for_name(message)
             return
+        pending_card_invoice = billing_service.latest_pending_card_invoice(message.from_user.id)
+        if pending_card_invoice and looks_like_receipt_message(text_value):
+            invoice = billing_service.attach_card_receipt(message.from_user.id, text_value)
+            if invoice:
+                await message.answer(
+                    "🧾 رسیدت ثبت شد.\n\n"
+                    "منتظر بررسی ادمین بمان. نتیجه همینجا اعلام می‌شود."
+                )
+            return
         if text_value == "👤 پروفایل":
             await show_account(message)
             return
@@ -922,4 +1045,3 @@ def register_handlers(
         if inviter_id:
             quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
             await notify_referral_reward(bot, inviter_id, message.from_user.id)
-

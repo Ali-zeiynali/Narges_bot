@@ -6,11 +6,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import Boolean, DateTime, Integer, desc, func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from bot.config import Settings
 from bot.models.state import NargesSelfStateCandidate
 from bot.services.global_state_service import GlobalStateService
+from bot.services.billing_service import BillingService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
@@ -42,6 +44,7 @@ from bot.storage.orm import (
     UserWarningEventORM,
     RequiredChannelORM,
     ScheduledGroupMessageORM,
+    Base,
 )
 
 
@@ -123,6 +126,7 @@ class AdminDataService:
         self.database = database
         self.settings = settings
         self.quota_service = QuotaService(database, settings)
+        self.billing_service = BillingService(database)
         self.state_service = NargesStateService(database)
         self.global_state_service = GlobalStateService(database)
         self.moderation_service = ModerationService(database)
@@ -285,7 +289,74 @@ class AdminDataService:
     def invoices(self, limit: int = 300) -> dict[str, Any]:
         with self.database.orm.session() as session:
             rows = session.scalars(select(BillingInvoiceORM).order_by(desc(BillingInvoiceORM.created_at)).limit(limit)).all()
-        return {"invoices": rows}
+        return {"invoices": rows, "plans": self.billing_service.plans}
+
+    def review_invoice(self, invoice_id: str, approve: bool, reviewer_id: int | None = None) -> tuple[bool, Any, str]:
+        result = self.billing_service.review_card_invoice(invoice_id, approve=approve, reviewer_id=reviewer_id)
+        if result.accepted and result.newly_paid and result.invoice:
+            self.quota_service.add_extra_credit(result.invoice.user_id, result.invoice.message_quota, reason=f"card:{result.invoice.invoice_id}")
+        return result.accepted, result.invoice, result.reason
+
+    def export_backup(self) -> dict[str, Any]:
+        exported: dict[str, Any] = {}
+        with self.database.orm.session() as session:
+            for table in Base.metadata.sorted_tables:
+                rows = session.execute(select(table)).mappings().all()
+                exported[table.name] = [
+                    {key: self._json_value(value) for key, value in row.items()}
+                    for row in rows
+                ]
+        return {
+            "format": "narges-admin-backup-v1",
+            "created_at": utc_now().isoformat(),
+            "tables": exported,
+        }
+
+    def import_backup(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
+            raise ValueError("backup JSON نامعتبر است.")
+        report: dict[str, Any] = {"inserted": 0, "skipped": 0, "tables": {}}
+        tables_payload = payload["tables"]
+        with self.database.orm.session() as session:
+            for table in Base.metadata.sorted_tables:
+                raw_rows = tables_payload.get(table.name)
+                if not isinstance(raw_rows, list):
+                    continue
+                table_report = {"inserted": 0, "skipped": 0}
+                columns = {column.name: column for column in table.columns}
+                pk_columns = [column for column in table.primary_key.columns]
+                append_pk = (
+                    len(pk_columns) == 1
+                    and pk_columns[0].name == "id"
+                    and isinstance(pk_columns[0].type, Integer)
+                    and pk_columns[0].autoincrement in {True, "auto"}
+                )
+                for raw_row in raw_rows:
+                    if not isinstance(raw_row, dict):
+                        table_report["skipped"] += 1
+                        continue
+                    cleaned = {
+                        key: self._db_value(columns[key], value)
+                        for key, value in raw_row.items()
+                        if key in columns and not (append_pk and key == pk_columns[0].name)
+                    }
+                    if not cleaned:
+                        table_report["skipped"] += 1
+                        continue
+                    if not append_pk and pk_columns and self._primary_key_exists(session, table, pk_columns, cleaned):
+                        table_report["skipped"] += 1
+                        continue
+                    try:
+                        with session.begin_nested():
+                            session.execute(table.insert().values(**cleaned))
+                    except SQLAlchemyError:
+                        table_report["skipped"] += 1
+                        continue
+                    table_report["inserted"] += 1
+                report["tables"][table.name] = table_report
+                report["inserted"] += table_report["inserted"]
+                report["skipped"] += table_report["skipped"]
+        return report
 
     def add_user_extra_credit(self, user_id: int, amount: int, reason: str) -> None:
         if amount > 0:
@@ -616,6 +687,31 @@ class AdminDataService:
 
     def _split_lines(self, value: str) -> list[str]:
         return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
+
+    def _json_value(self, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
+
+    def _db_value(self, column, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(column.type, DateTime) and isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        if isinstance(column.type, Boolean):
+            return bool(value)
+        return value
+
+    def _primary_key_exists(self, session, table, pk_columns, cleaned: dict[str, Any]) -> bool:
+        if any(column.name not in cleaned for column in pk_columns):
+            return False
+        statement = select(table).limit(1)
+        for column in pk_columns:
+            statement = statement.where(column == cleaned[column.name])
+        return session.execute(statement).first() is not None
 
     def _debug_row(self, row: DebugLogORM) -> dict[str, Any]:
         return {"id": row.id, "event": row.event, "user_id": row.user_id, "payload": row.payload, "created_at": row.created_at}

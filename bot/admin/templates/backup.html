@@ -1,0 +1,29 @@
+{% extends "base.html" %}{% block title %}Backup / Import{% endblock %}
+{% block content %}
+<div class="top">
+  <div>
+    <h2>پشتیبان‌گیری و ورود اطلاعات</h2>
+    <p class="muted">خروجی شامل همه جدول‌هاست. Import رکوردهای موجود را overwrite نمی‌کند و فقط داده‌های قابل اضافه شدن را append می‌کند.</p>
+  </div>
+  <a class="btn" href="/admin/backup/export">دانلود Backup JSON</a>
+</div>
+
+<div class="grid two">
+  <div class="card">
+    <h3>Export کامل</h3>
+    <p>تمام کاربران، پیام‌ها، حافظه‌ها، سهمیه‌ها، invoiceها، لاگ‌ها، تنظیمات و جدول‌های داخلی در یک فایل JSON ذخیره می‌شوند.</p>
+    <a class="btn" href="/admin/backup/export">Export now</a>
+  </div>
+
+  <div class="card">
+    <h3>Import امن</h3>
+    <p class="notice">Import داده موجود را تغییر نمی‌دهد. رکوردهای دارای primary key تکراری رد می‌شوند؛ رکوردهای autoincrement با id جدید اضافه می‌شوند.</p>
+    <form method="post" action="/admin/backup/import" enctype="multipart/form-data">
+      <label>فایل JSON
+        <input type="file" name="backup_file" accept="application/json,.json" required>
+      </label>
+      <button type="submit">Import و اضافه کردن</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

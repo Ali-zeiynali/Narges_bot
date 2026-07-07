@@ -28,6 +28,10 @@ from bot.utils.tokens import estimate_tokens
 logger = logging.getLogger(__name__)
 
 
+HARD_MAX_MODEL_TOKENS_PER_TURN = 5500
+PREFERRED_MAX_INPUT_TOKENS = 2400
+
+
 class UserFacingError(Exception):
     pass
 
@@ -309,11 +313,13 @@ class ChatService:
     ):
         max_input_tokens = min(
             self.validator.settings.max_api_input_tokens,
-            max(512, 3000 - self.validator.settings.groq_max_completion_tokens),
+            self.validator.settings.max_request_tokens,
+            max(512, HARD_MAX_MODEL_TOKENS_PER_TURN - self.validator.settings.groq_max_completion_tokens),
+            max(512, PREFERRED_MAX_INPUT_TOKENS - self.validator.settings.groq_max_completion_tokens // 4),
         )
         memories = list(memories)
         search_results = list(search_results)
-        history_char_limit = 700
+        history_char_limit = 360
 
         while True:
             compact_search = self._compact_messages(search_results, history_char_limit)
@@ -334,10 +340,10 @@ class ChatService:
                 return compiled, messages, input_tokens, memories, [], compact_search
             if search_results:
                 search_results.pop(0)
-            elif len(memories) > 6:
+            elif len(memories) > 4:
                 memories.pop()
-            elif history_char_limit > 180:
-                history_char_limit = max(180, history_char_limit // 2)
+            elif history_char_limit > 120:
+                history_char_limit = max(120, history_char_limit // 2)
             elif memories:
                 memories.pop()
             else:

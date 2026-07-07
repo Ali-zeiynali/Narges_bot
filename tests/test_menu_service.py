@@ -40,8 +40,17 @@ class MenuServiceTests(unittest.TestCase):
         keyboard = MenuService(make_settings()).capacity_keyboard(phone_available=False)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
+        self.assertEqual(callbacks[:3], ["capacity:referral", "billing:stars_menu", "billing:card_menu"])
         self.assertIn("billing:stars_menu", callbacks)
+        self.assertIn("billing:card_menu", callbacks)
         self.assertNotIn("capacity:phone", callbacks)
+
+    def test_card_plans_keyboard_contains_toman_plans(self) -> None:
+        keyboard = MenuService(make_settings()).card_plans_keyboard()
+        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("billing:card_plan:card_100", callbacks)
+        self.assertIn("billing:card_plan:card_1000_discount", callbacks)
 
 
 if __name__ == "__main__":

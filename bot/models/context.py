@@ -52,9 +52,9 @@ class BuiltContext:
             "recent_intent": self.recent_intent,
             "relevant_memories": self.relevant_memories,
             "context_rules": {
-                "last_user_messages": "Recent user-only messages. Treat short consecutive messages as one thread when pending_user_thread is present.",
-                "guessing": "When inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and do not emit memory_suggestions.",
-                "memory": "Create memory_suggestions only for explicit, stable user facts/preferences/projects/constraints or explicit save/forget requests.",
+                "last_user_messages": "Only the last 3 user messages. Treat short consecutive messages as one thread when pending_user_thread is present.",
+                "guessing": "If inferred_intent=guessing, make 1-2 real guesses from pending_user_thread. Do not ask what to guess. memory_suggestions=[].",
+                "memory": "Suggest memory only for explicit/stable facts, preferences, projects, constraints, or explicit save/forget. Prefer delete by memory_id for obsolete memories.",
             },
             "anti_loop": {
                 "last_assistant_text_hash": self.anti_loop.last_assistant_text_hash,

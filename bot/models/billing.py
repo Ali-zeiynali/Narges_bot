@@ -15,6 +15,8 @@ class BillingPlan:
     title: str
     message_quota: int
     stars_cost: int
+    toman_cost: int = 0
+    payment_method: str = "stars"
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,8 @@ class InvoiceRecord:
     created_at: datetime
     updated_at: datetime
     payment_id: str | None = None
+    toman_cost: int = 0
+    payment_method: str = "stars"
 
 
 @dataclass(frozen=True)

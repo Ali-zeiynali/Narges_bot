@@ -85,6 +85,11 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
 
+    def test_sexual_keyword_forces_sexual_state_for_current_message(self) -> None:
+        context = self.builder.build(1, "sexual topic please", [])
+
+        self.assertEqual(context.for_prompt()["state"]["mode"], "sexual")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -177,6 +177,26 @@ class UsageLogORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class MediaFileORM(Base):
+    __tablename__ = "media_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_file_id: Mapped[str] = mapped_column(String(256))
+    media_kind: Mapped[str] = mapped_column(String(32), index=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    original_file_name: Mapped[str | None] = mapped_column(String(256))
+    storage_path: Mapped[str] = mapped_column(Text)
+    file_size: Mapped[int | None] = mapped_column(Integer)
+    caption: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (Index("idx_media_files_user_kind_created", "user_id", "media_kind", "created_at"),)
+
+
 class AiProviderKeyStatusORM(Base):
     __tablename__ = "ai_provider_key_statuses"
 

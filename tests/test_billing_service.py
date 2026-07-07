@@ -56,6 +56,35 @@ class BillingServiceTests(unittest.TestCase):
         self.assertTrue(first.newly_paid)
         self.assertFalse(second.accepted)
 
+    def test_card_invoice_receipt_and_review_flow(self) -> None:
+        invoice = self.service.create_card_invoice(1, "card_100")
+
+        self.assertEqual(invoice.status, InvoiceStatus.PENDING)
+        self.assertEqual(invoice.payment_method, "card")
+        self.assertEqual(invoice.toman_cost, 150_000)
+
+        with_receipt = self.service.attach_card_receipt(1, "tracking-123")
+        self.assertIsNotNone(with_receipt)
+        self.assertEqual(with_receipt.payment_id, "tracking-123")
+
+        approved = self.service.review_card_invoice(invoice.invoice_id, approve=True, reviewer_id=99)
+        second = self.service.review_card_invoice(invoice.invoice_id, approve=True, reviewer_id=99)
+
+        self.assertTrue(approved.accepted)
+        self.assertTrue(approved.newly_paid)
+        self.assertEqual(approved.invoice.status, InvoiceStatus.PAID)
+        self.assertTrue(second.accepted)
+        self.assertFalse(second.newly_paid)
+
+    def test_card_invoice_can_be_rejected(self) -> None:
+        invoice = self.service.create_card_invoice(1, "card_200")
+
+        rejected = self.service.review_card_invoice(invoice.invoice_id, approve=False, reviewer_id=99)
+
+        self.assertFalse(rejected.accepted)
+        self.assertFalse(rejected.newly_paid)
+        self.assertEqual(rejected.invoice.status, InvoiceStatus.FAILED)
+
 
 if __name__ == "__main__":
     unittest.main()

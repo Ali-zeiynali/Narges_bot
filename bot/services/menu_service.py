@@ -11,7 +11,7 @@ from aiogram.types import (
 
 from bot.config import Settings
 from bot.models.channel import MembershipCheck
-from bot.services.billing_service import STAR_PLANS
+from bot.services.billing_service import CARD_PLANS, STAR_PLANS
 
 
 class MenuService:
@@ -79,20 +79,32 @@ class MenuService:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def capacity_keyboard(self, phone_available: bool = True) -> InlineKeyboardMarkup:
-        row = [InlineKeyboardButton(text="⭐ افزایش با Stars", callback_data="billing:stars_menu")]
+        rows = [
+            [InlineKeyboardButton(text="🎁 دعوت دوستان (پیام رایگان)", callback_data="capacity:referral")],
+            [InlineKeyboardButton(text="⭐ افزایش با Stars", callback_data="billing:stars_menu")],
+            [InlineKeyboardButton(text="💳 خرید پیام", callback_data="billing:card_menu")],
+        ]
         if phone_available:
-            row.append(InlineKeyboardButton(text="📱 افزایش با شماره موبایل", callback_data="capacity:phone"))
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                row,
-                [InlineKeyboardButton(text="🎁 دعوت دوستان؛ پیام رایگان", callback_data="capacity:referral")],
-            ]
-        )
+            rows.append([InlineKeyboardButton(text="📱 افزایش با شماره موبایل", callback_data="capacity:phone")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def stars_plans_keyboard(self) -> InlineKeyboardMarkup:
         rows = [
             [InlineKeyboardButton(text=f"⭐ {plan.message_quota} پیام | {plan.stars_cost} Stars", callback_data=f"billing:plan:{plan.id}")]
             for plan in STAR_PLANS
+        ]
+        rows.append([InlineKeyboardButton(text="↩️ برگشت", callback_data="billing:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def card_plans_keyboard(self) -> InlineKeyboardMarkup:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text=f"💳 {plan.message_quota} پیام | {plan.toman_cost:,} تومان",
+                    callback_data=f"billing:card_plan:{plan.id}",
+                )
+            ]
+            for plan in CARD_PLANS
         ]
         rows.append([InlineKeyboardButton(text="↩️ برگشت", callback_data="billing:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -124,6 +136,12 @@ class MenuService:
                 ]
             ]
         )
+
+    def name_retry_keyboard(self, can_cancel: bool = True) -> InlineKeyboardMarkup:
+        rows = [[InlineKeyboardButton(text="✏️ دوباره می‌نویسم", callback_data="onboarding:name_retry")]]
+        if can_cancel:
+            rows.append([InlineKeyboardButton(text="↩️ لغو و بازگشت", callback_data="onboarding:name_cancel")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def gender_keyboard(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(

@@ -18,9 +18,30 @@ logger = logging.getLogger(__name__)
 
 
 SUMMARY_MESSAGE_THRESHOLD = 8
-SUMMARY_TOKEN_THRESHOLD = 1400
+SUMMARY_TOKEN_THRESHOLD = 900
 SHORT_MESSAGE_CHARS = 90
-THREAD_LOOKBACK_MESSAGES = 5
+THREAD_LOOKBACK_MESSAGES = 3
+SEXUAL_TRIGGER_WORDS = {
+    "سکس",
+    "جنسی",
+    "شهوت",
+    "تحریک",
+    "بوس",
+    "بغل",
+    "بدن",
+    "لب",
+    "کص",
+    "کس",
+    "کون",
+    "کیر",
+    "حشری",
+    "هورنی",
+    "خیس",
+    "sex",
+    "sexual",
+    "kiss",
+    "horny",
+}
 
 
 class ContextBuilder:
@@ -34,7 +55,7 @@ class ContextBuilder:
         last_user_messages = self.history_service.recent_user_messages(user_id, limit=THREAD_LOOKBACK_MESSAGES)
         pending_user_thread = self.build_pending_user_thread(user_text, last_user_messages)
         inferred_intent = self.infer_intent(user_text, pending_user_thread)
-        mode = self._conversation_state(row.mode if row else None)
+        mode = "sexual" if self._has_sexual_trigger(user_text) else self._conversation_state(row.mode if row else None)
         relationship_stage = row.relationship_stage if row else "new"
         familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
@@ -77,7 +98,7 @@ class ContextBuilder:
         user_hash = self.history_service.message_hash(user_text)
         assistant_hash = self.history_service.message_hash(assistant_text)
         user_intent = self.infer_intent(user_text)
-        mode = self._conversation_state(conversation_state)
+        mode = "sexual" if self._has_sexual_trigger(user_text) else self._conversation_state(conversation_state)
         with self.database.orm.session() as session:
             row = session.get(ConversationContextStateORM, user_id)
             if row is None:
@@ -158,7 +179,7 @@ class ContextBuilder:
     def build_pending_user_thread(self, current_text: str, last_user_messages: list[dict[str, str]]) -> str:
         messages = [item.get("text", "").strip() for item in last_user_messages if item.get("text")]
         messages.append((current_text or "").strip())
-        recent = [message for message in messages[-THREAD_LOOKBACK_MESSAGES:] if message]
+        recent = [message for message in messages[-(THREAD_LOOKBACK_MESSAGES + 1):] if message]
         if not recent or not self._looks_like_pending_thread(recent):
             return ""
         joined = " / ".join(recent)
@@ -187,10 +208,18 @@ class ContextBuilder:
             return session.get(ConversationContextStateORM, user_id)
 
     def _memory_lines(self, memories: list[MemoryItem]) -> list[str]:
-        return [f"#{memory.id} | {memory.kind.value}: {memory.summary}" for memory in memories[:16]]
+        lines: list[str] = []
+        for memory in memories[:8]:
+            summary = re.sub(r"\s+", " ", memory.summary).strip()
+            lines.append(f"#{memory.id} | {memory.kind.value}: {summary[:180]}")
+        return lines
 
     def _conversation_state(self, value: str | None) -> str:
         return value if value in {"normal", "sexual"} else "normal"
+
+    def _has_sexual_trigger(self, text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(word in lowered for word in SEXUAL_TRIGGER_WORDS)
 
     def _mode_for_intent(self, intent: str) -> str:
         if intent == "technical":
@@ -255,8 +284,8 @@ class ContextBuilder:
 
     def _short_summary(self, summary: str) -> str:
         summary = re.sub(r"\s+", " ", (summary or "").strip())
-        return summary[:500]
+        return summary[:260]
 
     def _clean_summary(self, summary: str) -> str:
         summary = re.sub(r"\s+", " ", (summary or "").strip())
-        return summary[:1200]
+        return summary[:700]

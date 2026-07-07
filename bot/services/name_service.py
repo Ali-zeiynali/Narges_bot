@@ -30,10 +30,6 @@ class NameService:
         name = self.normalize(raw_name)
         if not name:
             return NameValidationResult(False, reason="نام خالی است.")
-        lowered = name.lower()
-        mapped = self.transliteration_map.get(lowered)
-        if mapped:
-            return NameValidationResult(True, normalized=mapped, ambiguous=False)
         if self._has_control(name):
             return NameValidationResult(False, reason="نام شامل کاراکتر نامعتبر است.")
         if self._has_url_or_username(name):
@@ -46,22 +42,20 @@ class NameService:
             return NameValidationResult(False, reason="این نام قابل ذخیره نیست.")
         if self._looks_random(name):
             return NameValidationResult(False, reason="نام شبیه رشته تصادفی است.")
+        if not self._is_persian_name(name):
+            return NameValidationResult(False, reason="اسم باید با حروف فارسی نوشته شود؛ مثلا: نرگس")
         if len(name) < 2 or len(name) > 32:
             return NameValidationResult(False, reason="نام باید بین ۲ تا ۳۲ کاراکتر باشد.")
-
-        ambiguous = bool(re.search(r"[A-Za-z]", name))
-        if ambiguous and not allow_ambiguous:
-            return NameValidationResult(False, normalized=name, ambiguous=True, reason="نام نیاز به تأیید دارد.")
-        return NameValidationResult(True, normalized=name, ambiguous=ambiguous)
+        return NameValidationResult(True, normalized=name, ambiguous=False)
 
     def normalize(self, raw_name: str) -> str:
         name = unicodedata.normalize("NFKC", raw_name or "")
-        name = re.sub(r"[\u200c\u200f\u202a-\u202e]", " ", name)
+        name = re.sub(r"[\u200f\u202a-\u202e]", " ", name)
         name = re.sub(r"\s+", " ", name).strip()
         return name
 
     def _has_control(self, name: str) -> bool:
-        return any(unicodedata.category(char).startswith("C") for char in name)
+        return any(unicodedata.category(char).startswith("C") and char != "\u200c" for char in name)
 
     def _has_url_or_username(self, name: str) -> bool:
         return bool(re.search(r"(https?://|www\.|t\.me/|@[\w_]{3,})", name, re.IGNORECASE))
@@ -89,3 +83,8 @@ class NameService:
             vowels = sum(char.lower() in "aeiou" for char in compact)
             return digits >= 3 or vowels == 0
         return False
+
+    def _is_persian_name(self, name: str) -> bool:
+        if re.search(r"[A-Za-z0-9]", name):
+            return False
+        return bool(re.search(r"[\u0600-\u06FF]", name)) and bool(re.fullmatch(r"[\u0600-\u06FF\s\u200c-]+", name))

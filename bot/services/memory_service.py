@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from bot.models.ai import MemorySuggestion
 from bot.models.memory import MemoryItem, MemoryKind
@@ -74,6 +74,7 @@ class MemoryRepository:
         self.database = database
 
     def list_active(self, user_id: int, limit: int = 80) -> list[MemoryItem]:
+        self.prune_stale(user_id)
         now = datetime.now(UTC)
         with self.database.orm.session() as session:
             rows = session.scalars(
@@ -94,6 +95,29 @@ class MemoryRepository:
                 select(func.count()).select_from(MemoryORM).where(MemoryORM.user_id == user_id, MemoryORM.active.is_(True))
             )
         return int(value or 0)
+
+    def prune_stale(self, user_id: int, days: int = 180) -> int:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        now = datetime.now(UTC)
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MemoryORM).where(
+                    MemoryORM.user_id == user_id,
+                    MemoryORM.active.is_(True),
+                    (
+                        (MemoryORM.expires_at.is_not(None) & (MemoryORM.expires_at <= now))
+                        | and_(
+                            MemoryORM.importance <= 2,
+                            MemoryORM.updated_at < cutoff,
+                            (MemoryORM.last_seen_at.is_(None)) | (MemoryORM.last_seen_at < cutoff),
+                        )
+                    ),
+                )
+            ).all()
+            for row in rows:
+                row.active = False
+                row.updated_at = now
+            return len(rows)
 
     def save(self, user_id: int, source_message_id: int | None, suggestion: MemorySuggestion, action: str) -> int:
         now = datetime.now(UTC)
@@ -707,7 +731,7 @@ class MemoryService:
         self,
         database: Database,
         max_active_memories: int = 160,
-        max_context_tokens: int = 1400,
+        max_context_tokens: int = 700,
         debug_service: DebugService | None = None,
     ) -> None:
         self.repository = MemoryRepository(database)
@@ -720,14 +744,14 @@ class MemoryService:
     def list_active(self, user_id: int, limit: int = 20) -> list[MemoryItem]:
         return self.repository.list_active(user_id, limit)
 
-    def retrieve_relevant(self, user_id: int, text: str, limit: int = 10, *, intent: str = "unknown", pending_user_thread: str = "") -> list[MemoryItem]:
+    def retrieve_relevant(self, user_id: int, text: str, limit: int = 6, *, intent: str = "unknown", pending_user_thread: str = "") -> list[MemoryItem]:
         return self.retriever.retrieve(user_id, text, limit, intent=intent, pending_user_thread=pending_user_thread)
 
     def retrieve_for_context(
         self,
         user_id: int,
         text: str = "",
-        limit: int = 16,
+        limit: int = 8,
         *,
         intent: str = "unknown",
         pending_user_thread: str = "",

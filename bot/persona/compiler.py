@@ -60,7 +60,7 @@ class PersonaCompiler:
                 "If inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and keep memory_suggestions empty.",
                 "Use active memories naturally; do not repeat them as a list in the reply.",
                 "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
-                "Each Telegram message must be at most 8 lines; normal replies should be much shorter.",
+                "Keep replies short. never code or technical detail.",
             ],
         }
         prompt = cached + f"\n\n{RUNTIME_CONTEXT_TITLE}\n" + json.dumps(runtime_context, ensure_ascii=False)
