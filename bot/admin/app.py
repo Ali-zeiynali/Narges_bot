@@ -101,11 +101,47 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             return render(request, "message.html", {"title": "کاربر پیدا نشد", "message": "این کاربر در دیتابیس وجود ندارد."})
         return render(request, "user_detail.html", {"detail": detail, "user_id": user_id})
 
+    @app.post(route("/users/{user_id}/send"))
+    async def send_user_message(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        text = str(form.get("text", "")).strip()
+        if not text:
+            return RedirectResponse(f"/admin/users/{user_id}?flash=متن پیام خالی است", status_code=303)
+        telegram_message_id, error = await send_direct_text(settings, user_id, text)
+        if error:
+            return RedirectResponse(f"/admin/users/{user_id}?flash=ارسال ناموفق: {error}", status_code=303)
+        service.record_admin_direct_message(user_id, text, telegram_message_id)
+        return RedirectResponse(f"/admin/users/{user_id}?flash=پیام از طرف ربات ارسال شد", status_code=303)
+
     @app.get(route("/messages"), response_class=HTMLResponse)
     async def messages(request: Request, user_id: str | None = None, limit: int = 300) -> HTMLResponse:
         require_admin(request)
         parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
         return render(request, "messages.html", service.messages(user_id=parsed_user_id, limit=limit))
+
+    @app.get(route("/group-messages"), response_class=HTMLResponse)
+    async def group_messages(request: Request, chat_id: str | None = None, section: str = "all", limit: int = 300) -> HTMLResponse:
+        require_admin(request)
+        parsed_chat_id = int(chat_id) if chat_id and chat_id.lstrip("-").isdigit() else None
+        return render(request, "group_messages.html", service.group_messages(chat_id=parsed_chat_id, section=section, limit=limit))
+
+    @app.post(route("/group-messages/send"))
+    async def send_group_message(request: Request) -> RedirectResponse:
+        require_admin(request)
+        form = await request.form()
+        chat_id_raw = str(form.get("chat_id", "")).strip() or str(form.get("manual_chat_id", "")).strip()
+        text = str(form.get("text", "")).strip()
+        if not chat_id_raw.lstrip("-").isdigit():
+            return RedirectResponse("/admin/group-messages?flash=شناسه گروه معتبر نیست", status_code=303)
+        chat_id = int(chat_id_raw)
+        if not text:
+            return RedirectResponse(f"/admin/group-messages?chat_id={chat_id}&flash=متن پیام خالی است", status_code=303)
+        telegram_message_id, error = await send_direct_text(settings, chat_id, text)
+        if error:
+            return RedirectResponse(f"/admin/group-messages?chat_id={chat_id}&flash=ارسال ناموفق: {error}", status_code=303)
+        service.record_admin_group_message(chat_id, text, telegram_message_id)
+        return RedirectResponse(f"/admin/group-messages?chat_id={chat_id}&section=scheduled&flash=پیام گروهی ارسال شد", status_code=303)
 
     @app.get(route("/media"), response_class=HTMLResponse)
     async def media_page(request: Request, user_id: str | None = None, kind: str = "", q: str = "", limit: int = 240) -> HTMLResponse:
@@ -422,6 +458,20 @@ async def send_broadcast(settings: Settings, user_ids: list[int], text: str, det
             first_error = next((item.error for item in deliveries if item.error), None)
             return sent, failed, first_error, deliveries
         return await send_messages(bot, user_ids, text)
+    finally:
+        await bot.session.close()
+
+
+async def send_direct_text(settings: Settings, chat_id: int, text: str) -> tuple[int | None, str | None]:
+    from bot.telegram_session import create_telegram_session
+
+    session = create_telegram_session(settings.telegram_proxy)
+    bot = Bot(token=settings.telegram_token, session=session)
+    try:
+        message = await bot.send_message(chat_id, text)
+        return int(message.message_id), None
+    except Exception as exc:
+        return None, f"{exc.__class__.__name__}: {exc}"
     finally:
         await bot.session.close()
 

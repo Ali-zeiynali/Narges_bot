@@ -124,6 +124,51 @@ class GroupService:
                 )
             )
 
+    def record_outbound_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        message_type: str,
+        user_id: int | None = None,
+        telegram_message_id: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        now = datetime.now(UTC)
+        payload = {
+            "source": message_type,
+            "chat_id": chat_id,
+            "telegram_message_id": telegram_message_id,
+            **(metadata or {}),
+        }
+        with self.database.orm.session() as session:
+            session.add(
+                ConversationMessageORM(
+                    user_id=int(user_id or 0),
+                    chat_id=chat_id,
+                    telegram_message_id=telegram_message_id,
+                    role="assistant",
+                    message_type=message_type,
+                    text=text,
+                    text_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    provider=provider,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    ai_request_payload_json=json.dumps(payload, ensure_ascii=False, default=str),
+                    created_at=now,
+                )
+            )
+
     def recent_observed_messages(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
         with self.database.orm.session() as session:
             rows = session.scalars(
@@ -302,7 +347,31 @@ class GroupMessageScheduler:
         if not chat_ids:
             return
         for schedule in self.group_service.due_schedules():
-            sent, failed, error = await send_messages(self.bot, chat_ids, schedule.text)
+            deliveries = await send_messages_detailed(self.bot, chat_ids, schedule.text)
+            sent = sum(1 for item in deliveries if item.status == "sent")
+            failed = len(deliveries) - sent
+            error = next((item.error for item in deliveries if item.error), None)
+            for item in deliveries:
+                if item.status == "sent":
+                    self.group_service.record_outbound_message(
+                        chat_id=item.target_id,
+                        text=schedule.text,
+                        message_type="group_scheduled",
+                        telegram_message_id=item.telegram_message_id,
+                        metadata={"schedule_id": schedule.id},
+                    )
+                    self.group_service.record_engine_event(
+                        chat_id=item.target_id,
+                        event_type="scheduled_group_message",
+                        telegram_message_id=item.telegram_message_id,
+                        metadata={"schedule_id": schedule.id},
+                    )
+                else:
+                    self.group_service.record_engine_event(
+                        chat_id=item.target_id,
+                        event_type="scheduled_group_message_failed",
+                        metadata={"schedule_id": schedule.id, "error": item.error},
+                    )
             self.group_service.mark_schedule_run(schedule.id, sent, failed, error)
             logger.info(
                 "scheduled_group_message_sent schedule_id=%s sent=%s failed=%s",
@@ -347,28 +416,63 @@ class GroupMessageScheduler:
             text = "\n".join(item.text for item in result.reply.messages).strip()
             if not text:
                 continue
+            selected_message = next(
+                (item for item in recent if int(item.get("message_id") or 0) == int(result.selected_message_id or 0)),
+                {},
+            )
             try:
                 if ReplyParameters is None:
                     raise TypeError("ReplyParameters is not available")
-                await self.bot.send_message(
+                sent_message = await self.bot.send_message(
                     chat_id=group.chat_id,
                     text=text,
                     reply_parameters=ReplyParameters(message_id=result.selected_message_id, allow_sending_without_reply=True),
                 )
+                self.group_service.record_outbound_message(
+                    chat_id=group.chat_id,
+                    user_id=selected_message.get("user_id"),
+                    text=text,
+                    message_type="group_auto",
+                    telegram_message_id=sent_message.message_id,
+                    provider=result.provider,
+                    model=result.model,
+                    input_tokens=result.usage.get("prompt_tokens"),
+                    output_tokens=result.usage.get("completion_tokens"),
+                    total_tokens=result.usage.get("total_tokens"),
+                    metadata={"reply_to_message_id": result.selected_message_id, "estimated_tokens": result.estimated_tokens},
+                )
                 self.group_service.record_engine_event(
                     chat_id=group.chat_id,
                     event_type="auto_reaction",
-                    telegram_message_id=result.selected_message_id,
-                    metadata={"provider": result.provider, "model": result.model},
+                    telegram_message_id=sent_message.message_id,
+                    metadata={"provider": result.provider, "model": result.model, "reply_to_message_id": result.selected_message_id},
                 )
             except TypeError:
-                await self.bot.send_message(
+                sent_message = await self.bot.send_message(
                     chat_id=group.chat_id,
                     text=text,
                     reply_to_message_id=result.selected_message_id,
                     allow_sending_without_reply=True,
                 )
-                self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction", telegram_message_id=result.selected_message_id)
+                self.group_service.record_outbound_message(
+                    chat_id=group.chat_id,
+                    user_id=selected_message.get("user_id"),
+                    text=text,
+                    message_type="group_auto",
+                    telegram_message_id=sent_message.message_id,
+                    provider=result.provider,
+                    model=result.model,
+                    input_tokens=result.usage.get("prompt_tokens"),
+                    output_tokens=result.usage.get("completion_tokens"),
+                    total_tokens=result.usage.get("total_tokens"),
+                    metadata={"reply_to_message_id": result.selected_message_id, "estimated_tokens": result.estimated_tokens},
+                )
+                self.group_service.record_engine_event(
+                    chat_id=group.chat_id,
+                    event_type="auto_reaction",
+                    telegram_message_id=sent_message.message_id,
+                    metadata={"reply_to_message_id": result.selected_message_id},
+                )
             except Exception:
                 logger.exception("group_auto_reaction_send_failed chat_id=%s", group.chat_id)
                 self.group_service.record_engine_event(chat_id=group.chat_id, event_type="auto_reaction_send_failed")

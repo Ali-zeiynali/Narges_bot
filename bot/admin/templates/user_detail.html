@@ -20,6 +20,14 @@
   <div class="card metric">کل توکن کاربر<b>{{ detail.usage_total_tokens|compact_number }}</b></div>
 </div>
 
+<form class="card" method="post" action="/admin/users/{{ user_id }}/send">
+  <h3>ارسال پیام از طرف ربات</h3>
+  <label>متن پیام
+    <textarea name="text" required placeholder="این پیام مستقیم از طرف ربات برای کاربر ارسال می‌شود."></textarea>
+  </label>
+  <button>ارسال به کاربر</button>
+</form>
+
 <div class="grid two">
   <div class="card compact-table">
     <h3>پروفایل</h3>

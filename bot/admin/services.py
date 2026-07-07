@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from bot.config import Settings
 from bot.models.state import NargesSelfStateCandidate
 from bot.services.global_state_service import GlobalStateService
+from bot.services.history_service import HistoryService
 from bot.services.billing_service import BillingService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
@@ -31,6 +32,7 @@ from bot.storage.orm import (
     DailyEventORM,
     DebugLogORM,
     GroupChatORM,
+    GroupEngineEventORM,
     MediaFileORM,
     MemoryORM,
     MemoryAuditLogORM,
@@ -243,7 +245,7 @@ class AdminDataService:
             user = session.get(UserORM, user_id)
             messages = session.scalars(
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.user_id == user_id)
+                .where(ConversationMessageORM.user_id == user_id, ~ConversationMessageORM.message_type.like("group_%"))
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(30)
             ).all()
@@ -315,13 +317,102 @@ class AdminDataService:
     def messages(self, user_id: int | None = None, limit: int = 300) -> dict[str, Any]:
         limit = max(20, min(limit, 1000))
         with self.database.orm.session() as session:
-            statement = select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(limit)
+            statement = (
+                select(ConversationMessageORM)
+                .where(~ConversationMessageORM.message_type.like("group_%"))
+                .order_by(desc(ConversationMessageORM.id))
+                .limit(limit)
+            )
             if user_id is not None:
                 statement = statement.where(ConversationMessageORM.user_id == user_id)
             rows = session.scalars(statement).all()
             user_names = self._user_name_map(session, [row.user_id for row in rows])
             media_by_message = self._media_by_message(session, rows)
         return {"messages": rows, "user_id": user_id, "limit": limit, "user_names": user_names, "media_by_message": media_by_message}
+
+    def group_messages(self, chat_id: int | None = None, section: str = "all", limit: int = 300) -> dict[str, Any]:
+        limit = max(20, min(limit, 1000))
+        section = (section or "all").strip()
+        message_types = {
+            "observed": ["group_observed"],
+            "mentions": ["group_mention"],
+            "photos": ["group_photo"],
+            "auto": ["group_auto"],
+            "scheduled": ["group_scheduled", "group_admin"],
+        }.get(section)
+        with self.database.orm.session() as session:
+            message_statement = (
+                select(ConversationMessageORM)
+                .where(ConversationMessageORM.message_type.like("group_%"))
+                .order_by(desc(ConversationMessageORM.id))
+                .limit(limit)
+            )
+            event_statement = select(GroupEngineEventORM).order_by(desc(GroupEngineEventORM.id)).limit(200)
+            if chat_id is not None:
+                message_statement = message_statement.where(ConversationMessageORM.chat_id == chat_id)
+                event_statement = event_statement.where(GroupEngineEventORM.chat_id == chat_id)
+            if message_types:
+                message_statement = message_statement.where(ConversationMessageORM.message_type.in_(message_types))
+            rows = session.scalars(message_statement).all()
+            events = session.scalars(event_statement).all()
+            groups = list(session.scalars(select(GroupChatORM).order_by(desc(GroupChatORM.last_seen_at), GroupChatORM.chat_id)).all())
+            group_names = self._group_name_map(groups)
+            user_names = self._user_name_map(session, [row.user_id for row in rows] + [event.user_id for event in events if event.user_id])
+            media_by_message = self._media_by_message(session, rows)
+            counts = {
+                "all": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type.like("group_%"))) or 0,
+                "observed": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_observed")) or 0,
+                "mentions": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_mention")) or 0,
+                "photos": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_photo")) or 0,
+                "auto": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type == "group_auto")) or 0,
+                "scheduled": session.scalar(select(func.count()).select_from(ConversationMessageORM).where(ConversationMessageORM.message_type.in_(("group_scheduled", "group_admin")))) or 0,
+            }
+        return {
+            "messages": rows,
+            "events": [self._group_event_row(row, group_names, user_names) for row in events],
+            "groups": groups,
+            "group_names": group_names,
+            "user_names": user_names,
+            "media_by_message": media_by_message,
+            "chat_id": chat_id,
+            "section": section,
+            "limit": limit,
+            "counts": counts,
+        }
+
+    def record_admin_direct_message(self, user_id: int, text: str, telegram_message_id: int | None) -> None:
+        HistoryService(self.database).add(
+            user_id,
+            "assistant",
+            text,
+            chat_id=user_id,
+            telegram_message_id=telegram_message_id,
+            message_type="admin_direct",
+            ai_request_payload={
+                "source": "admin_direct_message",
+                "target_type": "user",
+                "target_id": user_id,
+                "telegram_message_id": telegram_message_id,
+            },
+        )
+
+    def record_admin_group_message(self, chat_id: int, text: str, telegram_message_id: int | None) -> None:
+        from bot.services.group_service import GroupService
+
+        group_service = GroupService(self.database)
+        group_service.record_outbound_message(
+            chat_id=chat_id,
+            text=text,
+            message_type="group_admin",
+            telegram_message_id=telegram_message_id,
+            metadata={"source": "admin_group_message"},
+        )
+        group_service.record_engine_event(
+            chat_id=chat_id,
+            event_type="admin_group_message",
+            telegram_message_id=telegram_message_id,
+            metadata={"source": "admin_panel"},
+        )
 
     def media(self, user_id: int | None = None, kind: str = "", q: str = "", limit: int = 240) -> dict[str, Any]:
         limit = max(20, min(limit, 1000))
@@ -822,6 +913,31 @@ class AdminDataService:
         if base:
             return str(base)
         return f"کاربر {row.telegram_id}"
+
+    def _group_name_map(self, groups: list[GroupChatORM]) -> dict[int, str]:
+        return {
+            int(group.chat_id): group.title or group.username or str(group.chat_id)
+            for group in groups
+        }
+
+    def _group_event_row(
+        self,
+        row: GroupEngineEventORM,
+        group_names: dict[int, str],
+        user_names: dict[int, str],
+    ) -> dict[str, Any]:
+        metadata = self._loads_json(row.metadata_json)
+        return {
+            "id": row.id,
+            "chat_id": row.chat_id,
+            "group_name": group_names.get(int(row.chat_id), str(row.chat_id)),
+            "user_id": row.user_id,
+            "user_name": user_names.get(int(row.user_id), f"کاربر {row.user_id}") if row.user_id else "-",
+            "event_type": row.event_type,
+            "telegram_message_id": row.telegram_message_id,
+            "metadata": metadata,
+            "created_at": row.created_at,
+        }
 
     def _media_by_message(self, session, messages: list[ConversationMessageORM | None]) -> dict[int, list[dict[str, Any]]]:
         pairs = [
