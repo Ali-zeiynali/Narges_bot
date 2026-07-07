@@ -52,7 +52,7 @@ class PersonaCompiler:
             "state_rules": {
                 "allowed_values": ["normal", "sexual"],
                 "previous_state": conversation_state,
-                "instruction": "Every structured reply must set conversation_state to either normal or sexual. The next request receives the value you choose now.",
+                "instruction": "Each structured response should set conversation_state to normal or sexual. The next request will receive the value you choose now. This state selection should only be based on user_message, not memory, if user_message was sexual and normal otherwise.",
             },
             "hard_rules": [
                 "The conversation model may manage user memory with memory_suggestions.",
