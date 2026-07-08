@@ -20,10 +20,23 @@
   <div class="card metric">کل توکن کاربر<b>{{ detail.usage_total_tokens|compact_number }}</b></div>
 </div>
 
-<form class="card" method="post" action="/admin/users/{{ user_id }}/send">
+<form class="card" method="post" action="/admin/users/{{ user_id }}/send" enctype="multipart/form-data">
   <h3>ارسال پیام از طرف ربات</h3>
+  <div class="grid two">
+    <label>نوع پیام
+      <select name="media_type">
+        <option value="text">متن</option>
+        <option value="photo">عکس</option>
+        <option value="voice">ویس</option>
+        <option value="document">فایل</option>
+      </select>
+    </label>
+    <label>فایل
+      <input name="media_file" type="file" accept="image/*,audio/*,.ogg,.oga,.mp3,.wav,.m4a,.pdf,.txt,.zip">
+    </label>
+  </div>
   <label>متن پیام
-    <textarea name="text" required placeholder="این پیام مستقیم از طرف ربات برای کاربر ارسال می‌شود."></textarea>
+    <textarea name="text" placeholder="این پیام مستقیم از طرف ربات برای کاربر ارسال می‌شود."></textarea>
   </label>
   <button>ارسال به کاربر</button>
 </form>

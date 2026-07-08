@@ -16,7 +16,8 @@ except Exception:  # pragma: no cover - depends on aiogram minor version
 from sqlalchemy import desc, func, select
 
 from bot.storage.database import Database
-from bot.storage.orm import ConversationMessageORM, GroupChatORM, GroupEngineEventORM, ScheduledGroupMessageORM
+from bot.services.quota_service import QuotaService
+from bot.storage.orm import ConversationMessageORM, GroupChatORM, GroupEngineEventORM, GroupInviteRewardORM, ScheduledGroupMessageORM
 
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,7 @@ class GroupService:
                     .order_by(GroupChatORM.chat_id)
                 ).all()
             ]
+
 
     def record_observed_message(
         self,
@@ -343,6 +345,100 @@ async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str, targe
         except Exception as exc:
             results.append(MessageDeliveryResult(target_id=chat_id, status="failed", error=f"{exc.__class__.__name__}: {exc}", target_type=target_type))
     return results
+
+
+class GroupInviteRewardService:
+    MEMBER_REWARD = 10
+    ADMIN_REWARD = 10
+
+    def __init__(self, database: Database, quota_service: QuotaService) -> None:
+        self.database = database
+        self.quota_service = quota_service
+
+    def bot_joined_or_promoted(self, *, chat_id: int, actor_user_id: int | None, status: str) -> dict[str, Any]:
+        status = (status or "").strip().lower()
+        if status not in ACTIVE_BOT_STATUSES:
+            return {"member_granted": False, "admin_granted": False}
+        owner_id = self._owner_for_chat(chat_id) or actor_user_id
+        if not owner_id:
+            return {"member_granted": False, "admin_granted": False}
+        now = datetime.now(UTC)
+        member_granted = False
+        admin_granted = False
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(GroupInviteRewardORM)
+                .where(GroupInviteRewardORM.user_id == owner_id, GroupInviteRewardORM.chat_id == chat_id)
+                .limit(1)
+            )
+            if row is None:
+                row = GroupInviteRewardORM(
+                    user_id=owner_id,
+                    chat_id=chat_id,
+                    member_granted=False,
+                    admin_granted=False,
+                    bot_status=status,
+                    active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            row.bot_status = status
+            row.active = True
+            row.updated_at = now
+            if not row.member_granted:
+                row.member_granted = True
+                member_granted = True
+            if status in {"administrator", "creator"} and not row.admin_granted:
+                row.admin_granted = True
+                admin_granted = True
+        if member_granted:
+            self.quota_service.add_extra_credit(owner_id, self.MEMBER_REWARD, reason=f"group_member:{chat_id}")
+        if admin_granted:
+            self.quota_service.add_extra_credit(owner_id, self.ADMIN_REWARD, reason=f"group_admin:{chat_id}")
+        return {"user_id": owner_id, "member_granted": member_granted, "admin_granted": admin_granted}
+
+    def bot_removed_or_demoted(self, *, chat_id: int, status: str) -> list[dict[str, Any]]:
+        status = (status or "").strip().lower()
+        now = datetime.now(UTC)
+        results: list[dict[str, Any]] = []
+        with self.database.orm.session() as session:
+            rows = list(session.scalars(select(GroupInviteRewardORM).where(GroupInviteRewardORM.chat_id == chat_id)).all())
+            for row in rows:
+                revoke_member = status in HIDDEN_BOT_STATUSES and row.member_granted
+                revoke_admin = status not in {"administrator", "creator"} and row.admin_granted
+                row.bot_status = status
+                row.active = status in ACTIVE_BOT_STATUSES
+                row.updated_at = now
+                member_revoke = {}
+                admin_revoke = {}
+                if revoke_admin:
+                    row.admin_granted = False
+                    admin_revoke = self.quota_service.revoke_credit(row.user_id, self.ADMIN_REWARD, reason=f"group_admin:{chat_id}")
+                if revoke_member:
+                    row.member_granted = False
+                    member_revoke = self.quota_service.revoke_credit(row.user_id, self.MEMBER_REWARD, reason=f"group_member:{chat_id}")
+                if revoke_member or revoke_admin:
+                    results.append(
+                        {
+                            "user_id": row.user_id,
+                            "member_revoked": revoke_member,
+                            "admin_revoked": revoke_admin,
+                            "member_revoke": member_revoke,
+                            "admin_revoke": admin_revoke,
+                        }
+                    )
+        return results
+
+    def _owner_for_chat(self, chat_id: int) -> int | None:
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(GroupInviteRewardORM)
+                .where(GroupInviteRewardORM.chat_id == chat_id, GroupInviteRewardORM.member_granted.is_(True))
+                .order_by(GroupInviteRewardORM.id.asc())
+                .limit(1)
+            )
+        return int(row.user_id) if row else None
 
 
 class GroupMessageScheduler:

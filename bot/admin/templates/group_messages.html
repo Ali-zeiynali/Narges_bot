@@ -74,6 +74,16 @@
           {% if m.reply_to_message_id %}<span class="ltr">reply: {{ m.reply_to_message_id }}</span>{% endif %}
           <span>{{ m.created_at|dt }}</span>
         </div>
+        {% if m.reply_preview %}
+          <div class="notice">
+            <span class="pill">reply to {{ m.reply_preview.message_type }}</span>
+            <a href="/admin/messages/{{ m.reply_preview.id }}">#{{ m.reply_preview.id }}</a>
+            <span class="ltr">tg {{ m.reply_preview.telegram_message_id }}</span>
+            <div>{{ m.reply_preview.text }}</div>
+          </div>
+        {% elif m.reply_to_message_id %}
+          <div class="notice">ریپلای به پیام تلگرام {{ m.reply_to_message_id }}؛ متن پیام در همین بازه ذخیره نشده است.</div>
+        {% endif %}
         <pre>{{ m.text }}</pre>
         {% if m.media %}
           <div class="media-inline">

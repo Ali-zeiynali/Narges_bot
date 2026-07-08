@@ -260,6 +260,22 @@ class GroupChatORM(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class GroupInviteRewardORM(Base):
+    __tablename__ = "group_invite_rewards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    member_granted: Mapped[bool] = mapped_column(Boolean, default=False)
+    admin_granted: Mapped[bool] = mapped_column(Boolean, default=False)
+    bot_status: Mapped[str | None] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (Index("idx_group_invite_rewards_user_chat", "user_id", "chat_id", unique=True),)
+
+
 class ScheduledGroupMessageORM(Base):
     __tablename__ = "scheduled_group_messages"
 

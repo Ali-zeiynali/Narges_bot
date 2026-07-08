@@ -15,7 +15,7 @@ from bot.services.context_builder import ContextBuilder
 from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
 from bot.services.global_state_service import GlobalStateService
-from bot.services.group_service import GroupMessageScheduler, GroupService
+from bot.services.group_service import GroupInviteRewardService, GroupMessageScheduler, GroupService
 from bot.services.group_ai_service import GroupAIService
 from bot.services.groq_client import GroqChatClient
 from bot.services.history_service import HistoryService
@@ -127,6 +127,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     menu_service = MenuService(settings)
     channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
     group_service = GroupService(database)
+    group_invite_reward_service = GroupInviteRewardService(database, quota_service)
     user_service = UserService(database)
     name_service = NameService(settings.name_transliteration_map)
     groq_client = GroqChatClient(settings, database)
@@ -188,6 +189,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         narges_state_service=narges_state_service,
         debug_service=debug_service,
         group_service=group_service,
+        group_invite_reward_service=group_invite_reward_service,
         group_ai_service=group_ai_service,
         media_storage_service=media_storage_service,
         bot_image_catalog=bot_image_catalog,

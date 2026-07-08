@@ -73,6 +73,21 @@ class Database:
                 "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS file_bytes BYTEA",
                 "ALTER TABLE group_chats ADD COLUMN IF NOT EXISTS member_count INTEGER",
                 "CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)",
+                """
+                CREATE TABLE IF NOT EXISTS group_invite_rewards (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    member_granted BOOLEAN NOT NULL DEFAULT FALSE,
+                    admin_granted BOOLEAN NOT NULL DEFAULT FALSE,
+                    bot_status VARCHAR(64),
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+                )
+                """,
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_invite_rewards_user_chat ON group_invite_rewards(user_id, chat_id)",
+                "CREATE INDEX IF NOT EXISTS idx_group_invite_rewards_chat ON group_invite_rewards(chat_id)",
             ]
             with self.orm.engine.begin() as connection:
                 for statement in statements:
@@ -88,4 +103,23 @@ class Database:
                 group_columns = {row["name"] for row in connection.execute("PRAGMA table_info(group_chats)").fetchall()}
                 if group_columns and "member_count" not in group_columns:
                     connection.execute("ALTER TABLE group_chats ADD COLUMN member_count INTEGER")
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS group_invite_rewards (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        member_granted INTEGER NOT NULL DEFAULT 0,
+                        admin_granted INTEGER NOT NULL DEFAULT 0,
+                        bot_status TEXT,
+                        active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_group_invite_rewards_user_chat ON group_invite_rewards(user_id, chat_id)"
+                )
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_group_invite_rewards_chat ON group_invite_rewards(chat_id)")
                 connection.commit()

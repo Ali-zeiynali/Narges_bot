@@ -161,6 +161,33 @@ class QuotaService:
         self._record_event(user_id, f"extra_grant:{reason}", amount * QUOTA_UNIT_SCALE)
         self._debug("extra_credit_granted", user_id, {"amount_messages": amount, "reason": reason})
 
+    def revoke_credit(self, user_id: int, amount: int, reason: str = "manual") -> dict[str, int]:
+        units = max(0, int(amount)) * QUOTA_UNIT_SCALE
+        if units <= 0:
+            return {"extra_units": 0, "free_units": 0}
+        account = self.account_quota(user_id)
+        extra_units = min(units, max(0, account.extra_remaining))
+        free_units = units - extra_units
+        if extra_units:
+            self._record_event(user_id, f"extra_consume:revoke:{reason}", extra_units)
+        if free_units:
+            free_units = min(free_units, max(0, min(account.daily_remaining, account.monthly_remaining)))
+            if free_units:
+                self._record_event(user_id, "quota_consume", free_units)
+        self._debug(
+            "credit_revoked",
+            user_id,
+            {"amount_messages": amount, "reason": reason, "extra_units": extra_units, "free_units": free_units},
+        )
+        return {"extra_units": extra_units, "free_units": free_units}
+
+    def marker_exists(self, user_id: int, kind: str) -> bool:
+        return self._count_since(user_id, kind, 100 * 365 * 24 * 60 * 60) > 0
+
+    def record_marker(self, user_id: int, kind: str) -> None:
+        if not self.marker_exists(user_id, kind):
+            self._record_event(user_id, kind, 0)
+
     def remaining_today(self, user_id: int) -> int:
         return self.account_quota(user_id).daily_remaining // QUOTA_UNIT_SCALE
 

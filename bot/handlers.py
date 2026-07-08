@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import re
 from dataclasses import asdict, is_dataclass, replace
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
@@ -37,7 +37,7 @@ from bot.services.billing_service import BillingService
 from bot.services.chat_service import ChatService, UserFacingError
 from bot.services.debug_service import DebugService
 from bot.services.group_ai_service import GroupAIService
-from bot.services.group_service import GroupService
+from bot.services.group_service import GroupInviteRewardService, GroupService
 from bot.services.history_service import HistoryService
 from bot.services.media_service import (
     UNSUPPORTED_AUDIO_MESSAGE,
@@ -81,6 +81,7 @@ def register_handlers(
     narges_state_service: NargesStateService,
     debug_service: DebugService,
     group_service: GroupService | None,
+    group_invite_reward_service: GroupInviteRewardService | None,
     group_ai_service: GroupAIService | None,
     media_storage_service: MediaStorageService,
     bot_image_catalog: BotImageCatalog,
@@ -527,17 +528,25 @@ def register_handlers(
                 f"👤 کاربر دعوت‌شده: `{invited_user_id}`",
             )
 
-    def image_model_text(description: str, caption: str | None) -> str:
+    def image_model_text(description: str, caption: str | None, duplicate_context: dict | None = None) -> str:
         caption_text = clamp_repeated_chars((caption or "").strip())
+        duplicate_note = ""
+        if duplicate_context:
+            duplicate_note = (
+                "\nنکته حافظه تصویری: همین فایل/عکس با hash یکسان قبلا هم به ربات داده شده بود. "
+                "در جواب طبیعی و کوتاه می‌توانی اشاره کنی که این عکس را قبلا هم فرستاده بود."
+            )
         if caption_text:
             return (
                 "کاربر یک عکس ارسال کرد.\n"
                 f"محتوای عکس: {description.strip()}\n"
                 f"متن همراه کاربر: {caption_text}"
+                f"{duplicate_note}"
             )
         return (
             "کاربر یک عکس ارسال کرد.\n"
             f"محتوای عکس: {description.strip()}"
+            f"{duplicate_note}"
         )
 
     def media_storage_error_message(exc: Exception) -> str:
@@ -781,6 +790,7 @@ def register_handlers(
         try:
             with suppress(Exception):
                 await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            duplicate_context = media_storage_service.duplicate_context(stored_media)
             try:
                 matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
                 if matched_bot_image:
@@ -817,10 +827,9 @@ def register_handlers(
                     media_storage_service.set_vision_description(stored_media.id, description)
             except Exception:
                 logger.exception("vision_description_failed user_id=%s media_id=%s", message.from_user.id, stored_media.id)
-                record_media_message(message, stored_media, "vision failed")
-                await message.answer(VISION_ERROR_MESSAGE)
-                return
-            model_text = image_model_text(description, stored_media.caption)
+                description = "عکس دریافت شده اما توضیح بینایی آن در این لحظه آماده نشد؛ فقط بدان کاربر یک عکس فرستاده است."
+                media_storage_service.set_vision_description(stored_media.id, description)
+            model_text = image_model_text(description, stored_media.caption, duplicate_context)
             result = await run_chat_turn(message, bot, model_text, profile, reserved_quota_check=quota_check)
         finally:
             await quota_service.finish_generation(message.from_user.id)
@@ -1079,6 +1088,7 @@ def register_handlers(
                 )
                 stored_media = stored_group_media or await media_storage_service.store_photo(bot, message)
                 matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
+                duplicate_context = media_storage_service.duplicate_context(stored_media)
                 if matched_bot_image:
                     description = "کاربر عکس نرگس را ارسال کرده است."
                     media_storage_service.set_vision_description(stored_media.id, description)
@@ -1086,8 +1096,17 @@ def register_handlers(
                     description = cached_description
                     media_storage_service.set_vision_description(stored_media.id, description)
                 else:
-                    description = await asyncio.to_thread(vision_client.describe_image, stored_media)
+                    try:
+                        description = await asyncio.to_thread(vision_client.describe_image, stored_media)
+                    except Exception:
+                        logger.exception("group_photo_vision_failed chat_id=%s media_id=%s", message.chat.id, stored_media.id)
+                        description = "عکس گروه دریافت شده اما توضیح بینایی آن در این لحظه آماده نشد."
                     media_storage_service.set_vision_description(stored_media.id, description)
+                if duplicate_context:
+                    description = (
+                        f"{description}\n"
+                        "نکته: این عکس با hash یکسان قبلا هم به ربات داده شده بود؛ اگر مناسب بود کوتاه به تکراری بودنش اشاره کن."
+                    )
                 profile = user_service.get(message.from_user.id)
                 result = await group_ai_service.answer_photo(
                     user_id=message.from_user.id,

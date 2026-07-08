@@ -254,6 +254,31 @@ class MediaStorageService:
                 return description
         return None
 
+    def duplicate_context(self, media: StoredMedia) -> dict[str, Any] | None:
+        if not media.content_hash:
+            return None
+        with self.database.orm.session() as session:
+            row = session.scalar(
+                select(MediaFileORM)
+                .where(
+                    MediaFileORM.content_hash == media.content_hash,
+                    MediaFileORM.media_kind.in_(("image", "profile_photo")),
+                    MediaFileORM.id != media.id,
+                )
+                .order_by(MediaFileORM.id.asc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        return {
+            "media_id": row.id,
+            "user_id": row.user_id,
+            "chat_id": row.chat_id,
+            "telegram_message_id": row.telegram_message_id,
+            "media_kind": row.media_kind,
+            "created_at": row.created_at.isoformat() if isinstance(row.created_at, datetime) else str(row.created_at),
+        }
+
     def profile_photos_recently_synced(self, user_id: int, hours: int = 24) -> bool:
         since = datetime.now(UTC) - timedelta(hours=hours)
         with self.database.orm.session() as session:
@@ -522,6 +547,7 @@ class BotImageCatalog:
         self.database = database
         self.catalog_path = Path(getattr(settings, "bot_image_catalog_path", "images/catalog.json"))
         self.image_dir = Path(getattr(settings, "bot_image_dir", "images"))
+        self._seeded_once = False
 
     def items_for_model(self) -> list[dict[str, Any]]:
         return [
@@ -539,6 +565,8 @@ class BotImageCatalog:
     def matching_bot_image(self, media: StoredMedia) -> dict[str, Any] | None:
         if not media.content_hash:
             return None
+        if not self._seeded_once:
+            self.ensure_seeded()
         with self.database.orm.session() as session:
             row = session.scalar(
                 select(MediaFileORM)
@@ -645,6 +673,7 @@ class BotImageCatalog:
                 continue
             if content:
                 self._try_seed_item(item, content)
+        self._seeded_once = True
 
     def load_items(self) -> list[BotImageCatalogItem]:
         if not self.catalog_path.exists():

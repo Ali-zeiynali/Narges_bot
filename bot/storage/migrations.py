@@ -539,4 +539,26 @@ MIGRATIONS: list[tuple[str, str]] = [
         ALTER TABLE group_chats ADD COLUMN member_count INTEGER;
         """,
     ),
+    (
+        "021_group_invite_rewards",
+        """
+        CREATE TABLE IF NOT EXISTS group_invite_rewards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            member_granted INTEGER NOT NULL DEFAULT 0,
+            admin_granted INTEGER NOT NULL DEFAULT 0,
+            bot_status TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_group_invite_rewards_user_chat
+            ON group_invite_rewards(user_id, chat_id);
+
+        CREATE INDEX IF NOT EXISTS idx_group_invite_rewards_chat
+            ON group_invite_rewards(chat_id);
+        """,
+    ),
 ]

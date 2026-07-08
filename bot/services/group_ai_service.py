@@ -347,7 +347,7 @@ class GroupAIService:
             message_type=message_type,
             ai_request_payload={"source": message_type, "payload": request_payload},
         )
-        self.history_service.add(
+        assistant_message_id = self.history_service.add(
             user_id,
             "assistant",
             assistant_text,
@@ -358,7 +358,12 @@ class GroupAIService:
             input_tokens=result.usage.get("prompt_tokens"),
             output_tokens=result.usage.get("completion_tokens"),
             total_tokens=result.usage.get("total_tokens"),
-            ai_request_payload={"source": f"{message_type}_assistant", "payload": request_payload, "usage": result.usage},
+            ai_request_payload={
+                "source": f"{message_type}_assistant",
+                "payload": request_payload,
+                "usage": result.usage,
+                "reply_to_message_id": message_id,
+            },
         )
         self.usage_service.log(
             user_id,

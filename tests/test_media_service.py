@@ -175,6 +175,47 @@ class MediaStorageServiceTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match["catalog_id"], "selfie_test")
 
+    def test_duplicate_context_finds_previous_user_media_by_hash(self) -> None:
+        content_hash = hashlib.sha256(b"same-image").hexdigest()
+        first = self.service._record(
+            user_id=1,
+            chat_id=1,
+            telegram_message_id=10,
+            telegram_file_id="first-photo",
+            media_kind="image",
+            mime_type="image/jpeg",
+            original_file_name=None,
+            storage_path="",
+            content_hash=content_hash,
+            file_bytes=b"same-image",
+            file_size=len(b"same-image"),
+            caption=None,
+            metadata={},
+            created_at=datetime.now(UTC),
+        )
+        second = self.service._record(
+            user_id=1,
+            chat_id=1,
+            telegram_message_id=11,
+            telegram_file_id="second-photo",
+            media_kind="image",
+            mime_type="image/jpeg",
+            original_file_name=None,
+            storage_path="",
+            content_hash=content_hash,
+            file_bytes=b"same-image",
+            file_size=len(b"same-image"),
+            caption=None,
+            metadata={},
+            created_at=datetime.now(UTC),
+        )
+
+        duplicate = self.service.duplicate_context(second)
+
+        self.assertIsNotNone(duplicate)
+        self.assertEqual(duplicate["media_id"], first.id)
+        self.assertEqual(duplicate["telegram_message_id"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()

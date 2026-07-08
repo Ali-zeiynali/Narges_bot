@@ -96,7 +96,29 @@ class MenuService:
         ]
         if phone_available:
             rows.append([InlineKeyboardButton(text="📱 افزایش با شماره موبایل", callback_data="capacity:phone")])
+        rows.append([InlineKeyboardButton(text="➕ اضافه کردن نرگس به گروه‌ها (پیام رایگان)", callback_data="capacity:groups")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def group_invite_text(self) -> str:
+        return (
+            "✨ می‌دونستی می‌تونی نرگس رو به گروه‌هات اضافه کنی؟\n\n"
+            "🎁 وقتی نرگس عضو گروهت بمونه، ۱۰ پیام رایگان می‌گیری.\n"
+            "👑 اگر نرگس رو ادمین کنی، ۱۰ پیام دیگه هم اضافه می‌شه؛ جمعاً ۲۰ پیام.\n\n"
+            "دکمه پایین رو بزن و نرگس رو به گروهت اضافه کن."
+        )
+
+    def group_invite_keyboard(self, bot_username: str | None = None) -> InlineKeyboardMarkup:
+        username = (bot_username or "narges_aibot").strip().lstrip("@") or "narges_aibot"
+        url = (
+            f"https://t.me/{username}?startgroup=group_reward"
+            "&admin=delete_messages+restrict_members+invite_users+pin_messages+manage_topics"
+        )
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="➕ اضافه کردن نرگس به گروه", url=url)],
+                [InlineKeyboardButton(text="⚡ افزایش ظرفیت", callback_data="capacity:open")],
+            ]
+        )
 
     def stars_plans_keyboard(self) -> InlineKeyboardMarkup:
         rows = [

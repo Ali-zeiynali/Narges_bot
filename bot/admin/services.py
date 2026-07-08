@@ -409,8 +409,9 @@ class AdminDataService:
                 "auto": self._group_message_count(session, visible_chat_ids, ("group_auto",)),
                 "scheduled": self._group_message_count(session, visible_chat_ids, ("group_scheduled", "group_admin")),
             }
+            reply_previews = self._reply_preview_map(session, timeline_rows)
             timeline = [
-                self._timeline_row(row, group_names, user_names, media_by_message.get(row.id, []))
+                self._timeline_row(row, group_names, user_names, media_by_message.get(row.id, []), reply_previews)
                 for row in reversed(timeline_rows)
             ]
         return {
@@ -1037,11 +1038,12 @@ class AdminDataService:
         group_names: dict[int, str],
         user_names: dict[int, str],
         media: list[dict[str, Any]],
+        reply_previews: dict[tuple[int | None, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        payload = self._loads_json(row.ai_request_payload_json)
-        reply_to_message_id = payload.get("reply_to_message_id")
-        if reply_to_message_id is None and isinstance(payload.get("payload"), dict):
-            reply_to_message_id = payload["payload"].get("reply_to_message_id")
+        reply_to_message_id = self._reply_to_message_id(row)
+        reply_preview = None
+        if reply_to_message_id is not None:
+            reply_preview = (reply_previews or {}).get((row.chat_id, int(reply_to_message_id)))
         direction = "out" if row.role == "assistant" else "in"
         return {
             "id": row.id,
@@ -1054,6 +1056,7 @@ class AdminDataService:
             "message_type": row.message_type,
             "telegram_message_id": row.telegram_message_id,
             "reply_to_message_id": reply_to_message_id,
+            "reply_preview": reply_preview,
             "text": row.text,
             "provider": row.provider,
             "model": row.model,
@@ -1061,6 +1064,64 @@ class AdminDataService:
             "media": media,
             "created_at": row.created_at,
         }
+
+    def _reply_to_message_id(self, row: ConversationMessageORM) -> int | None:
+        payload = self._loads_json(row.ai_request_payload_json)
+        candidates = [payload.get("reply_to_message_id")]
+        if isinstance(payload.get("payload"), dict):
+            candidates.append(payload["payload"].get("reply_to_message_id"))
+        for value in candidates:
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _reply_preview_map(self, session, rows: list[ConversationMessageORM]) -> dict[tuple[int | None, int], dict[str, Any]]:
+        wanted = {
+            (row.chat_id, reply_to)
+            for row in rows
+            for reply_to in [self._reply_to_message_id(row)]
+            if reply_to is not None
+        }
+        existing = {
+            (row.chat_id, int(row.telegram_message_id or 0)): row
+            for row in rows
+            if row.telegram_message_id is not None
+        }
+        missing = wanted - set(existing)
+        fetched: list[ConversationMessageORM] = []
+        if missing:
+            chat_ids = sorted({chat_id for chat_id, _message_id in missing if chat_id is not None})
+            message_ids = sorted({message_id for _chat_id, message_id in missing})
+            if chat_ids and message_ids:
+                fetched = list(
+                    session.scalars(
+                        select(ConversationMessageORM).where(
+                            ConversationMessageORM.chat_id.in_(chat_ids),
+                            ConversationMessageORM.telegram_message_id.in_(message_ids),
+                        )
+                    ).all()
+                )
+        all_rows = list(existing.values()) + fetched
+        previews = {}
+        for item in all_rows:
+            if item.telegram_message_id is None:
+                continue
+            previews[(item.chat_id, int(item.telegram_message_id))] = {
+                "id": item.id,
+                "role": item.role,
+                "message_type": item.message_type,
+                "text": self._compact_text(item.text, 180),
+                "telegram_message_id": item.telegram_message_id,
+            }
+        return previews
+
+    def _compact_text(self, value: str, limit: int) -> str:
+        value = " ".join((value or "").split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
 
     def _trace_row(self, row: DebugLogORM) -> dict[str, Any]:
         payload = self._loads_json(row.payload)

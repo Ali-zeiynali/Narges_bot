@@ -118,12 +118,29 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         require_admin(request)
         form = await request.form()
         text = str(form.get("text", "")).strip()
-        if not text:
+        media_type = str(form.get("media_type", "text")).strip()
+        media_file = form.get("media_file")
+        has_file = hasattr(media_file, "filename") and bool(getattr(media_file, "filename", ""))
+        if not text and not has_file:
             return RedirectResponse(f"/admin/users/{user_id}?flash=متن پیام خالی است", status_code=303)
-        telegram_message_id, error = await send_direct_text(settings, user_id, text)
-        if error:
-            return RedirectResponse(f"/admin/users/{user_id}?flash=ارسال ناموفق: {error}", status_code=303)
-        service.record_admin_direct_message(user_id, text, telegram_message_id)
+        file_payload = None
+        if has_file:
+            content = await media_file.read()  # type: ignore[attr-defined]
+            file_payload = (getattr(media_file, "filename", "admin-message.bin") or "admin-message.bin", content)
+        _sent, failed, error, deliveries = await send_broadcast(
+            settings,
+            [user_id],
+            text,
+            detailed=True,
+            media_type=media_type,
+            file_payload=file_payload,
+            target_type="user",
+        )
+        delivery = deliveries[0] if deliveries else None
+        if failed or error or delivery is None or delivery.status != "sent":
+            failure_reason = error or (delivery.error if delivery else None) or "delivery failed"
+            return RedirectResponse(f"/admin/users/{user_id}?flash=ارسال ناموفق: {failure_reason}", status_code=303)
+        service.record_admin_direct_message(user_id, text or f"[{media_type}]", delivery.telegram_message_id)
         return RedirectResponse(f"/admin/users/{user_id}?flash=پیام از طرف ربات ارسال شد", status_code=303)
 
     @app.get(route("/messages"), response_class=HTMLResponse)
@@ -409,6 +426,14 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
                 target_type=delivery_target_type,
             )
         service.finish_broadcast(broadcast_id, sent, failed, error, deliveries=deliveries)
+        if target_type == "user":
+            for delivery in deliveries:
+                if delivery.status == "sent" and delivery.target_type == "user":
+                    service.record_admin_direct_message(
+                        delivery.target_id,
+                        text or f"[{media_type}]",
+                        delivery.telegram_message_id,
+                    )
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
 
     @app.get(route("/broadcast/{broadcast_id}"), response_class=HTMLResponse)
@@ -499,7 +524,7 @@ async def send_broadcast(
     bot = Bot(token=settings.telegram_token, session=session)
     try:
         if detailed:
-            if file_payload and media_type in {"photo", "voice"}:
+            if file_payload and media_type in {"photo", "voice", "document"}:
                 from bot.services.group_service import MessageDeliveryResult
 
                 deliveries = []
@@ -509,8 +534,10 @@ async def send_broadcast(
                         file = BufferedInputFile(content, filename=filename)
                         if media_type == "photo":
                             sent_message = await bot.send_photo(user_id, file, caption=text or None)
-                        else:
+                        elif media_type == "voice":
                             sent_message = await bot.send_voice(user_id, file, caption=text or None)
+                        else:
+                            sent_message = await bot.send_document(user_id, file, caption=text or None)
                         deliveries.append(
                             MessageDeliveryResult(
                                 target_id=user_id,

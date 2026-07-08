@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -214,6 +215,7 @@ class AdminBackupTests(unittest.TestCase):
                     message_type="group_mention",
                     text="mention",
                     text_hash="m",
+                    ai_request_payload_json=json.dumps({"reply_to_message_id": 1}),
                     created_at=now,
                 )
             )
@@ -223,6 +225,7 @@ class AdminBackupTests(unittest.TestCase):
 
         self.assertEqual([row.text for row in messages["messages"]], ["mention"])
         self.assertEqual([row["text"] for row in messages["timeline"]], ["ordinary", "mention"])
+        self.assertEqual(messages["timeline"][1]["reply_preview"]["text"], "ordinary")
         self.assertEqual(messages["counts"]["all"], 2)
         self.assertEqual(messages["counts"]["observed"], 1)
 
