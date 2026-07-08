@@ -29,7 +29,9 @@
       "base_url": "https://bazaarlink.ai/api/v1",
       "model": "gemini-3-flash-preview",
       "api_keys": [
-        "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ"
+        "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ",
+        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg"
+        
       ],
       "temperature": 0.7,
       "max_completion_tokens": 512,
