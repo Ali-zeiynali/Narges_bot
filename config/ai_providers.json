@@ -7,8 +7,8 @@
       "type": "openai_compatible",
       "base_url": "https://router.bynara.id/v1",
       "api_keys": [
-        "sk-nry-ahGF9WmmFkTzLKLiQfVyC_vF_Wmv1eK9hmIaCnWL8TE",
-        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg"
+        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg",
+        "sk-nry-ahGF9WmmFkTzLKLiQfVyC_vF_Wmv1eK9hmIaCnWL8TE"
       ],
       "model": "mistral-large",
       "temperature": 0.7,
