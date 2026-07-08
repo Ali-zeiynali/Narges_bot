@@ -26,6 +26,7 @@ from bot.services.moderation_service import ModerationService
 from bot.services.name_service import NameService
 from bot.services.narges_state_scheduler import NargesStateScheduler
 from bot.services.narges_state_service import NargesStateService
+from bot.services.profile_photo_service import ProfilePhotoService
 from bot.services.quota_service import QuotaService
 from bot.services.reengagement_service import ReengagementScheduler, ReengagementService
 from bot.services.required_channel_service import RequiredChannelService
@@ -51,6 +52,7 @@ class BotApplication:
     narges_state_scheduler: NargesStateScheduler
     group_service: GroupService
     group_ai_service: GroupAIService
+    profile_photo_service: ProfilePhotoService
     reengagement_service: ReengagementService
     background_tasks: list[asyncio.Task] = field(default_factory=list)
 
@@ -64,6 +66,10 @@ class BotApplication:
             asyncio.create_task(
                 self._run_resilient("group-scheduler", GroupMessageScheduler(self.group_service, self.bot, self.group_ai_service).run_forever),
                 name="group-scheduler",
+            ),
+            asyncio.create_task(
+                self._run_resilient("profile-photo-sync", lambda: self.profile_photo_service.run_known_user_sync_forever(self.bot)),
+                name="profile-photo-sync",
             ),
         ]
         if self.settings.reengagement_enabled:
@@ -88,6 +94,12 @@ class BotApplication:
                 await task
         await self.bot.session.close()
         logger.info("bot_application_stopped")
+
+    def allowed_updates(self) -> list[str]:
+        updates = list(self.dispatcher.resolve_used_update_types())
+        if "guest_message" not in updates:
+            updates.append("guest_message")
+        return updates
 
     async def _run_resilient(self, name: str, runner) -> None:
         while True:
@@ -126,6 +138,11 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     bot_image_catalog = BotImageCatalog(settings, database)
     bot_image_catalog.ensure_seeded()
     vision_client = VisionClient(settings)
+    profile_photo_service = ProfilePhotoService(
+        media_storage_service=media_storage_service,
+        vision_client=vision_client,
+        user_service=user_service,
+    )
     context_builder = ContextBuilder(database, history_service)
     chat_service = ChatService(
         validator=MessageValidator(settings),
@@ -143,6 +160,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         quota_service=quota_service,
         global_state_service=global_state_service,
         bot_image_catalog=bot_image_catalog,
+        profile_photo_service=profile_photo_service,
     )
     group_ai_service = GroupAIService(
         groq_client=groq_client,
@@ -151,6 +169,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         history_service=history_service,
         debug_service=debug_service,
         usage_service=UsageService(database, settings.groq_model),
+        profile_photo_service=profile_photo_service,
     )
 
     dispatcher = Dispatcher()
@@ -173,6 +192,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         media_storage_service=media_storage_service,
         bot_image_catalog=bot_image_catalog,
         vision_client=vision_client,
+        profile_photo_service=profile_photo_service,
         settings=settings,
     )
 
@@ -189,5 +209,6 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         narges_state_scheduler=narges_state_scheduler,
         group_service=group_service,
         group_ai_service=group_ai_service,
+        profile_photo_service=profile_photo_service,
         reengagement_service=ReengagementService(database, settings),
     )

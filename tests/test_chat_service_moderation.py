@@ -11,7 +11,7 @@ from bot.services.chat_service import ChatService
 from bot.services.context_builder import ContextBuilder
 from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
-from bot.services.groq_client import GroqResult
+from bot.services.groq_client import GroqResult, ImageSelectionResult
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.services.moderation_service import ModerationService
@@ -144,6 +144,28 @@ class FakeCountingGroqClient:
         return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
+class FakeImageSelectionGroqClient(FakeCountingGroqClient):
+    def __init__(self, image_id: str | None) -> None:
+        super().__init__()
+        self.image_id = image_id
+        self.selection_calls = 0
+
+    def complete_image_selection(self, **_kwargs):
+        self.selection_calls += 1
+        return ImageSelectionResult(
+            image_id=self.image_id,
+            caption="کپشن انتخابی",
+            usage={"total_tokens": 3},
+            provider="fake",
+            model="selector",
+        )
+
+
+class FakeImageCatalog:
+    def items_for_model(self):
+        return [{"id": "selfie_1", "description": "عکس معمولی نرگس", "tags": ["selfie"]}]
+
+
 class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -156,7 +178,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.debug = DebugService(self.database, self.settings)
         self.service = self.make_service(FakeWarningGroqClient())
 
-    def make_service(self, groq_client) -> ChatService:
+    def make_service(self, groq_client, bot_image_catalog=None) -> ChatService:
         return ChatService(
             validator=MessageValidator(self.settings),
             persona_compiler=PersonaCompiler("v"),
@@ -171,31 +193,56 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
             usage_service=UsageService(self.database, "m"),
             style_linter=StyleLinter(),
             quota_service=self.quota,
+            bot_image_catalog=bot_image_catalog,
         )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_direct_photo_command_creates_backend_image_request(self) -> None:
-        request = self.service._direct_photo_request_from_messages(
-            [
-                {"role": "user", "content": json.dumps({"user_message": "\u0639\u06a9\u0633 \u0628\u062f\u0647 \u0627\u0632 \u062e\u0648\u062f\u062a"}, ensure_ascii=False)}
-            ]
+    async def test_photo_text_does_not_create_backend_image_request(self) -> None:
+        groq = FakeImageSelectionGroqClient("selfie_1")
+        service = self.make_service(groq, FakeImageCatalog())
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "باشه عزیزم", "delay_seconds": 0}],
+                "memory_suggestions": [],
+                "warning_suggestion": None,
+                "event_suggestion": None,
+                "image_request": None,
+            }
         )
 
-        self.assertIsNotNone(request)
-        self.assertTrue(request.needed)
-
-    def test_photo_followup_after_photo_thread_creates_backend_image_request(self) -> None:
-        request = self.service._direct_photo_request_from_messages(
-            [
-                {"role": "system", "content": json.dumps({"pending_user_thread": "\u0639\u06a9\u0633 \u0628\u062f\u0647 \u0627\u0632 \u062e\u0648\u062f\u062a"}, ensure_ascii=False)},
-                {"role": "user", "content": json.dumps({"user_message": "\u062a\u0631\u0648\u062e\u062f\u0627 \u0628\u0641\u0631\u0633\u062a \u062f\u06cc\u06af\u0647"}, ensure_ascii=False)},
-            ]
+        result = await service._attach_requested_image_if_needed(
+            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            [{"role": "user", "content": json.dumps({"user_message": "عکس بده از خودت"}, ensure_ascii=False)}],
         )
 
-        self.assertIsNotNone(request)
-        self.assertTrue(request.needed)
+        self.assertIsNone(result.reply.messages[-1].image_id)
+        self.assertEqual(groq.selection_calls, 0)
+
+    async def test_model_image_request_uses_second_catalog_selection(self) -> None:
+        groq = FakeImageSelectionGroqClient("selfie_1")
+        service = self.make_service(groq, FakeImageCatalog())
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "اینم برای تو", "delay_seconds": 0}],
+                "memory_suggestions": [],
+                "warning_suggestion": None,
+                "event_suggestion": None,
+                "image_request": {"needed": True, "reason": "explicit photo request", "prompt": "selfie", "caption": "اینم برای تو"},
+            }
+        )
+
+        result = await service._attach_requested_image_if_needed(
+            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            [{"role": "user", "content": json.dumps({"user_message": "عکس بده از خودت"}, ensure_ascii=False)}],
+        )
+
+        self.assertEqual(result.reply.messages[-1].image_id, "selfie_1")
+        self.assertEqual(result.reply.messages[-1].text, "کپشن انتخابی")
+        self.assertEqual(result.usage["image_selection_total_tokens"], 3)
 
     async def test_model_warning_becomes_backend_warning_without_quota_cost(self) -> None:
         result = await self.service.answer(

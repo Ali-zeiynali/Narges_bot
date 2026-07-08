@@ -43,6 +43,11 @@ class UserService:
             row = session.get(UserORM, user_id)
             return self._to_profile(row) if row else None
 
+    def user_ids(self) -> list[int]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(select(UserORM.telegram_id).order_by(UserORM.updated_at.desc())).all()
+        return [int(row) for row in rows]
+
     def set_state(self, user_id: int, state: OnboardingState) -> None:
         self._update(user_id, onboarding_state=state.value, registration_state=state.value)
 

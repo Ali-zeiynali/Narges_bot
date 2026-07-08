@@ -89,13 +89,20 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         return render(request, "dashboard.html", {"snapshot": service.dashboard()})
 
     @app.get(route("/users"), response_class=HTMLResponse)
-    async def users(request: Request, sort: str = "last_seen", q: str = "", active_only: str = "") -> HTMLResponse:
+    async def users(request: Request, sort: str = "last_seen", q: str = "", active_only: str = "", ready_only: str = "") -> HTMLResponse:
         require_admin(request)
         only_active = active_only.lower() in {"1", "true", "on", "yes"}
+        only_ready = ready_only.lower() in {"1", "true", "on", "yes"}
         return render(
             request,
             "users.html",
-            {"users": service.users(sort=sort, query=q, active_only=only_active), "sort": sort, "q": q, "active_only": only_active},
+            {
+                "users": service.users(sort=sort, query=q, active_only=only_active, ready_only=only_ready),
+                "sort": sort,
+                "q": q,
+                "active_only": only_active,
+                "ready_only": only_ready,
+            },
         )
 
     @app.get(route("/users/{user_id}"), response_class=HTMLResponse)
@@ -340,13 +347,23 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             return RedirectResponse("/admin/broadcast?flash=متن پیام خالی است", status_code=303)
         if target_type == "groups":
             target_ids = service.target_group_ids()
+            user_target_ids: list[int] = []
+            group_target_ids = target_ids
+        elif target_type == "all":
+            user_target_ids = service.target_user_ids(only_ready=only_ready)
+            group_target_ids = service.target_group_ids()
+            target_ids = user_target_ids + group_target_ids
         elif target_type == "user":
             if not target_value or not target_value.lstrip("-").isdigit():
                 return RedirectResponse("/admin/broadcast?flash=شناسه کاربر معتبر نیست", status_code=303)
             target_ids = [int(target_value)]
+            user_target_ids = target_ids
+            group_target_ids = []
         else:
             target_type = "users"
             target_ids = service.target_user_ids(only_ready=only_ready)
+            user_target_ids = target_ids
+            group_target_ids = []
         broadcast_id = service.create_broadcast(
             text or f"[{media_type}]",
             len(target_ids),
@@ -357,7 +374,40 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         if has_file:
             content = await media_file.read()  # type: ignore[attr-defined]
             file_payload = (getattr(media_file, "filename", "broadcast.bin") or "broadcast.bin", content)
-        sent, failed, error, deliveries = await send_broadcast(settings, target_ids, text, detailed=True, media_type=media_type, file_payload=file_payload)
+        if target_type == "all":
+            sent_users, failed_users, error_users, user_deliveries = await send_broadcast(
+                settings,
+                user_target_ids,
+                text,
+                detailed=True,
+                media_type=media_type,
+                file_payload=file_payload,
+                target_type="user",
+            )
+            sent_groups, failed_groups, error_groups, group_deliveries = await send_broadcast(
+                settings,
+                group_target_ids,
+                text,
+                detailed=True,
+                media_type=media_type,
+                file_payload=file_payload,
+                target_type="group",
+            )
+            sent = sent_users + sent_groups
+            failed = failed_users + failed_groups
+            error = error_users or error_groups
+            deliveries = user_deliveries + group_deliveries
+        else:
+            delivery_target_type = "group" if target_type == "groups" else "user"
+            sent, failed, error, deliveries = await send_broadcast(
+                settings,
+                target_ids,
+                text,
+                detailed=True,
+                media_type=media_type,
+                file_payload=file_payload,
+                target_type=delivery_target_type,
+            )
         service.finish_broadcast(broadcast_id, sent, failed, error, deliveries=deliveries)
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
 
@@ -434,7 +484,15 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     return app
 
 
-async def send_broadcast(settings: Settings, user_ids: list[int], text: str, detailed: bool = False, media_type: str = "text", file_payload: tuple[str, bytes] | None = None):
+async def send_broadcast(
+    settings: Settings,
+    user_ids: list[int],
+    text: str,
+    detailed: bool = False,
+    media_type: str = "text",
+    file_payload: tuple[str, bytes] | None = None,
+    target_type: str = "user",
+):
     from bot.telegram_session import create_telegram_session
 
     session = create_telegram_session(settings.telegram_proxy)
@@ -453,11 +511,25 @@ async def send_broadcast(settings: Settings, user_ids: list[int], text: str, det
                             sent_message = await bot.send_photo(user_id, file, caption=text or None)
                         else:
                             sent_message = await bot.send_voice(user_id, file, caption=text or None)
-                        deliveries.append(MessageDeliveryResult(target_id=user_id, status="sent", telegram_message_id=sent_message.message_id))
+                        deliveries.append(
+                            MessageDeliveryResult(
+                                target_id=user_id,
+                                status="sent",
+                                telegram_message_id=sent_message.message_id,
+                                target_type=target_type,
+                            )
+                        )
                     except Exception as exc:
-                        deliveries.append(MessageDeliveryResult(target_id=user_id, status="failed", error=f"{exc.__class__.__name__}: {exc}"))
+                        deliveries.append(
+                            MessageDeliveryResult(
+                                target_id=user_id,
+                                status="failed",
+                                error=f"{exc.__class__.__name__}: {exc}",
+                                target_type=target_type,
+                            )
+                        )
             else:
-                deliveries = await send_messages_detailed(bot, user_ids, text)
+                deliveries = await send_messages_detailed(bot, user_ids, text, target_type=target_type)
             sent = sum(1 for item in deliveries if item.status == "sent")
             failed = len(deliveries) - sent
             first_error = next((item.error for item in deliveries if item.error), None)

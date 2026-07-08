@@ -10,12 +10,25 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    ChatMemberUpdated,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+    ReplyKeyboardRemove,
+    Update,
+    User,
+)
 try:
     from aiogram.types import ReplyParameters
 except Exception:  # pragma: no cover - depends on aiogram minor version
     ReplyParameters = None  # type: ignore[assignment]
 from pydantic import BaseModel
+from sqlalchemy import desc, func, select
 
 from bot.config import Settings
 from bot.models.channel import MembershipCheck
@@ -41,8 +54,10 @@ from bot.services.menu_service import MenuService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.name_service import NameService
+from bot.services.profile_photo_service import ProfilePhotoService
 from bot.services.quota_service import QuotaService
 from bot.services.required_channel_service import RequiredChannelService
+from bot.storage.orm import ConversationMessageORM, UserORM
 from bot.services.request_trace import RequestTrace
 from bot.services.user_service import UserService
 from bot.utils.text_safety import clamp_repeated_chars, meaningful_length
@@ -70,6 +85,7 @@ def register_handlers(
     media_storage_service: MediaStorageService,
     bot_image_catalog: BotImageCatalog,
     vision_client: VisionClient,
+    profile_photo_service: ProfilePhotoService,
     settings: Settings,
 ) -> None:
     admin_ids = set(settings.admin_ids)
@@ -125,6 +141,10 @@ def register_handlers(
             lines.append("📱 افزایش با شماره موبایل")
         return "\n".join(lines)
 
+    def schedule_profile_photo_sync(bot: Bot, user: User | None) -> None:
+        if user and not user.is_bot:
+            profile_photo_service.schedule_sync(bot, user.id)
+
     def format_toman(value: int) -> str:
         return f"{value:,}".replace(",", "٬")
 
@@ -166,6 +186,27 @@ def register_handlers(
     async def send_json(message: Message, payload: dict) -> None:
         text = json.dumps(jsonable(payload), ensure_ascii=False, indent=2, default=str)
         await message.answer(f"```json\n{text[:3800]}\n```")
+
+    async def send_chunks(message: Message, text: str, limit: int = 3600) -> None:
+        text = text.strip()
+        if not text:
+            return
+        while text:
+            chunk = text[:limit]
+            if len(text) > limit and "\n" in chunk:
+                chunk = chunk[: chunk.rfind("\n")]
+            await message.answer(chunk)
+            text = text[len(chunk):].lstrip()
+
+    def command_args(message: Message) -> str:
+        return (message.text or "").split(maxsplit=1)[1].strip() if len((message.text or "").split(maxsplit=1)) == 2 else ""
+
+    async def require_admin_command(message: Message) -> bool:
+        user_id = message.from_user.id if message.from_user else 0
+        if is_admin(user_id):
+            return True
+        await message.answer("این دستور فقط برای ادمین است.")
+        return False
 
     def is_group_chat_type(chat_type: str | None) -> bool:
         return chat_type in {"group", "supergroup"}
@@ -755,12 +796,87 @@ def register_handlers(
             active=status in {"member", "administrator", "creator"},
         )
 
+    async def answer_guest_text(bot: Bot, guest_query_id: str | None, text: str) -> None:
+        if not guest_query_id or not text.strip():
+            return
+        result = InlineQueryResultArticle(
+            id=f"narges-guest-{abs(hash((guest_query_id, text))) % 10**12}",
+            title="Narges",
+            input_message_content=InputTextMessageContent(message_text=text[:4096]),
+            description=text[:120],
+        )
+        await bot.answer_guest_query(guest_query_id=guest_query_id, result=result)
+
+    @dispatcher.update(F.guest_message)
+    async def guest_message_handler(update: Update, bot: Bot) -> None:
+        message = update.guest_message
+        if group_service is None or group_ai_service is None or message is None:
+            return
+        caller_user = message.guest_bot_caller_user or message.from_user
+        if caller_user is None or caller_user.is_bot:
+            return
+        user_service.upsert_telegram_user(profile_from_user(caller_user))
+        schedule_profile_photo_sync(bot, caller_user)
+        text = clamp_repeated_chars(group_text(message))
+        if meaningful_length(text) < 2:
+            return
+        guest_query_id = message.guest_query_id
+        chat = message.guest_bot_caller_chat or message.chat
+        chat_id = getattr(chat, "id", None) or message.chat.id
+        message_id = message.message_id or 0
+        security_reason = moderation_service.security_warning_reason(text)
+        if security_reason:
+            warning = moderation_service.apply_model_warning(caller_user.id, security_reason, message_id)
+            await answer_guest_text(bot, guest_query_id, warning.message)
+            return
+        if group_service.event_count_since(event_type="guest_response", user_id=caller_user.id, seconds=120) >= 4:
+            return
+        quota_check = await quota_service.begin_group_generation(caller_user.id)
+        if not quota_check.ok:
+            await answer_guest_text(bot, guest_query_id, "الان ظرفیت جواب گروهی کم شده؛ کمی بعد دوباره صدام کن.")
+            return
+        try:
+            identity = await bot_identity(bot)
+            profile = user_service.get(caller_user.id)
+            result = await group_ai_service.answer_mention(
+                user_id=caller_user.id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_to_text=compact_reply_context(message),
+                message_datetime=message.date,
+                user_profile=profile,
+                bot_identity=identity,
+            )
+            quota_service.consume_group_reply(caller_user.id)
+            group_service.record_engine_event(
+                chat_id=chat_id,
+                user_id=caller_user.id,
+                event_type="guest_response",
+                telegram_message_id=message_id,
+                metadata={"provider": result.provider, "model": result.model},
+            )
+            reply_text = "\n\n".join(item.text for item in result.reply.messages).strip()
+            await answer_guest_text(bot, guest_query_id, reply_text)
+        except Exception:
+            logger.exception("guest_message_response_failed chat_id=%s user_id=%s", chat_id, caller_user.id)
+            group_service.record_engine_event(
+                chat_id=chat_id,
+                user_id=caller_user.id,
+                event_type="guest_response_failed",
+                telegram_message_id=message_id,
+            )
+            await answer_guest_text(bot, guest_query_id, "الان نتونستم جواب آماده کنم؛ دوباره کوتاه صدام کن.")
+        finally:
+            await quota_service.finish_generation(caller_user.id)
+
     @dispatcher.message(F.chat.type.in_({"group", "supergroup"}))
     async def group_message_handler(message: Message, bot: Bot) -> None:
         await track_group_message(message, bot)
         if group_service is None or group_ai_service is None or not message.from_user or message.from_user.is_bot:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         identity = await bot_identity(bot)
         bot_username = str(identity.get("username") or "@narges_aibot").lstrip("@")
         triggered = is_narges_mentioned(message, bot_username) or is_reply_to_bot(message, identity.get("bot_id"))
@@ -945,6 +1061,7 @@ def register_handlers(
             await message.answer("نتوانستم اطلاعات کاربرت را بخوانم. دوباره /start را بزن.")
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) == 2:
             user_service.set_referred_by_code(message.from_user.id, parts[1].strip())
@@ -963,6 +1080,7 @@ def register_handlers(
     async def new_handler(message: Message, bot: Bot) -> None:
         if message.from_user:
             user_service.upsert_telegram_user(profile_from_user(message.from_user))
+            schedule_profile_photo_sync(bot, message.from_user)
         if not await ensure_membership(message, bot):
             return
         await message.answer("لازم نیست گفت‌وگوی جدا بسازی ✨\nهر پیام معمولی‌ای بفرستی مستقیم به نرگس می‌رسه.", reply_markup=menu_service.reply_menu(can_debug(message.from_user.id if message.from_user else 0)))
@@ -1100,6 +1218,221 @@ def register_handlers(
         minutes = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else settings.admin_bypass_minutes
         channel_service.grant_admin_bypass(user_id, target_id, minutes, parts[3] if len(parts) >= 4 else None)
         await message.answer(f"bypass برای {target_id} به مدت {minutes} دقیقه ثبت شد.")
+
+    @dispatcher.message(Command("admin_help"))
+    async def admin_help_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        await send_chunks(
+            message,
+            "\n".join(
+                [
+                    "دستورات ادمین:",
+                    "/admin_last [limit] [user_id] - آخرین پیام‌ها",
+                    "/admin_admins - نمایش ادمین‌ها",
+                    "/admin_groups [page] - لیست گروه‌ها و آیدی‌ها",
+                    "/admin_users [search] [page] - جستجو/لیست کاربران",
+                    "/admin_user <user_id> - وضعیت یک کاربر",
+                    "/admin_send_user <user_id> <text> - ارسال پیام به کاربر",
+                    "/admin_send_group <chat_id> <text> - ارسال پیام به گروه",
+                    "/admin_block <user_id> [days] [reason] - مسدود کردن کاربر",
+                    "/admin_unblock <user_id> - رفع مسدودی",
+                    "/admin_channels - کانال‌های اجباری",
+                ]
+            ),
+        )
+
+    @dispatcher.message(Command("admin_admins"))
+    async def admin_admins_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        lines = ["ادمین‌ها:"]
+        for admin_id in settings.admin_ids:
+            lines.append(f"- `{admin_id}`")
+        if settings.debug_user_ids:
+            lines.append("debug users:")
+            lines.extend(f"- `{user_id}`" for user_id in settings.debug_user_ids)
+        await message.answer("\n".join(lines))
+
+    @dispatcher.message(Command("admin_groups"))
+    async def admin_groups_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        if group_service is None:
+            await message.answer("Group service فعال نیست.")
+            return
+        args = command_args(message).split()
+        page = int(args[0]) if args and args[0].isdigit() else 1
+        per_page = 12
+        groups = group_service.list_groups(only_active=True)
+        start = max(0, page - 1) * per_page
+        chunk = groups[start : start + per_page]
+        if not chunk:
+            await message.answer("گروهی برای نمایش نیست.")
+            return
+        lines = [f"گروه‌ها - صفحه {page}"]
+        for group in chunk:
+            lines.append(
+                f"`{group.chat_id}` | {group.title or group.username or '-'} | {group.chat_type} | members={group.member_count or '-'} | {group.bot_status or '-'}"
+            )
+        lines.append(f"کل: {len(groups)}")
+        await send_chunks(message, "\n".join(lines))
+
+    @dispatcher.message(Command("admin_users"))
+    async def admin_users_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        args = command_args(message).split()
+        page = 1
+        if args and args[-1].isdigit():
+            page = max(1, int(args.pop()))
+        query = " ".join(args).strip().lower()
+        per_page = 10
+        with user_service.database.orm.session() as session:
+            rows = session.scalars(select(UserORM).order_by(desc(UserORM.updated_at), desc(UserORM.created_at))).all()
+            last_seen_pairs = session.execute(
+                select(ConversationMessageORM.user_id, func.max(ConversationMessageORM.created_at)).group_by(ConversationMessageORM.user_id)
+            ).all()
+        last_seen = {int(user_id): value for user_id, value in last_seen_pairs}
+        filtered = []
+        for row in rows:
+            haystack = " ".join(
+                str(value or "")
+                for value in [row.telegram_id, row.username, row.first_name, row.last_name, row.display_name, row.phone_number, row.onboarding_state]
+            ).lower()
+            if query and query not in haystack:
+                continue
+            filtered.append(row)
+        start = (page - 1) * per_page
+        chunk = filtered[start : start + per_page]
+        if not chunk:
+            await message.answer("کاربری پیدا نشد.")
+            return
+        lines = [f"کاربران - صفحه {page} | نتیجه: {len(filtered)}"]
+        for row in chunk:
+            block = moderation_service.get_block_status(row.telegram_id)
+            blocked = "blocked" if block.blocked else "ok"
+            seen = last_seen.get(row.telegram_id)
+            seen_text = seen.strftime("%Y-%m-%d") if hasattr(seen, "strftime") else "-"
+            name = row.display_name or row.first_name or row.username or "-"
+            lines.append(f"`{row.telegram_id}` | {name} | @{row.username or '-'} | {row.onboarding_state} | {blocked} | last={seen_text}")
+        await send_chunks(message, "\n".join(lines))
+
+    @dispatcher.message(Command("admin_last"))
+    async def admin_last_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        args = command_args(message).split()
+        limit = 10
+        user_filter: int | None = None
+        if args and args[0].isdigit():
+            limit = max(1, min(int(args[0]), 30))
+        if len(args) >= 2 and args[1].lstrip("-").isdigit():
+            user_filter = int(args[1])
+        with history_service.database.orm.session() as session:
+            statement = select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(limit)
+            if user_filter is not None:
+                statement = statement.where(ConversationMessageORM.user_id == user_filter)
+            rows = session.scalars(statement).all()
+        if not rows:
+            await message.answer("پیامی پیدا نشد.")
+            return
+        lines = ["آخرین پیام‌ها:"]
+        for row in rows:
+            text = " ".join((row.text or "").split())[:180]
+            lines.append(f"#{row.id} | user={row.user_id} chat={row.chat_id or '-'} | {row.role}/{row.message_type}\n{text}")
+        await send_chunks(message, "\n\n".join(lines))
+
+    @dispatcher.message(Command("admin_user"))
+    async def admin_user_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        args = command_args(message).split()
+        if not args or not args[0].isdigit():
+            await message.answer("فرمت: /admin_user user_id")
+            return
+        target_id = int(args[0])
+        profile = user_service.get(target_id)
+        if profile is None:
+            await message.answer("کاربر پیدا نشد.")
+            return
+        quota = quota_service.account_quota(target_id)
+        block = moderation_service.get_block_status(target_id)
+        await send_json(
+            message,
+            {
+                "profile": asdict(profile),
+                "quota": quota,
+                "block": asdict(block),
+                "warnings": moderation_service.warning_count(target_id),
+            },
+        )
+
+    @dispatcher.message(Command("admin_send_user"))
+    async def admin_send_user_handler(message: Message, bot: Bot) -> None:
+        if not await require_admin_command(message):
+            return
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3 or not parts[1].isdigit():
+            await message.answer("فرمت: /admin_send_user user_id متن پیام")
+            return
+        target_id = int(parts[1])
+        text = parts[2].strip()
+        try:
+            sent = await bot.send_message(target_id, text)
+        except Exception as exc:
+            await message.answer(f"ارسال ناموفق: {exc.__class__.__name__}: {exc}")
+            return
+        history_service.add(target_id, "assistant", text, chat_id=target_id, telegram_message_id=sent.message_id, message_type="admin_direct")
+        await message.answer(f"ارسال شد به {target_id}. message_id={sent.message_id}")
+
+    @dispatcher.message(Command("admin_send_group"))
+    async def admin_send_group_handler(message: Message, bot: Bot) -> None:
+        if not await require_admin_command(message):
+            return
+        if group_service is None:
+            await message.answer("Group service فعال نیست.")
+            return
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3 or not parts[1].lstrip("-").isdigit():
+            await message.answer("فرمت: /admin_send_group chat_id متن پیام")
+            return
+        chat_id = int(parts[1])
+        text = parts[2].strip()
+        try:
+            sent = await bot.send_message(chat_id, text)
+        except Exception as exc:
+            await message.answer(f"ارسال ناموفق: {exc.__class__.__name__}: {exc}")
+            return
+        group_service.record_outbound_message(chat_id=chat_id, text=text, message_type="group_admin", telegram_message_id=sent.message_id)
+        group_service.record_engine_event(chat_id=chat_id, event_type="admin_group_message", telegram_message_id=sent.message_id, metadata={"source": "telegram_admin_command"})
+        await message.answer(f"ارسال شد به گروه {chat_id}. message_id={sent.message_id}")
+
+    @dispatcher.message(Command("admin_block"))
+    async def admin_block_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        parts = (message.text or "").split(maxsplit=3)
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("فرمت: /admin_block user_id [days] [reason]")
+            return
+        target_id = int(parts[1])
+        days = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 7
+        reason = parts[3] if len(parts) >= 4 else "manual admin block"
+        status = moderation_service.block_user(target_id, days, reason)
+        await message.answer(f"کاربر {target_id} تا {status.blocked_until} مسدود شد.")
+
+    @dispatcher.message(Command("admin_unblock"))
+    async def admin_unblock_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        args = command_args(message).split()
+        if not args or not args[0].isdigit():
+            await message.answer("فرمت: /admin_unblock user_id")
+            return
+        target_id = int(args[0])
+        ok = moderation_service.unblock_user(target_id)
+        await message.answer("رفع مسدودی انجام شد." if ok else "این کاربر مسدودی فعال نداشت.")
 
     @dispatcher.message(Command("debug_account"))
     async def debug_account_handler(message: Message) -> None:
@@ -1374,6 +1707,7 @@ def register_handlers(
         if not message.from_user or not message.photo:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         if not await ensure_membership(message, bot):
             return
         if not await ensure_not_blocked_for_model(message):
@@ -1403,6 +1737,7 @@ def register_handlers(
         if not message.from_user or not message.document:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         if not await ensure_membership(message, bot):
             return
         if not await ensure_not_blocked_for_model(message):
@@ -1440,6 +1775,7 @@ def register_handlers(
         if not message.from_user:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         if not await ensure_membership(message, bot):
             return
         if not await ensure_not_blocked_for_model(message):
@@ -1530,6 +1866,7 @@ def register_handlers(
         if not message.from_user or not message.contact:
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         if not await ensure_membership(message, bot):
             return
         if not await ensure_not_blocked_for_model(message):
@@ -1555,6 +1892,7 @@ def register_handlers(
             await message.answer("نتوانستم اطلاعات کاربرت را بخوانم.")
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
+        schedule_profile_photo_sync(bot, message.from_user)
         if await handle_name_text(message, bot):
             return
         if not await ensure_membership(message, bot):

@@ -32,6 +32,7 @@ class MessageDeliveryResult:
     status: str
     telegram_message_id: int | None = None
     error: str | None = None
+    target_type: str = "chat"
 
 
 class GroupService:
@@ -332,15 +333,15 @@ async def send_messages(bot: Bot, chat_ids: list[int], text: str) -> tuple[int, 
     return sent, failed, first_error
 
 
-async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str) -> list[MessageDeliveryResult]:
+async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str, target_type: str = "chat") -> list[MessageDeliveryResult]:
     results: list[MessageDeliveryResult] = []
     for chat_id in chat_ids:
         try:
             message = await bot.send_message(chat_id, text)
-            results.append(MessageDeliveryResult(target_id=chat_id, status="sent", telegram_message_id=message.message_id))
+            results.append(MessageDeliveryResult(target_id=chat_id, status="sent", telegram_message_id=message.message_id, target_type=target_type))
             await asyncio.sleep(0.04)
         except Exception as exc:
-            results.append(MessageDeliveryResult(target_id=chat_id, status="failed", error=f"{exc.__class__.__name__}: {exc}"))
+            results.append(MessageDeliveryResult(target_id=chat_id, status="failed", error=f"{exc.__class__.__name__}: {exc}", target_type=target_type))
     return results
 
 

@@ -123,6 +123,6 @@ async def configure_telegram_webhook(bot_app: BotApplication) -> None:
         webhook_url,
         secret_token=settings.telegram_webhook_secret or None,
         drop_pending_updates=settings.telegram_drop_pending_updates,
-        allowed_updates=bot_app.dispatcher.resolve_used_update_types(),
+        allowed_updates=bot_app.allowed_updates(),
     )
     logger.info("telegram_webhook_configured url=%s drop_pending_updates=%s", webhook_url, settings.telegram_drop_pending_updates)

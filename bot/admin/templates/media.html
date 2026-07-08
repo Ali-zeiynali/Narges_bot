@@ -16,6 +16,7 @@
       <select name="kind">
         <option value="all" {% if not kind or kind == "all" %}selected{% endif %}>همه</option>
         <option value="image" {% if kind == "image" %}selected{% endif %}>عکس</option>
+        <option value="bot_image" {% if kind == "bot_image" %}selected{% endif %}>گالری نرگس</option>
         <option value="voice" {% if kind == "voice" %}selected{% endif %}>ویس</option>
         <option value="audio" {% if kind == "audio" %}selected{% endif %}>صوت</option>
         <option value="video" {% if kind == "video" %}selected{% endif %}>ویدیو</option>
@@ -40,7 +41,7 @@
   {% for item in media %}
   <article class="media-card" id="media-{{ item.id }}">
     <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
-      {% if item.media_kind == "image" %}
+      {% if item.media_kind in ["image", "bot_image"] %}
         <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
       {% elif item.media_kind in ["video", "animation", "video_note"] %}
         <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>

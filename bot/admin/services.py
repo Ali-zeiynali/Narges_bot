@@ -465,6 +465,8 @@ class AdminDataService:
                     )
                 ).lower()
             ]
+        if not kind or kind == "all":
+            items = sorted(items, key=lambda item: (item["media_kind"] == "bot_image", -int(item["id"])))
         return {"media": items, "user_id": user_id, "kind": kind, "q": q, "limit": limit}
 
     def media_file(self, media_id: int) -> MediaFileORM | None:
@@ -777,7 +779,7 @@ class AdminDataService:
                     AdminBroadcastDeliveryORM(
                         broadcast_id=broadcast_id,
                         target_id=int(item.target_id),
-                        target_type="group" if row.target_type == "groups" else "user",
+                        target_type=getattr(item, "target_type", None) or ("group" if row.target_type == "groups" else "user"),
                         telegram_message_id=item.telegram_message_id,
                         status=item.status,
                         error=item.error,
@@ -1085,10 +1087,13 @@ class AdminDataService:
         assistant_replies: dict[int, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         metadata = self._loads_json(row.metadata_json)
+        user_name = (user_names or {}).get(row.user_id, f"کاربر {row.user_id}")
+        if row.media_kind == "bot_image" and int(row.user_id) == 0:
+            user_name = "گالری نرگس"
         return {
             "id": row.id,
             "user_id": row.user_id,
-            "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}"),
+            "user_name": user_name,
             "chat_id": row.chat_id,
             "telegram_message_id": row.telegram_message_id,
             "telegram_file_id": row.telegram_file_id,

@@ -8,7 +8,7 @@ import mimetypes
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePath
 from typing import Any
 
@@ -183,6 +183,29 @@ class MediaStorageService:
             max_bytes=self.settings.max_media_file_bytes,
         )
 
+    async def store_profile_photo(self, bot: Bot, user_id: int, photo: Any, position: int) -> StoredMedia:
+        file_id = str(getattr(photo, "file_id", "") or "").strip()
+        if not file_id:
+            raise MediaStorageError("profile photo is missing file_id")
+        return await self._store_telegram_file(
+            bot=bot,
+            user_id=user_id,
+            chat_id=None,
+            telegram_message_id=None,
+            telegram_file_id=file_id,
+            media_kind="profile_photo",
+            mime_type="image/jpeg",
+            original_file_name=None,
+            caption=f"Telegram profile photo #{position + 1}",
+            reported_file_size=getattr(photo, "file_size", None),
+            max_bytes=self.settings.max_image_file_bytes,
+            metadata_extra={
+                "source": "telegram_user_profile_photo",
+                "profile_photo_position": position,
+                "telegram_file_unique_id": getattr(photo, "file_unique_id", None),
+            },
+        )
+
     def image_count_today(self, user_id: int) -> int:
         since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.database.orm.session() as session:
@@ -218,7 +241,7 @@ class MediaStorageService:
                 select(MediaFileORM)
                 .where(
                     MediaFileORM.content_hash == media.content_hash,
-                    MediaFileORM.media_kind == "image",
+                    MediaFileORM.media_kind.in_(("image", "profile_photo")),
                     MediaFileORM.id != media.id,
                 )
                 .order_by(MediaFileORM.id.desc())
@@ -230,6 +253,80 @@ class MediaStorageService:
             if description:
                 return description
         return None
+
+    def profile_photos_recently_synced(self, user_id: int, hours: int = 24) -> bool:
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        with self.database.orm.session() as session:
+            value = session.scalar(
+                select(func.count())
+                .select_from(MediaFileORM)
+                .where(
+                    MediaFileORM.user_id == user_id,
+                    MediaFileORM.media_kind.in_(("profile_photo", "profile_photo_sync")),
+                    MediaFileORM.created_at >= since,
+                )
+            )
+        return int(value or 0) > 0
+
+    def mark_profile_photos_synced(self, user_id: int, total_count: int) -> None:
+        created_at = datetime.now(UTC)
+        self._record(
+            user_id=user_id,
+            chat_id=None,
+            telegram_message_id=None,
+            telegram_file_id=f"profile_photo_sync:{user_id}:{created_at.timestamp()}",
+            media_kind="profile_photo_sync",
+            mime_type=None,
+            original_file_name=None,
+            storage_path="",
+            content_hash=None,
+            file_bytes=None,
+            file_size=None,
+            caption=None,
+            metadata={
+                "source": "telegram_user_profile_photo_sync",
+                "total_count": total_count,
+                "synced_at": created_at.isoformat(),
+            },
+            created_at=created_at,
+        )
+
+    def profile_photo_context(self, user_id: int, limit: int = 3) -> list[dict[str, Any]]:
+        with self.database.orm.session() as session:
+            rows = session.scalars(
+                select(MediaFileORM)
+                .where(MediaFileORM.user_id == user_id, MediaFileORM.media_kind == "profile_photo")
+                .order_by(MediaFileORM.created_at.desc(), MediaFileORM.id.desc())
+                .limit(60)
+            ).all()
+        by_image: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            metadata = self._loads_metadata(row.metadata_json)
+            description = str(metadata.get("vision_description") or "").strip()
+            if not description:
+                continue
+            key = row.content_hash or row.telegram_file_id
+            if key in by_image:
+                continue
+            position = metadata.get("profile_photo_position")
+            try:
+                position_value = int(position)
+            except (TypeError, ValueError):
+                position_value = 999
+            by_image[key] = {
+                "source": "telegram_user_profile_photo",
+                "note": "This vision description is from one of the user's Telegram profile photos.",
+                "profile_photo_number": position_value + 1 if position_value != 999 else None,
+                "description": description[:1000],
+                "media_id": row.id,
+                "content_hash": row.content_hash,
+                "described_at": metadata.get("vision_described_at"),
+            }
+        items = sorted(
+            by_image.values(),
+            key=lambda item: item["profile_photo_number"] if item["profile_photo_number"] is not None else 999,
+        )
+        return items[:limit]
 
     def file_payload(self, media_id: int) -> tuple[bytes | None, str | None]:
         with self.database.orm.session() as session:
@@ -267,6 +364,7 @@ class MediaStorageService:
         caption: str | None,
         reported_file_size: int | None,
         max_bytes: int,
+        metadata_extra: dict[str, Any] | None = None,
     ) -> StoredMedia:
         if reported_file_size is not None and reported_file_size > max_bytes:
             raise MediaStorageError("media file is too large")
@@ -295,6 +393,8 @@ class MediaStorageService:
             "stored_in_database": True,
             "content_hash": content_hash,
         }
+        if metadata_extra:
+            metadata.update(metadata_extra)
         if duplicate_id:
             metadata["duplicate_of_media_id"] = duplicate_id
         return self._record(
@@ -389,7 +489,7 @@ class MediaStorageService:
 
     def _suffix_for(self, media_kind: str, mime_type: str | None, original_file_name: str | None, telegram_file_path: str | None) -> str:
         normalized_mime = (mime_type or "").lower()
-        if media_kind == "image" and normalized_mime in SUPPORTED_IMAGE_MIME_TYPES:
+        if normalized_mime in SUPPORTED_IMAGE_MIME_TYPES:
             return SUPPORTED_IMAGE_MIME_TYPES[normalized_mime]
         suffix = Path(original_file_name or telegram_file_path or "").suffix.lower()
         return suffix if suffix in SAFE_MEDIA_SUFFIXES else ".bin"

@@ -93,7 +93,7 @@
             {% for item in attached %}
             <div class="media-card">
               <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
-                {% if item.media_kind == "image" %}
+                {% if item.media_kind in ["image", "bot_image"] %}
                   <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
                 {% elif item.media_kind in ["voice", "audio"] %}
                   <div style="width:100%;padding:10px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
@@ -123,7 +123,7 @@
     {% for item in detail.media[:12] %}
     <article class="media-card">
       <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
-        {% if item.media_kind == "image" %}
+        {% if item.media_kind in ["image", "bot_image"] %}
           <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
         {% elif item.media_kind in ["voice", "audio"] %}
           <div style="width:100%;padding:16px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>

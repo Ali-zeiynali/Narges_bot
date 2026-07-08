@@ -164,11 +164,13 @@ class GroqChatClient:
             "additionalProperties": False,
         }
         selection_payload = {
-            "task": "Choose at most one local image for the Telegram reply.",
+            "task": "Strictly decide whether one local catalog image should be attached to this Telegram reply.",
             "rules": [
-                "Return image_id null if none of the catalog images fit.",
-                "Use only an id from image_catalog.",
-                "Caption must be short Persian text suitable for Telegram.",
+                "Return image_id null unless the original assistant explicitly requested an image and the catalog has a fitting image.",
+                "Use only an id from image_catalog; never invent ids.",
+                "Return image_id null for vague, indirect, joking, or weak photo requests.",
+                "Return image_id null if the selected image would not clearly match image_request.prompt and the conversation context.",
+                "Caption must be short Persian text suitable for Telegram and must not claim details not supported by the catalog description.",
             ],
             "image_request": image_request,
             "image_catalog": image_catalog,
@@ -178,7 +180,7 @@ class GroqChatClient:
             [
                 {
                     "role": "system",
-                    "content": "Select a local Telegram image. Return only compact JSON.",
+                    "content": "You are a strict local image catalog gate. Return only compact JSON with image_id and caption.",
                 },
                 {"role": "user", "content": json.dumps(selection_payload, ensure_ascii=False)},
             ],

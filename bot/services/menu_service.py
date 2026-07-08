@@ -21,6 +21,16 @@ class MenuService:
     async def setup_commands(self, bot: Bot) -> None:
         await bot.set_my_commands([BotCommand(command="start", description="شروع")], scope=BotCommandScopeDefault())
         admin_commands = [
+            BotCommand(command="admin_help", description="راهنمای دستورات ادمین"),
+            BotCommand(command="admin_last", description="آخرین پیام‌ها"),
+            BotCommand(command="admin_admins", description="نمایش ادمین‌ها"),
+            BotCommand(command="admin_groups", description="لیست گروه‌ها"),
+            BotCommand(command="admin_users", description="لیست و جستجوی کاربران"),
+            BotCommand(command="admin_user", description="وضعیت یک کاربر"),
+            BotCommand(command="admin_send_user", description="ارسال پیام به کاربر"),
+            BotCommand(command="admin_send_group", description="ارسال پیام به گروه"),
+            BotCommand(command="admin_block", description="مسدود کردن کاربر"),
+            BotCommand(command="admin_unblock", description="رفع مسدودی کاربر"),
             BotCommand(command="admin_channels", description="مدیریت کانال‌ها"),
             BotCommand(command="admin_add_channel", description="افزودن کانال اجباری"),
             BotCommand(command="admin_remove_channel", description="حذف کانال اجباری"),

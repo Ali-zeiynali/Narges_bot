@@ -91,6 +91,42 @@ class ModerationService:
     def apply_manual_warning(self, user_id: int, reason: str) -> WarningResult:
         return self._apply_warning(user_id, reason, source="admin_panel", source_message_id=None)
 
+    def block_user(self, user_id: int, days: int, reason: str, warning_count: int | None = None) -> BlockStatus:
+        days = max(1, min(int(days), 365))
+        now = datetime.now(UTC)
+        blocked_until = now + timedelta(days=days)
+        clean_reason = (reason or "manual admin block").strip()[:240]
+        count = warning_count if warning_count is not None else max(3, self.warning_count(user_id))
+        with self.database.orm.session() as session:
+            row = session.get(UserBlockORM, user_id)
+            if row is None:
+                row = UserBlockORM(
+                    user_id=user_id,
+                    warning_count=count,
+                    blocked_until=blocked_until,
+                    reason=clean_reason,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.warning_count = count
+                row.blocked_until = blocked_until
+                row.reason = clean_reason
+                row.updated_at = now
+        if self.debug_service:
+            self.debug_service.log("user_blocked_by_admin", {"days": days, "reason": clean_reason}, user_id=user_id)
+        return BlockStatus(blocked=True, blocked_until=blocked_until, reason=clean_reason, warning_count=count)
+
+    def unblock_user(self, user_id: int) -> bool:
+        with self.database.orm.session() as session:
+            row = session.get(UserBlockORM, user_id)
+            if row is None:
+                return False
+            session.delete(row)
+        if self.debug_service:
+            self.debug_service.log("user_unblocked_by_admin", {}, user_id=user_id)
+        return True
+
     def security_warning_reason(self, text: str) -> str | None:
         normalized = self._normalize_security_text(text)
         if not normalized:

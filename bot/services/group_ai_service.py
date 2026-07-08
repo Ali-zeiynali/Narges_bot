@@ -5,7 +5,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bot.models.ai import NargesReply
 from bot.persona.shards.core import build_persona_prompt
@@ -18,6 +18,9 @@ from bot.services.narges_state_service import NargesStateService
 from bot.services.usage_service import UsageService
 from bot.utils.text_safety import clamp_repeated_chars
 from bot.utils.tokens import estimate_tokens
+
+if TYPE_CHECKING:
+    from bot.services.profile_photo_service import ProfilePhotoService
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,7 @@ class GroupAIService:
         history_service: HistoryService,
         debug_service: DebugService,
         usage_service: UsageService,
+        profile_photo_service: "ProfilePhotoService | None" = None,
     ) -> None:
         self.groq_client = groq_client
         self.narges_state_service = narges_state_service
@@ -79,6 +83,7 @@ class GroupAIService:
         self.history_service = history_service
         self.debug_service = debug_service
         self.usage_service = usage_service
+        self.profile_photo_service = profile_photo_service
 
     async def answer_mention(
         self,
@@ -106,6 +111,7 @@ class GroupAIService:
                 else "The user directly mentioned/called Narges in this group message."
             ),
             "sender_profile": self._compact_user_profile(user_profile),
+            "sender_profile_photos": self._profile_photo_context(user_id),
             "sender_memories": [memory.summary for memory in memories],
             "rules": [
                 "Use no previous group messages.",
@@ -148,6 +154,7 @@ class GroupAIService:
             "photo_description": description,
             "media_id": media_id,
             "sender_profile": self._compact_user_profile(user_profile),
+            "sender_profile_photos": self._profile_photo_context(user_id),
             "sender_memories": [memory.summary for memory in memories],
             "rules": [
                 "One short Persian Telegram reply.",
@@ -365,3 +372,8 @@ class GroupAIService:
             "gender": getattr(profile, "gender", None),
             "language_code": getattr(profile, "language_code", None),
         }
+
+    def _profile_photo_context(self, user_id: int) -> list[dict[str, Any]]:
+        if self.profile_photo_service is None:
+            return []
+        return self.profile_photo_service.context_for_user(user_id)

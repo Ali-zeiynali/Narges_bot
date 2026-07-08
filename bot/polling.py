@@ -61,7 +61,7 @@ def _latest_backlog_updates(
 
 async def _drain_startup_backlog(app, startup_unix_time: float) -> None:
     settings = app.settings
-    allowed_updates = app.dispatcher.resolve_used_update_types()
+    allowed_updates = app.allowed_updates()
     offset: int | None = None
     updates: list[Update] = []
 
@@ -107,7 +107,7 @@ async def run_polling() -> None:
         await _drain_startup_backlog(app, startup_unix_time)
         await app.dispatcher.start_polling(
             app.bot,
-            allowed_updates=app.dispatcher.resolve_used_update_types(),
+            allowed_updates=app.allowed_updates(),
         )
     finally:
         await app.shutdown()
