@@ -196,7 +196,7 @@ class AdminDataService:
             hourly_usage_chart=hourly_usage_chart,
         )
 
-    def users(self, sort: str = "last_seen", query: str = "", active_only: bool = False) -> list[dict[str, Any]]:
+    def users(self, sort: str = "last_seen", query: str = "", active_only: bool = False, ready_only: bool = False) -> list[dict[str, Any]]:
         with self.database.orm.session() as session:
             rows = session.scalars(select(UserORM)).all()
             last_seen_pairs = session.execute(
@@ -218,6 +218,8 @@ class AdminDataService:
             if needle and needle not in haystack:
                 continue
             if active_only and row.telegram_id not in last_seen:
+                continue
+            if ready_only and row.onboarding_state != "ready":
                 continue
             quota = self.quota_service.account_quota(row.telegram_id)
             items.append(
@@ -433,6 +435,9 @@ class AdminDataService:
         limit = max(20, min(limit, 1000))
         kind = (kind or "").strip()
         needle = (q or "").strip().lower()
+        from bot.services.media_service import BotImageCatalog
+
+        BotImageCatalog(self.settings, self.database).ensure_seeded()
         with self.database.orm.session() as session:
             statement = select(MediaFileORM).order_by(desc(MediaFileORM.id)).limit(limit)
             if user_id is not None:

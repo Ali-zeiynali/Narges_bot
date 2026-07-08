@@ -11,6 +11,10 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, LabeledPrice, Message, PreCheckoutQuery, ReplyKeyboardRemove, User
+try:
+    from aiogram.types import ReplyParameters
+except Exception:  # pragma: no cover - depends on aiogram minor version
+    ReplyParameters = None  # type: ignore[assignment]
 from pydantic import BaseModel
 
 from bot.config import Settings
@@ -177,7 +181,7 @@ def register_handlers(
         text = clamp_repeated_chars((replied.text or replied.caption or "").strip())
         if not text:
             text = f"[{replied.content_type}]"
-        return f"{author}: {text[:700]}"
+        return f"پیام ریپلای‌شده که کاربر نرگس را روی آن صدا کرده است: {author}: {text[:700]}"
 
     def is_narges_mentioned(message: Message, bot_username: str = "narges_aibot") -> bool:
         text = group_text(message)
@@ -557,9 +561,19 @@ def register_handlers(
         for item in result.reply.messages:
             await asyncio.sleep(item.delay_seconds)
             if item.image_id:
-                await send_photo_with_retries(message, bot, item.image_id, item.text)
+                sent_message_id = await send_photo_with_retries(message, bot, item.image_id, item.text)
+                history_service.set_telegram_message_id(getattr(result, "assistant_message_id", None), sent_message_id)
+                if sent_message_id:
+                    bot_image_catalog.record_sent_image(
+                        image_id=item.image_id,
+                        user_id=message.from_user.id,
+                        chat_id=message.chat.id,
+                        telegram_message_id=sent_message_id,
+                        caption=item.text,
+                    )
             else:
-                await send_text_with_retries(message, item.text)
+                sent_message_id = await send_text_with_retries(message, item.text, bot)
+                history_service.set_telegram_message_id(getattr(result, "assistant_message_id", None), sent_message_id)
         if profile and not profile.gender:
             today = message.date.astimezone(UTC).date().isoformat()
             if user_service.should_send_gender_nudge(message.from_user.id, today):
@@ -575,43 +589,72 @@ def register_handlers(
             quota_service.add_extra_credit(inviter_id, 10, reason=f"referral:{message.from_user.id}")
             await notify_referral_reward(bot, inviter_id, message.from_user.id)
 
-    async def send_text_with_retries(message: Message, text: str, attempts: int = 3) -> None:
+    async def send_text_with_retries(message: Message, text: str, bot: Bot | None = None, attempts: int = 3) -> int | None:
         last_error: Exception | None = None
         should_reply = is_group_chat_type(getattr(message.chat, "type", None))
         for attempt in range(1, attempts + 1):
             try:
-                if attempt == 1 and should_reply:
-                    await message.reply(text, allow_sending_without_reply=True)
+                if should_reply and bot is not None:
+                    if ReplyParameters is not None:
+                        sent = await bot.send_message(
+                            chat_id=message.chat.id,
+                            text=text,
+                            reply_parameters=ReplyParameters(message_id=message.message_id, allow_sending_without_reply=True),
+                        )
+                    else:
+                        sent = await bot.send_message(
+                            chat_id=message.chat.id,
+                            text=text,
+                            reply_to_message_id=message.message_id,
+                            allow_sending_without_reply=True,
+                        )
                 else:
-                    await message.answer(text)
-                return
+                    sent = await message.answer(text)
+                return int(sent.message_id)
             except Exception as exc:
                 last_error = exc
                 logger.warning("answer_send_failed attempt=%s chat_id=%s error=%s", attempt, message.chat.id, exc)
                 await asyncio.sleep(min(attempt, 3))
         logger.error("answer_send_exhausted chat_id=%s error=%s", message.chat.id, last_error)
+        return None
 
-    async def send_photo_with_retries(message: Message, bot: Bot, image_id: str, caption: str, attempts: int = 3) -> None:
+    async def send_photo_with_retries(message: Message, bot: Bot, image_id: str, caption: str, attempts: int = 3) -> int | None:
         payload = bot_image_catalog.payload(image_id)
         if payload is None:
-            await send_text_with_retries(message, caption)
-            return
+            return await send_text_with_retries(message, caption, bot)
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
                 file = BufferedInputFile(payload.content, filename=payload.filename)
-                await bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=file,
-                    caption=caption[:1024] or payload.description[:1024],
-                )
-                return
+                if is_group_chat_type(getattr(message.chat, "type", None)):
+                    if ReplyParameters is not None:
+                        sent = await bot.send_photo(
+                            chat_id=message.chat.id,
+                            photo=file,
+                            caption=caption[:1024] or payload.description[:1024],
+                            reply_parameters=ReplyParameters(message_id=message.message_id, allow_sending_without_reply=True),
+                        )
+                    else:
+                        sent = await bot.send_photo(
+                            chat_id=message.chat.id,
+                            photo=file,
+                            caption=caption[:1024] or payload.description[:1024],
+                            reply_to_message_id=message.message_id,
+                            allow_sending_without_reply=True,
+                        )
+                else:
+                    sent = await bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=file,
+                        caption=caption[:1024] or payload.description[:1024],
+                    )
+                return int(sent.message_id)
             except Exception as exc:
                 last_error = exc
                 logger.warning("photo_send_failed image_id=%s attempt=%s chat_id=%s error=%s", image_id, attempt, message.chat.id, exc)
                 await asyncio.sleep(min(attempt, 3))
         logger.error("photo_send_exhausted image_id=%s chat_id=%s error=%s", image_id, message.chat.id, last_error)
-        await send_text_with_retries(message, caption)
+        return await send_text_with_retries(message, caption, bot)
 
     async def handle_ready_image(message: Message, bot: Bot, stored_media: StoredMedia, profile) -> None:
         if media_storage_service.image_count_today(message.from_user.id) > settings.image_daily_limit:
@@ -722,6 +765,21 @@ def register_handlers(
         bot_username = str(identity.get("username") or "@narges_aibot").lstrip("@")
         triggered = is_narges_mentioned(message, bot_username) or is_reply_to_bot(message, identity.get("bot_id"))
         standalone_photo = is_standalone_group_photo(message)
+        observed_text = group_text(message)
+        if observed_text:
+            group_service.record_observed_message(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                telegram_message_id=message.message_id,
+                text=observed_text,
+                created_at=message.date,
+                metadata={
+                    "content_type": str(message.content_type),
+                    "reply_to_message_id": message.reply_to_message.message_id if message.reply_to_message else None,
+                    "mentioned_narges": is_narges_mentioned(message, bot_username),
+                    "reply_to_bot": is_reply_to_bot(message, identity.get("bot_id")),
+                },
+            )
         stored_group_media: StoredMedia | None = None
         if message.photo:
             try:
@@ -744,9 +802,23 @@ def register_handlers(
                     metadata={"reason": security_reason},
                 )
                 return
-            if group_service.event_count_since(event_type="mention_response", chat_id=message.chat.id, seconds=60) >= 3:
+            if group_service.event_count_since(event_type="mention_response", chat_id=message.chat.id, seconds=60) >= 8:
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_rate_blocked",
+                    telegram_message_id=message.message_id,
+                    metadata={"scope": "chat"},
+                )
                 return
-            if group_service.event_count_since(event_type="mention_response", user_id=message.from_user.id, seconds=120) >= 2:
+            if group_service.event_count_since(event_type="mention_response", user_id=message.from_user.id, seconds=120) >= 4:
+                group_service.record_engine_event(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    event_type="mention_rate_blocked",
+                    telegram_message_id=message.message_id,
+                    metadata={"scope": "user"},
+                )
                 return
             quota_check = await quota_service.begin_group_generation(message.from_user.id)
             if not quota_check.ok:
@@ -757,6 +829,7 @@ def register_handlers(
                     telegram_message_id=message.message_id,
                     metadata={"remaining": quota_check.remaining},
                 )
+                await send_text_with_retries(message, "الان گیر کردم؛ همین پیام رو دوباره کوتاه بفرست.", bot)
                 return
             try:
                 with suppress(Exception):
@@ -782,7 +855,7 @@ def register_handlers(
                 )
                 for item in result.reply.messages:
                     await asyncio.sleep(item.delay_seconds)
-                    await send_text_with_retries(message, item.text)
+                    await send_text_with_retries(message, item.text, bot)
             except Exception:
                 logger.exception("group_mention_response_failed chat_id=%s user_id=%s", message.chat.id, message.from_user.id)
                 group_service.record_engine_event(
@@ -852,7 +925,7 @@ def register_handlers(
                 )
                 for item in result.reply.messages[:1]:
                     await asyncio.sleep(item.delay_seconds)
-                    await send_text_with_retries(message, item.text)
+                    await send_text_with_retries(message, item.text, bot)
             except Exception:
                 logger.exception("group_photo_reaction_failed chat_id=%s user_id=%s", message.chat.id, message.from_user.id)
                 group_service.record_engine_event(

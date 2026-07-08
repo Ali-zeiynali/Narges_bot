@@ -99,11 +99,18 @@ class GroupAIService:
             "bot_identity": bot_identity,
             "current_group_message": text,
             "reply_to_message": reply_to_text,
+            "interaction_note": (
+                "The user mentioned/called Narges while replying to reply_to_message. "
+                "Use both the replied-to message and the user's current message, but answer only the current Telegram message."
+                if reply_to_text
+                else "The user directly mentioned/called Narges in this group message."
+            ),
             "sender_profile": self._compact_user_profile(user_profile),
             "sender_memories": [memory.summary for memory in memories],
             "rules": [
                 "Use no previous group messages.",
-                "Use reply_to_message only as immediate local context.",
+                "Use only the single reply_to_message as immediate local context when it is present.",
+                "Never answer a whole reply chain; answer the current Telegram message only.",
                 "One short Persian Telegram reply.",
             ],
         }

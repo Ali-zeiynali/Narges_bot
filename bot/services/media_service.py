@@ -481,6 +481,52 @@ class BotImageCatalog:
             description=item.description,
         )
 
+    def record_sent_image(
+        self,
+        *,
+        image_id: str,
+        user_id: int,
+        chat_id: int | None,
+        telegram_message_id: int | None,
+        caption: str | None,
+    ) -> int | None:
+        payload = self.payload(image_id)
+        if payload is None or not payload.content:
+            return None
+        content_hash = hashlib.sha256(payload.content).hexdigest()
+        item = self._item_by_id(image_id)
+        created_at = datetime.now(UTC)
+        with self.database.orm.session() as session:
+            row = MediaFileORM(
+                user_id=user_id,
+                chat_id=chat_id,
+                telegram_message_id=telegram_message_id,
+                telegram_file_id=f"local:{image_id}:sent:{telegram_message_id or created_at.timestamp()}",
+                media_kind="bot_image",
+                mime_type=payload.mime_type,
+                original_file_name=payload.filename,
+                storage_path=str(self._resolve_path(item.path)) if item else "",
+                content_hash=content_hash,
+                file_bytes=payload.content,
+                file_size=len(payload.content),
+                caption=caption,
+                metadata_json=json.dumps(
+                    {
+                        "catalog_id": image_id,
+                        "description": payload.description,
+                        "source": "bot_sent_image",
+                        "sent_by_bot": True,
+                        "stored_in_database": True,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                created_at=created_at,
+            )
+            session.add(row)
+            session.flush()
+            return int(row.id)
+
     def ensure_seeded(self) -> None:
         try:
             items = self.load_items()

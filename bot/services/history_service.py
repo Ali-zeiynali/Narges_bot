@@ -72,6 +72,14 @@ class HistoryService:
             session.flush()
             return int(row.id)
 
+    def set_telegram_message_id(self, message_id: int | None, telegram_message_id: int | None) -> None:
+        if not message_id or not telegram_message_id:
+            return
+        with self.database.orm.session() as session:
+            row = session.get(ConversationMessageORM, int(message_id))
+            if row is not None:
+                row.telegram_message_id = int(telegram_message_id)
+
     def recent_assistant_replies(self, user_id: int, limit: int = 5) -> list[str]:
         with self.database.orm.session() as session:
             rows = session.scalars(

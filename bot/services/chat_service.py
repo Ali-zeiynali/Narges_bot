@@ -172,6 +172,7 @@ class ChatTurnResult:
     reply: NargesReply
     usage: dict[str, int | None]
     estimated_tokens: int
+    assistant_message_id: int | None = None
 
 
 class ChatService:
@@ -397,7 +398,7 @@ class ChatService:
                     intent=context.recent_intent,
                     ai_request_payload=user_ai_request_payload,
                 )
-                self.history_service.add(
+                assistant_message_id = self.history_service.add(
                     user_id,
                     "assistant",
                     clean_assistant_text,
@@ -476,6 +477,7 @@ class ChatService:
             reply=result.reply,
             usage=final_usage or result.usage,
             estimated_tokens=input_token_estimate + self.validator.settings.groq_max_completion_tokens,
+            assistant_message_id=assistant_message_id if "assistant_message_id" in locals() else None,
         )
 
     def _build_messages(
