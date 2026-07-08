@@ -38,6 +38,16 @@ class GroqClientNormalizationTests(unittest.TestCase):
         self.assertEqual(image_id, "selfie_4")
         self.assertEqual(caption, "caption")
 
+    def test_partial_json_reply_recovers_message_text(self) -> None:
+        payload = self.client._try_loads_json('{"messages":[{"text":"hello there"')
+
+        self.assertEqual(payload["messages"][0]["text"], "hello there")
+
+    def test_clean_text_reply_extracts_from_partial_json(self) -> None:
+        text = self.client._clean_text_reply('{"messages":[{"text":"main answer"')
+
+        self.assertEqual(text, "main answer")
+
 
 if __name__ == "__main__":
     unittest.main()

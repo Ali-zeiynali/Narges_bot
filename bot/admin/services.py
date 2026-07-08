@@ -168,7 +168,12 @@ class AdminDataService:
             recent_usage_rows = session.scalars(select(UsageLogORM).order_by(desc(UsageLogORM.id)).limit(8)).all()
             active_users_today = session.scalar(select(func.count(func.distinct(ConversationMessageORM.user_id))).where(ConversationMessageORM.created_at >= today)) or 0
             tokens_today = session.scalar(select(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)).where(UsageLogORM.created_at >= today)) or 0
-            recent_messages = session.scalars(select(ConversationMessageORM).order_by(desc(ConversationMessageORM.id)).limit(10)).all()
+            recent_messages = session.scalars(
+                select(ConversationMessageORM)
+                .where(ConversationMessageORM.role == "assistant")
+                .order_by(desc(ConversationMessageORM.id))
+                .limit(10)
+            ).all()
             recent_users = session.scalars(select(UserORM).order_by(desc(UserORM.created_at)).limit(10)).all()
             user_names = self._user_name_map(session, self._collect_user_ids(recent_messages, recent_usage_rows, recent_debug_rows))
             daily_chart = self._daily_chart(session, days=14)
@@ -372,20 +377,45 @@ class AdminDataService:
                 message_statement = message_statement.where(False)
                 event_statement = event_statement.where(False)
             rows = session.scalars(message_statement).all()
+            timeline_statement = (
+                select(ConversationMessageORM)
+                .where(ConversationMessageORM.message_type.like("group_%"))
+                .order_by(desc(ConversationMessageORM.id))
+                .limit(limit)
+            )
+            if chat_id is not None:
+                timeline_statement = timeline_statement.where(ConversationMessageORM.chat_id == chat_id)
+            if message_types:
+                timeline_statement = timeline_statement.where(ConversationMessageORM.message_type.in_(message_types))
+            if visible_chat_ids:
+                timeline_statement = timeline_statement.where(ConversationMessageORM.chat_id.in_(visible_chat_ids))
+            else:
+                timeline_statement = timeline_statement.where(False)
+            timeline_rows = session.scalars(timeline_statement).all()
             events = session.scalars(event_statement).all()
             group_names = self._group_name_map(groups)
-            user_names = self._user_name_map(session, [row.user_id for row in rows] + [event.user_id for event in events if event.user_id])
-            media_by_message = self._media_by_message(session, rows)
+            user_names = self._user_name_map(
+                session,
+                [row.user_id for row in rows]
+                + [row.user_id for row in timeline_rows]
+                + [event.user_id for event in events if event.user_id],
+            )
+            media_by_message = self._media_by_message(session, rows + timeline_rows)
             counts = {
                 "all": self._group_message_count(session, visible_chat_ids, None),
-                "observed": 0,
+                "observed": self._group_message_count(session, visible_chat_ids, ("group_observed",)),
                 "mentions": self._group_message_count(session, visible_chat_ids, ("group_mention",)),
                 "photos": self._group_message_count(session, visible_chat_ids, ("group_photo",)),
                 "auto": self._group_message_count(session, visible_chat_ids, ("group_auto",)),
                 "scheduled": self._group_message_count(session, visible_chat_ids, ("group_scheduled", "group_admin")),
             }
+            timeline = [
+                self._timeline_row(row, group_names, user_names, media_by_message.get(row.id, []))
+                for row in reversed(timeline_rows)
+            ]
         return {
             "messages": rows,
+            "timeline": timeline,
             "events": [self._group_event_row(row, group_names, user_names) for row in events],
             "groups": groups,
             "group_names": group_names,
@@ -747,7 +777,16 @@ class AdminDataService:
             warning_rows = session.scalars(select(UserWarningEventORM).order_by(desc(UserWarningEventORM.id)).limit(limit)).all()
             broadcasts = session.scalars(select(AdminBroadcastORM).order_by(desc(AdminBroadcastORM.id)).limit(30)).all()
             user_names = self._user_name_map(session, self._collect_user_ids(debug_rows, usage_rows, warning_rows))
-        return {"kind": kind, "debug": debug_rows, "usage": usage_rows, "warnings": warning_rows, "broadcasts": broadcasts, "user_names": user_names}
+        traces = [self._trace_row(row) for row in debug_rows if row.event == "request_trace"]
+        return {
+            "kind": kind,
+            "debug": debug_rows,
+            "traces": traces,
+            "usage": usage_rows,
+            "warnings": warning_rows,
+            "broadcasts": broadcasts,
+            "user_names": user_names,
+        }
 
     def create_broadcast(self, text: str, target_count: int, target_type: str = "users", target_value: str | None = None) -> int:
         with self.database.orm.session() as session:
@@ -966,7 +1005,6 @@ class AdminDataService:
             .select_from(ConversationMessageORM)
             .where(
                 ConversationMessageORM.message_type.like("group_%"),
-                ConversationMessageORM.message_type != "group_observed",
                 ConversationMessageORM.chat_id.in_(chat_ids),
             )
         )
@@ -990,6 +1028,66 @@ class AdminDataService:
             "event_type": row.event_type,
             "telegram_message_id": row.telegram_message_id,
             "metadata": metadata,
+            "created_at": row.created_at,
+        }
+
+    def _timeline_row(
+        self,
+        row: ConversationMessageORM,
+        group_names: dict[int, str],
+        user_names: dict[int, str],
+        media: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        payload = self._loads_json(row.ai_request_payload_json)
+        reply_to_message_id = payload.get("reply_to_message_id")
+        if reply_to_message_id is None and isinstance(payload.get("payload"), dict):
+            reply_to_message_id = payload["payload"].get("reply_to_message_id")
+        direction = "out" if row.role == "assistant" else "in"
+        return {
+            "id": row.id,
+            "chat_id": row.chat_id,
+            "group_name": group_names.get(int(row.chat_id or 0), str(row.chat_id or "-")),
+            "user_id": row.user_id,
+            "user_name": user_names.get(int(row.user_id), f"Ú©Ø§Ø±Ø¨Ø± {row.user_id}") if row.user_id else "Narges",
+            "role": row.role,
+            "direction": direction,
+            "message_type": row.message_type,
+            "telegram_message_id": row.telegram_message_id,
+            "reply_to_message_id": reply_to_message_id,
+            "text": row.text,
+            "provider": row.provider,
+            "model": row.model,
+            "total_tokens": row.total_tokens,
+            "media": media,
+            "created_at": row.created_at,
+        }
+
+    def _trace_row(self, row: DebugLogORM) -> dict[str, Any]:
+        payload = self._loads_json(row.payload)
+        steps = payload.get("steps") if isinstance(payload, dict) else []
+        if not isinstance(steps, list):
+            steps = []
+        cleaned_steps = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            cleaned_steps.append(
+                {
+                    "name": step.get("name") or "-",
+                    "elapsed_ms": int(step.get("elapsed_ms") or 0),
+                    "metadata": {key: value for key, value in step.items() if key not in {"name", "elapsed_ms"}},
+                }
+            )
+        metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return {
+            "id": row.id,
+            "user_id": row.user_id,
+            "name": payload.get("name") if isinstance(payload, dict) else row.event,
+            "total_ms": int(payload.get("total_ms") or 0) if isinstance(payload, dict) else 0,
+            "metadata": metadata,
+            "steps": cleaned_steps,
             "created_at": row.created_at,
         }
 

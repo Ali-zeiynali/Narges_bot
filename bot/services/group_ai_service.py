@@ -63,6 +63,7 @@ class GroupAIResult:
     model: str
     estimated_tokens: int
     selected_message_id: int | None = None
+    assistant_message_id: int | None = None
 
 
 class GroupAIService:
@@ -122,7 +123,7 @@ class GroupAIService:
         }
         messages = self._messages(GROUP_PERSONA, payload, message_datetime)
         result = await self._complete_reply(messages)
-        self._store_turn(
+        assistant_message_id = self._store_turn(
             user_id=user_id,
             chat_id=chat_id,
             message_id=message_id,
@@ -133,7 +134,14 @@ class GroupAIService:
             request_payload=payload,
             message_type="group_mention",
         )
-        return result
+        return GroupAIResult(
+            reply=result.reply,
+            usage=result.usage,
+            provider=result.provider,
+            model=result.model,
+            estimated_tokens=result.estimated_tokens,
+            assistant_message_id=assistant_message_id,
+        )
 
     async def answer_photo(
         self,
@@ -164,7 +172,7 @@ class GroupAIService:
         }
         messages = self._messages(f"{GROUP_PERSONA}\n\n{GROUP_PHOTO_PERSONA}", payload, message_datetime)
         result = await self._complete_reply(messages)
-        self._store_turn(
+        assistant_message_id = self._store_turn(
             user_id=user_id,
             chat_id=chat_id,
             message_id=message_id,
@@ -175,7 +183,14 @@ class GroupAIService:
             request_payload=payload,
             message_type="group_photo",
         )
-        return result
+        return GroupAIResult(
+            reply=result.reply,
+            usage=result.usage,
+            provider=result.provider,
+            model=result.model,
+            estimated_tokens=result.estimated_tokens,
+            assistant_message_id=assistant_message_id,
+        )
 
     async def choose_auto_reaction(
         self,
@@ -321,8 +336,8 @@ class GroupAIService:
         result: GroupAIResult,
         request_payload: dict[str, Any],
         message_type: str,
-    ) -> None:
-        self.history_service.add(
+    ) -> int:
+        assistant_message_id = self.history_service.add(
             user_id,
             "user",
             user_text,
@@ -353,6 +368,7 @@ class GroupAIService:
             provider=result.provider,
             model=result.model,
         )
+        return assistant_message_id
 
     def _reply_text(self, reply: NargesReply) -> str:
         return "\n".join(message.text for message in reply.messages)

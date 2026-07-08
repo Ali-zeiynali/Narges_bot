@@ -244,6 +244,32 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reply.messages[-1].text, "کپشن انتخابی")
         self.assertEqual(result.usage["image_selection_total_tokens"], 3)
 
+    async def test_repeated_normal_photo_request_forces_catalog_selection(self) -> None:
+        groq = FakeImageSelectionGroqClient("selfie_1")
+        service = self.make_service(groq, FakeImageCatalog())
+        for index in range(3):
+            self.history.add(9, "user", f"send your selfie please {index}")
+        reply = NargesReply.model_validate(
+            {
+                "mode": "normal",
+                "messages": [{"text": "ok for you", "delay_seconds": 0}],
+                "memory_suggestions": [],
+                "warning_suggestion": None,
+                "event_suggestion": None,
+                "image_request": None,
+            }
+        )
+
+        result = await service._force_repeated_photo_request_if_needed(
+            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            [{"role": "user", "content": json.dumps({"user_message": "send your selfie please again"}, ensure_ascii=False)}],
+            9,
+            "send your selfie please again",
+        )
+
+        self.assertEqual(result.reply.messages[-1].image_id, "selfie_1")
+        self.assertEqual(groq.selection_calls, 1)
+
     async def test_model_warning_becomes_backend_warning_without_quota_cost(self) -> None:
         result = await self.service.answer(
             user_id=1,

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
-from bot.models.ai import NargesReply, ResponseMode, TelegramOutboundMessage
+from bot.models.ai import ImageRequest, NargesReply, ResponseMode, TelegramOutboundMessage
 from bot.models.context import BuiltContext
 from bot.persona.compiler import PersonaCompiler
 from bot.services.context_builder import ContextBuilder
@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-HARD_MAX_MODEL_TOKENS_PER_TURN = 5500
-PREFERRED_MAX_INPUT_TOKENS = 2400
+HARD_MAX_MODEL_TOKENS_PER_TURN = 7000
+PREFERRED_MAX_INPUT_TOKENS = 3600
 
 SEXUAL_WARNING_EXCLUSION_KEYWORDS = {
     "sex",
@@ -310,6 +310,8 @@ class ChatService:
                 result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant)
             with trace.step("attach_requested_image"):
                 result = await self._attach_requested_image_if_needed(result, messages)
+            with trace.step("force_repeated_photo_if_needed"):
+                result = await self._force_repeated_photo_request_if_needed(result, messages, user_id, text)
         except Exception:
             logger.exception("model_response_failed user_id=%s chat_id=%s", user_id, chat_id)
             provider_failed = True
@@ -748,6 +750,54 @@ class ChatService:
             provider=result.provider,
             model=result.model,
             provider_response_id=result.provider_response_id,
+        )
+
+    async def _force_repeated_photo_request_if_needed(
+        self,
+        result: GroqResult,
+        messages: list[dict[str, str]],
+        user_id: int,
+        user_text: str,
+    ) -> GroqResult:
+        if any(item.image_id for item in result.reply.messages):
+            return result
+        if result.reply.image_request and result.reply.image_request.needed:
+            return result
+        if self.bot_image_catalog is None or not self._looks_like_self_photo_request(user_text):
+            return result
+        recent_user_messages = self.history_service.recent_user_messages(user_id, limit=8)
+        repeated_requests = sum(1 for item in recent_user_messages if self._looks_like_self_photo_request(item.get("text", "")))
+        if repeated_requests < 3:
+            return result
+        request = {
+            "needed": True,
+            "reason": "user repeatedly asked for a normal Narges photo",
+            "prompt": "normal non-explicit selfie-style photo of Narges",
+            "caption": result.reply.messages[-1].text,
+        }
+        patched_reply = result.reply.model_copy(update={"image_request": ImageRequest.model_validate(request)})
+        return await self._attach_requested_image_if_needed(
+            GroqResult(
+                reply=patched_reply,
+                raw_text=result.raw_text,
+                usage=result.usage,
+                provider=result.provider,
+                model=result.model,
+                provider_response_id=result.provider_response_id,
+            ),
+            messages,
+        )
+
+    def _looks_like_self_photo_request(self, text: str) -> bool:
+        normalized = (text or "").lower().replace("\u200c", " ")
+        compact = "".join(normalized.split())
+        photo_words = ("عکس", "عکستو", "عکست", "تصویر", "سلفی", "photo", "pic", "selfie")
+        self_words = ("خودت", "نرگس", "ازت", "تو", "your", "you")
+        explicit_words = ("لخت", "nude", "naked", "بدون لباس")
+        return (
+            any(word in normalized or word in compact for word in photo_words)
+            and any(word in normalized or word in compact for word in self_words)
+            and not any(word in normalized or word in compact for word in explicit_words)
         )
 
     def _looks_like_future_photo_promise(self, text: str) -> bool:

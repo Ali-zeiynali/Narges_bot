@@ -187,7 +187,7 @@ class AdminBackupTests(unittest.TestCase):
         self.assertEqual([row.text for row in global_messages], ["private"])
         self.assertEqual({row.text for row in detail}, {"private", "group"})
 
-    def test_group_messages_exclude_observed_rows(self) -> None:
+    def test_group_messages_timeline_includes_observed_rows(self) -> None:
         database = Database(str(Path(self.tmp.name) / "group-panel.sqlite3"))
         database.migrate()
         now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
@@ -222,8 +222,9 @@ class AdminBackupTests(unittest.TestCase):
         messages = service.group_messages()
 
         self.assertEqual([row.text for row in messages["messages"]], ["mention"])
-        self.assertEqual(messages["counts"]["all"], 1)
-        self.assertEqual(messages["counts"]["observed"], 0)
+        self.assertEqual([row["text"] for row in messages["timeline"]], ["ordinary", "mention"])
+        self.assertEqual(messages["counts"]["all"], 2)
+        self.assertEqual(messages["counts"]["observed"], 1)
 
     def test_media_gallery_includes_following_assistant_reply(self) -> None:
         database = Database(str(Path(self.tmp.name) / "media.sqlite3"))

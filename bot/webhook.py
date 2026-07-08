@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,7 @@ class RuntimeState:
     app: BotApplication | None = None
     queue: TelegramUpdateQueue | None = None
     worker: TelegramUpdateWorker | None = None
+    watchdog_task: asyncio.Task | None = None
 
 
 state = RuntimeState()
@@ -53,9 +55,16 @@ async def lifespan(_: FastAPI):
     await bot_app.startup()
     worker.start()
     await configure_telegram_webhook(bot_app)
+    state.watchdog_task = asyncio.create_task(webhook_watchdog(bot_app), name="telegram-webhook-watchdog")
     try:
         yield
     finally:
+        if state.watchdog_task:
+            state.watchdog_task.cancel()
+            try:
+                await state.watchdog_task
+            except asyncio.CancelledError:
+                pass
         await worker.stop()
         await bot_app.shutdown()
 
@@ -126,3 +135,29 @@ async def configure_telegram_webhook(bot_app: BotApplication) -> None:
         allowed_updates=bot_app.allowed_updates(),
     )
     logger.info("telegram_webhook_configured url=%s drop_pending_updates=%s", webhook_url, settings.telegram_drop_pending_updates)
+
+
+async def webhook_watchdog(bot_app: BotApplication) -> None:
+    settings = bot_app.settings
+    if not settings.webhook_base_url:
+        return
+    expected_url = f"{settings.webhook_base_url.rstrip('/')}/webhook/telegram"
+    while True:
+        await asyncio.sleep(settings.webhook_watchdog_seconds)
+        try:
+            info = await bot_app.bot.get_webhook_info()
+            current_url = getattr(info, "url", "") or ""
+            pending = getattr(info, "pending_update_count", None)
+            last_error = getattr(info, "last_error_message", None)
+            if current_url != expected_url or last_error:
+                logger.warning(
+                    "telegram_webhook_watchdog_reconfigure current_url=%s pending=%s last_error=%s",
+                    current_url,
+                    pending,
+                    last_error,
+                )
+                await configure_telegram_webhook(bot_app)
+            else:
+                logger.info("telegram_webhook_watchdog_ok pending=%s", pending)
+        except Exception:
+            logger.exception("telegram_webhook_watchdog_failed")

@@ -1,46 +1,93 @@
 {% extends "base.html" %}
 {% block title %}لاگ‌ها{% endblock %}
 {% block content %}
-<h2>لاگ‌های دسته‌بندی‌شده</h2>
+<div class="top">
+  <div>
+    <h2>لاگ‌ها</h2>
+    <div class="muted">Trace هر درخواست با زمان کل و زمان مرحله‌ها، کنار usage و warningها.</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>زمان‌بندی پیام‌ها</h3>
+  <div class="trace">
+    {% for t in traces %}
+      <details class="card" {% if loop.first %}open{% endif %}>
+        <summary>
+          <b>{{ t.name }}</b>
+          <span class="ltr">{{ t.total_ms }} ms</span>
+          <span class="muted">user {{ t.user_id or "-" }} · {{ t.created_at|dt }}</span>
+        </summary>
+        <div class="muted ltr">{{ t.metadata|json_pretty }}</div>
+        {% set total = t.total_ms if t.total_ms > 0 else 1 %}
+        {% for s in t.steps %}
+          <div class="trace-step">
+            <span>{{ s.name }}</span>
+            <b class="ltr">{{ s.elapsed_ms }} ms</b>
+            <div class="bar"><span style="width: {{ [100, (s.elapsed_ms / total * 100)|round(1)]|min }}%"></span></div>
+          </div>
+          {% if s.metadata %}<div class="media-meta ltr">{{ s.metadata|json_pretty }}</div>{% endif %}
+        {% endfor %}
+      </details>
+    {% endfor %}
+    {% if not traces %}<div class="muted">هنوز trace ثبت نشده.</div>{% endif %}
+  </div>
+</div>
 
 <div class="grid two">
   <div class="card">
-    <h3>Debug</h3>
-    <table>
-      <tr><th>event</th><th>کاربر</th><th>payload</th><th>زمان</th></tr>
-      {% for d in debug %}
-      <tr>
-        <td>{{ d.event }}</td>
-        <td><a href="/admin/users/{{ d.user_id }}">{{ user_names.get(d.user_id, "کاربر " ~ d.user_id) }}</a></td>
-        <td>
-          <details>
-            <summary>نمایش payload</summary>
-            <pre><code>{{ d.payload }}</code></pre>
-          </details>
-        </td>
-        <td>{{ d.created_at|dt }}</td>
-      </tr>
-      {% endfor %}
-    </table>
+    <h3>Debug خام</h3>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>event</th><th>کاربر</th><th>payload</th><th>زمان</th></tr></thead>
+        <tbody>
+        {% for d in debug %}
+        <tr>
+          <td>{{ d.event }}</td>
+          <td>{% if d.user_id %}<a href="/admin/users/{{ d.user_id }}">{{ user_names.get(d.user_id, "کاربر " ~ d.user_id) }}</a>{% else %}-{% endif %}</td>
+          <td><details><summary>نمایش</summary><pre>{{ d.payload }}</pre></details></td>
+          <td>{{ d.created_at|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
+
   <div class="card">
     <h3>Usage</h3>
-    <table>
-      <tr><th>کاربر</th><th>provider</th><th>model</th><th>total</th><th>زمان</th></tr>
-      {% for u in usage %}
-      <tr><td><a href="/admin/users/{{ u.user_id }}">{{ user_names.get(u.user_id, "کاربر " ~ u.user_id) }}</a></td><td>{{ u.provider }}</td><td>{{ u.model }}</td><td>{{ u.total_tokens }}</td><td>{{ u.created_at|dt }}</td></tr>
-      {% endfor %}
-    </table>
+    <div class="table-wrap">
+      <table data-enhance="true">
+        <thead><tr><th>کاربر</th><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr></thead>
+        <tbody>
+        {% for u in usage %}
+        <tr>
+          <td>{% if u.user_id %}<a href="/admin/users/{{ u.user_id }}">{{ user_names.get(u.user_id, "کاربر " ~ u.user_id) }}</a>{% else %}-{% endif %}</td>
+          <td>{{ u.provider }}</td><td>{{ u.model }}</td>
+          <td class="ltr">{{ u.prompt_tokens or "-" }}</td><td class="ltr">{{ u.completion_tokens or "-" }}</td><td class="ltr">{{ u.total_tokens or "-" }}</td>
+          <td>{{ u.created_at|dt }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
 <div class="card">
   <h3>اخطارها</h3>
-  <table>
-    <tr><th>کاربر</th><th>دلیل</th><th>تعداد بعد از اخطار</th><th>زمان</th></tr>
-    {% for w in warnings %}
-    <tr><td><a href="/admin/users/{{ w.user_id }}">{{ user_names.get(w.user_id, "کاربر " ~ w.user_id) }}</a></td><td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td></tr>
-    {% endfor %}
-  </table>
+  <div class="table-wrap">
+    <table data-enhance="true">
+      <thead><tr><th>کاربر</th><th>دلیل</th><th>تعداد بعد از اخطار</th><th>زمان</th></tr></thead>
+      <tbody>
+      {% for w in warnings %}
+      <tr>
+        <td><a href="/admin/users/{{ w.user_id }}">{{ user_names.get(w.user_id, "کاربر " ~ w.user_id) }}</a></td>
+        <td>{{ w.reason }}</td><td>{{ w.warning_count_after }}</td><td>{{ w.created_at|dt }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}

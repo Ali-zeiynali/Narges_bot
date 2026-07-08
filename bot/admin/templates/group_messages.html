@@ -3,11 +3,9 @@
 <div class="top">
   <div>
     <h2>پیام‌های گروه</h2>
-    <div class="muted">پیام‌های داخل گروه، جواب‌های نرگس، واکنش‌های خودکار، بررسی عکس‌ها و ارسال‌های زمان‌بندی‌شده اینجا جدا از پیام خصوصی کاربرها نمایش داده می‌شود.</div>
+    <div class="muted">رشته چت هر گروه، پیام‌های ورودی، جواب‌های نرگس، عکس‌ها و رویدادهای engine در یک نما.</div>
   </div>
-  <div class="actions">
-    <a class="btn secondary" href="/admin/broadcast">زمان‌بندی و ارسال همگانی</a>
-  </div>
+  <div class="actions"><a class="btn secondary" href="/admin/broadcast">زمان‌بندی و ارسال همگانی</a></div>
 </div>
 
 <form class="card" method="get">
@@ -23,123 +21,118 @@
     <label>بخش
       <select name="section">
         <option value="all" {% if section == "all" %}selected{% endif %}>همه</option>
-        <option value="mentions" {% if section == "mentions" %}selected{% endif %}>منشن/ریپلای مستقیم</option>
-        <option value="photos" {% if section == "photos" %}selected{% endif %}>عکس‌های بررسی‌شده</option>
-        <option value="auto" {% if section == "auto" %}selected{% endif %}>واکنش‌های خودکار</option>
-        <option value="scheduled" {% if section == "scheduled" %}selected{% endif %}>ارسال ادمین/زمان‌بندی</option>
+        <option value="mentions" {% if section == "mentions" %}selected{% endif %}>منشن/ریپلای</option>
+        <option value="photos" {% if section == "photos" %}selected{% endif %}>عکس‌ها</option>
+        <option value="auto" {% if section == "auto" %}selected{% endif %}>واکنش خودکار</option>
+        <option value="scheduled" {% if section == "scheduled" %}selected{% endif %}>ادمین/زمان‌بندی</option>
       </select>
     </label>
-    <label>limit
-      <input name="limit" type="number" min="20" max="1000" value="{{ limit }}">
-    </label>
+    <label>limit <input name="limit" type="number" min="20" max="1000" value="{{ limit }}"></label>
   </div>
   <button>فیلتر</button>
 </form>
 
 <div class="grid">
-  <div class="card metric">همه<b>{{ counts.all }}</b></div>
-  <div class="card metric">عکس/منشن<b>{{ counts.photos + counts.mentions }}</b></div>
+  <div class="card metric">همه پیام‌های گروه<b>{{ counts.all }}</b></div>
+  <div class="card metric">ورودی‌های دیده‌شده<b>{{ counts.observed }}</b></div>
+  <div class="card metric">منشن/عکس<b>{{ counts.mentions + counts.photos }}</b></div>
   <div class="card metric">خودکار/ارسالی<b>{{ counts.auto + counts.scheduled }}</b></div>
 </div>
 
-<form class="card" method="post" action="/admin/group-messages/send">
-  <h3>ارسال پیام به یک گروه خاص</h3>
-  <div class="grid two">
-    <label>گروه مقصد
-      <select name="chat_id">
-        <option value="">انتخاب گروه</option>
-        {% for g in groups %}
-          <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}{% if g.member_count %} ({{ g.member_count }}){% endif %}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>شناسه گروه دستی
-      <input class="ltr" name="manual_chat_id" placeholder="-1001234567890">
-    </label>
-  </div>
-  <label>متن پیام
-    <textarea name="text" required></textarea>
-  </label>
-  <button>ارسال به گروه</button>
-</form>
+<dialog id="sendGroupModal">
+  <div class="modal-head"><h3>ارسال پیام به گروه</h3><button class="icon-btn" data-close-modal type="button">بستن</button></div>
+  <form class="modal-body" method="post" action="/admin/group-messages/send">
+    <div class="grid two">
+      <label>گروه مقصد
+        <select name="chat_id">
+          <option value="">انتخاب گروه</option>
+          {% for g in groups %}
+            <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>شناسه دستی <input class="ltr" name="manual_chat_id" placeholder="-1001234567890"></label>
+    </div>
+    <label>متن پیام <textarea name="text" required></textarea></label>
+    <button>ارسال</button>
+  </form>
+</dialog>
 
 <div class="card">
-  <h3>پیام‌ها</h3>
+  <div class="top">
+    <div><h3>رشته چت</h3><div class="muted">راست: پیام کاربران. چپ: خروجی نرگس.</div></div>
+    <button type="button" data-open-modal="#sendGroupModal">ارسال پیام</button>
+  </div>
+  <div class="chat-thread">
+    {% for m in timeline %}
+      <article class="bubble {{ m.direction }}">
+        <div class="bubble-meta">
+          <span>{{ m.group_name }}</span>
+          <span>{{ m.user_name }}</span>
+          <span class="pill">{{ m.message_type }}</span>
+          <span class="ltr">tg: {{ m.telegram_message_id or "-" }}</span>
+          {% if m.reply_to_message_id %}<span class="ltr">reply: {{ m.reply_to_message_id }}</span>{% endif %}
+          <span>{{ m.created_at|dt }}</span>
+        </div>
+        <pre>{{ m.text }}</pre>
+        {% if m.media %}
+          <div class="media-inline">
+          {% for item in m.media %}
+            <div class="media-card">
+              <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
+                {% if item.media_kind in ["image", "bot_image"] %}<img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
+                {% elif item.media_kind in ["voice", "audio"] %}<div style="width:100%;padding:10px"><div class="media-icon">Audio</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
+                {% elif item.media_kind in ["video", "animation", "video_note"] %}<video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
+                {% else %}<div class="media-icon">File</div>{% endif %}
+              </a>
+            </div>
+          {% endfor %}
+          </div>
+        {% endif %}
+        {% if m.provider %}<div class="media-meta ltr">{{ m.provider }} / {{ m.model }} / tokens {{ m.total_tokens or "-" }}</div>{% endif %}
+      </article>
+    {% endfor %}
+  </div>
+  {% if not timeline %}<div class="muted">برای این فیلتر هنوز پیامی ثبت نشده.</div>{% endif %}
+</div>
+
+<div class="card">
+  <h3>جدول audit پیام‌ها</h3>
   <div class="table-wrap">
     <table data-enhance="true">
-      <thead>
-        <tr><th>ID</th><th>گروه</th><th>کاربر</th><th>role</th><th>type</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr>
-      </thead>
+      <thead><tr><th>ID</th><th>گروه</th><th>کاربر</th><th>role</th><th>type</th><th>متن</th><th>provider</th><th>tokens</th><th>زمان</th></tr></thead>
       <tbody>
       {% for m in messages %}
       <tr>
         <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
-        <td class="ltr">{{ group_names.get(m.chat_id, m.chat_id) }}</td>
-        <td>
-          {% if m.user_id and m.user_id != 0 %}
-            <a href="/admin/users/{{ m.user_id }}">{{ user_names.get(m.user_id, "کاربر " ~ m.user_id) }}</a>
-          {% else %}
-            سیستم/ادمین
-          {% endif %}
-        </td>
-        <td>{{ m.role }}</td>
-        <td><span class="pill">{{ m.message_type }}</span></td>
-        <td>
-          <pre><code>{{ m.text[:420] }}</code></pre>
-          {% set attached = media_by_message.get(m.id, []) %}
-          {% if attached %}
-          <div class="media-inline">
-            {% for item in attached %}
-            <div class="media-card">
-              <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
-                {% if item.media_kind in ["image", "bot_image"] %}
-                  <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
-                {% elif item.media_kind in ["voice", "audio"] %}
-                  <div style="width:100%;padding:10px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
-                {% elif item.media_kind in ["video", "animation", "video_note"] %}
-                  <video src="/admin/media/{{ item.id }}/file" controls preload="metadata"></video>
-                {% else %}
-                  <div class="media-icon">📎</div>
-                {% endif %}
-              </a>
-            </div>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </td>
-        <td>{{ m.provider or "-" }}</td>
-        <td class="ltr">{{ m.total_tokens or "-" }}</td>
-        <td>{{ m.created_at|dt }}</td>
+        <td>{{ group_names.get(m.chat_id, m.chat_id) }}</td>
+        <td>{% if m.user_id and m.user_id != 0 %}<a href="/admin/users/{{ m.user_id }}">{{ user_names.get(m.user_id, "کاربر " ~ m.user_id) }}</a>{% else %}سیستم/ادمین{% endif %}</td>
+        <td>{{ m.role }}</td><td><span class="pill">{{ m.message_type }}</span></td>
+        <td><pre>{{ m.text[:420] }}</pre></td>
+        <td>{{ m.provider or "-" }}</td><td class="ltr">{{ m.total_tokens or "-" }}</td><td>{{ m.created_at|dt }}</td>
       </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-  {% if not messages %}<div class="muted">برای این فیلتر هنوز پیامی ثبت نشده.</div>{% endif %}
 </div>
 
 <div class="card">
   <h3>رویدادهای engine گروه</h3>
   <div class="table-wrap">
     <table data-enhance="true">
-      <thead>
-        <tr><th>ID</th><th>گروه</th><th>کاربر</th><th>event</th><th>message_id</th><th>metadata</th><th>زمان</th></tr>
-      </thead>
+      <thead><tr><th>ID</th><th>گروه</th><th>کاربر</th><th>event</th><th>message_id</th><th>metadata</th><th>زمان</th></tr></thead>
       <tbody>
       {% for e in events %}
       <tr>
-        <td>{{ e.id }}</td>
-        <td class="ltr">{{ e.group_name }}</td>
+        <td>{{ e.id }}</td><td>{{ e.group_name }}</td>
         <td>{% if e.user_id %}<a href="/admin/users/{{ e.user_id }}">{{ e.user_name }}</a>{% else %}-{% endif %}</td>
-        <td><span class="pill">{{ e.event_type }}</span></td>
-        <td class="ltr">{{ e.telegram_message_id or "-" }}</td>
-        <td><pre><code>{{ e.metadata|json_pretty }}</code></pre></td>
-        <td>{{ e.created_at|dt }}</td>
+        <td><span class="pill">{{ e.event_type }}</span></td><td class="ltr">{{ e.telegram_message_id or "-" }}</td>
+        <td><pre>{{ e.metadata|json_pretty }}</pre></td><td>{{ e.created_at|dt }}</td>
       </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-  {% if not events %}<div class="muted">رویدادی برای این فیلتر وجود ندارد.</div>{% endif %}
 </div>
 {% endblock %}

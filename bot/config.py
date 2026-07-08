@@ -63,7 +63,7 @@ class Settings:
     debug_user_ids: tuple[int, ...]
     name_transliteration_map: dict[str, str]
     database_url: str | None = None
-    max_api_input_tokens: int = 3000
+    max_api_input_tokens: int = 3600
     ai_providers_config: str = "config/ai_providers.json"
     admin_panel_token: str | None = None
     admin_panel_host: str = "127.0.0.1"
@@ -75,14 +75,15 @@ class Settings:
     webhook_base_url: str | None = None
     telegram_webhook_secret: str | None = None
     telegram_drop_pending_updates: bool = False
-    webhook_queue_maxsize: int = 200
-    webhook_worker_count: int = 1
+    webhook_queue_maxsize: int = 500
+    webhook_worker_count: int = 4
     webhook_rate_limit_count: int = 30
     webhook_rate_limit_window_seconds: int = 60
     webhook_idempotency_max_items: int = 10_000
     telegram_backlog_latest_only: bool = True
     telegram_backlog_grace_seconds: int = 30
     telegram_backlog_debounce_seconds: float = 2.0
+    webhook_watchdog_seconds: int = 300
     billing_card_number: str | None = None
     vision_providers_config: str = "config/vision_providers.json"
     media_storage_dir: str = "data/media"
@@ -144,9 +145,9 @@ def load_settings() -> Settings:
         groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
         groq_temperature=float_env("GROQ_TEMPERATURE", 0.7, 0, 2),
-        groq_max_completion_tokens=int_env("GROQ_MAX_COMPLETION_TOKENS", 512, 1, 4096),
-        max_request_tokens=min(int_env("MAX_REQUEST_TOKENS", 3000, 128, 131072), 3000),
-        max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 2400, 128, 131072), 2400),
+        groq_max_completion_tokens=int_env("GROQ_MAX_COMPLETION_TOKENS", 7000, 1, 16000),
+        max_request_tokens=min(int_env("MAX_REQUEST_TOKENS", 7000, 128, 131072), 7000),
+        max_api_input_tokens=min(int_env("MAX_API_INPUT_TOKENS", 3600, 128, 131072), 3600),
         max_message_chars=int_env("MAX_MESSAGE_CHARS", 1800, 1, 4096),
         persona_version=os.getenv("PERSONA_VERSION", "2026-07-05.1").strip(),
         database_url=(
@@ -184,14 +185,15 @@ def load_settings() -> Settings:
         ),
         telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None,
         telegram_drop_pending_updates=bool_env("TELEGRAM_DROP_PENDING_UPDATES", False),
-        webhook_queue_maxsize=int_env("WEBHOOK_QUEUE_MAXSIZE", 200, 1, 5000),
-        webhook_worker_count=int_env("WEBHOOK_WORKER_COUNT", 1, 1, 4),
+        webhook_queue_maxsize=int_env("WEBHOOK_QUEUE_MAXSIZE", 500, 1, 10000),
+        webhook_worker_count=int_env("WEBHOOK_WORKER_COUNT", 4, 1, 16),
         webhook_rate_limit_count=int_env("WEBHOOK_RATE_LIMIT_COUNT", 30, 1, 1000),
         webhook_rate_limit_window_seconds=int_env("WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", 60, 1, 3600),
         webhook_idempotency_max_items=int_env("WEBHOOK_IDEMPOTENCY_MAX_ITEMS", 10000, 100, 1000000),
         telegram_backlog_latest_only=bool_env("TELEGRAM_BACKLOG_LATEST_ONLY", True),
         telegram_backlog_grace_seconds=int_env("TELEGRAM_BACKLOG_GRACE_SECONDS", 30, 0, 3600),
         telegram_backlog_debounce_seconds=float_env("TELEGRAM_BACKLOG_DEBOUNCE_SECONDS", 2.0, 0, 30),
+        webhook_watchdog_seconds=int_env("WEBHOOK_WATCHDOG_SECONDS", 300, 30, 3600),
         billing_card_number=(
             os.getenv("BILLING_CARD_NUMBER", "").strip()
             or os.getenv("PAYMENT_CARD_NUMBER", "").strip()

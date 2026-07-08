@@ -287,8 +287,8 @@ class GroqChatClient:
                     self._record_key_failure(provider.name, key_index, exc)
                     if not exc.retryable:
                         break
-                    if provider_failures >= 2:
-                        logger.warning("ai_provider_failed_twice provider=%s moving_to_next error=%s", provider.name, exc)
+                    if provider_failures >= 1:
+                        logger.warning("ai_provider_failed provider=%s moving_to_next error=%s", provider.name, exc)
                         break
                     logger.warning("ai_provider_failed provider=%s retryable=%s error=%s", provider.name, exc.retryable, exc)
         if last_error:
@@ -322,7 +322,7 @@ class GroqChatClient:
         self._log_ai_request(purpose, provider, key_index, payload)
         response = self._post_with_fallbacks(provider, url, headers, payload, purpose)
         if response.status_code >= 400:
-            retryable = response.status_code in {401, 403, 408, 409, 429}
+            retryable = response.status_code in {408, 409, 429} or response.status_code >= 500
             retry_after = self._retry_after(response)
             self._log_ai_error(purpose, provider, payload, RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}"))
             message = f"HTTP {response.status_code}"
@@ -514,7 +514,9 @@ class GroqChatClient:
         try:
             payload = self._loads_json(raw_text)
         except Exception:
-            return None
+            payload = self._repair_partial_json_object(raw_text)
+            if payload is None:
+                return None
         return payload if isinstance(payload, dict) else None
 
     def _clean_text_reply(self, raw_text: str, payload: dict[str, Any] | None = None) -> str:
@@ -535,12 +537,58 @@ class GroqChatClient:
         text = raw_text.strip()
         text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()
-        match = re.search(r'"(?:text|answer|message|content)"\s*:\s*"([^"]+)"', text, flags=re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        extracted = self._extract_lenient_text_field(text)
+        if extracted:
+            return extracted
         if text.startswith("{") and text.endswith("}"):
             text = text.strip("{}").replace('"', "").strip()
         return text or "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست."
+
+    def _repair_partial_json_object(self, raw_text: str) -> dict[str, Any] | None:
+        text = raw_text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        start = text.find("{")
+        if start < 0:
+            extracted = self._extract_lenient_text_field(text)
+            return {"messages": [{"text": extracted}]} if extracted else None
+        text = text[start:]
+        candidates: list[str] = []
+        end = text.rfind("}")
+        if end > 0:
+            candidates.append(text[: end + 1])
+        repaired = text
+        if repaired.count('"') % 2 == 1:
+            repaired += '"'
+        repaired += "]" * max(0, repaired.count("[") - repaired.count("]"))
+        repaired += "}" * max(0, repaired.count("{") - repaired.count("}"))
+        candidates.append(repaired)
+        for candidate in candidates:
+            try:
+                value = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        extracted = self._extract_lenient_text_field(text)
+        return {"messages": [{"text": extracted}]} if extracted else None
+
+    def _extract_lenient_text_field(self, text: str) -> str | None:
+        patterns = (
+            r'"messages"\s*:\s*\[\s*\{[^{}]*"(?:text|content)"\s*:\s*"((?:\\.|[^"\\])*)',
+            r'"(?:text|answer|message|content|caption)"\s*:\s*"((?:\\.|[^"\\])*)',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.DOTALL)
+            if not match:
+                continue
+            value = match.group(1)
+            try:
+                return json.loads(f'"{value}"').strip()
+            except json.JSONDecodeError:
+                return value.replace('\\"', '"').replace("\\n", "\n").strip()
+        return None
 
     def _load_providers(self, settings: Settings) -> list[ProviderConfig]:
         path = Path(settings.ai_providers_config)
@@ -598,7 +646,10 @@ class GroqChatClient:
             priority=int(item["priority"]) if item.get("priority") is not None else None,
             enabled=bool(item.get("enabled", True)),
             temperature=float(item.get("temperature", self.settings.groq_temperature)),
-            max_completion_tokens=int(item.get("max_completion_tokens", self.settings.groq_max_completion_tokens)),
+            max_completion_tokens=max(
+                int(item.get("max_completion_tokens", self.settings.groq_max_completion_tokens)),
+                self.settings.groq_max_completion_tokens,
+            ),
             timeout_seconds=float(item.get("timeout_seconds", 45)),
             response_format=str(item.get("response_format", "json_object")),
             extra_headers=dict(item.get("extra_headers") or {}),
