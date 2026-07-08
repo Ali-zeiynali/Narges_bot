@@ -174,6 +174,7 @@ class ChatTurnResult:
     usage: dict[str, int | None]
     estimated_tokens: int
     assistant_message_id: int | None = None
+    provider_failed: bool = False
 
 
 class ChatService:
@@ -274,6 +275,12 @@ class ChatService:
         messages: list[dict[str, str]] = []
         provider_failed = False
         final_usage: dict[str, int | None] = {}
+        model_error: str | None = None
+        forced_provider = (
+            self.groq_client.provider_override_for_user(user_id)
+            if hasattr(self.groq_client, "provider_override_for_user")
+            else None
+        )
         try:
             with trace.step("compile_prompt", memory_count=len(memories)):
                 compiled, messages, input_token_estimate, memories, short_term_messages, search_results = self._compile_under_budget(
@@ -305,15 +312,16 @@ class ChatService:
                 recent_for_lint = self.history_service.recent_assistant_replies(user_id, limit=5)
                 last_assistant = self.history_service.last_assistant_reply(user_id)
             with trace.step("provider_complete", estimated_input_tokens=input_token_estimate):
-                result = await self._complete_with_retries(messages)
+                result = await self._complete_with_retries(messages, forced_provider=forced_provider)
             with trace.step("style_retry_if_needed"):
-                result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant)
+                result = await self._retry_once_if_needed(result, messages, recent_for_lint, last_assistant, forced_provider=forced_provider)
             with trace.step("attach_requested_image"):
                 result = await self._attach_requested_image_if_needed(result, messages)
             with trace.step("force_repeated_photo_if_needed"):
                 result = await self._force_repeated_photo_request_if_needed(result, messages, user_id, text)
-        except Exception:
+        except Exception as exc:
             logger.exception("model_response_failed user_id=%s chat_id=%s", user_id, chat_id)
+            model_error = f"{exc.__class__.__name__}: {exc}"
             provider_failed = True
             assistant_history_message_type = "system"
             result = GroqResult(reply=self._fallback_reply(long_user_message=len(text) > 700), raw_text="{}", usage={})
@@ -427,6 +435,11 @@ class ChatService:
                         "model": result.model,
                         "usage": usage_for_storage,
                         "conversation_state": result.reply.conversation_state.value,
+                        "provider_failed": provider_failed,
+                        "forced_provider": forced_provider,
+                        "model_error": model_error,
+                        "raw_model_response": result.raw_text,
+                        "visible_reply": clean_assistant_text,
                     },
                 )
             if assistant_history_message_type == "chat":
@@ -487,6 +500,7 @@ class ChatService:
             usage=final_usage or result.usage,
             estimated_tokens=input_token_estimate + self.validator.settings.groq_max_completion_tokens,
             assistant_message_id=assistant_message_id if "assistant_message_id" in locals() else None,
+            provider_failed=provider_failed,
         )
 
     def _build_messages(
@@ -635,6 +649,7 @@ class ChatService:
         messages: list[dict[str, str]],
         recent: list[str],
         last_assistant: dict[str, str] | None = None,
+        forced_provider: str | None = None,
     ) -> GroqResult:
         texts = [message.text for message in result.reply.messages]
         lint = self.style_linter.lint(texts, recent)
@@ -655,7 +670,7 @@ class ChatService:
             }
         ]
         try:
-            return await asyncio.to_thread(self.groq_client.complete, retry_messages)
+            return await self._call_groq_complete(retry_messages, forced_provider=forced_provider)
         except Exception:
             logger.exception("model_retry_failed")
             return result
@@ -692,11 +707,11 @@ class ChatService:
         normalized = normalized.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
         return " ".join(normalized.split())
 
-    async def _complete_with_retries(self, messages: list[dict[str, str]], attempts: int = 3) -> GroqResult:
+    async def _complete_with_retries(self, messages: list[dict[str, str]], attempts: int = 3, forced_provider: str | None = None) -> GroqResult:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                return await asyncio.to_thread(self.groq_client.complete, messages)
+                return await self._call_groq_complete(messages, forced_provider=forced_provider)
             except Exception as exc:
                 last_error = exc
                 lowered = str(exc).lower()
@@ -705,6 +720,15 @@ class ChatService:
                 if attempt < attempts:
                     await asyncio.sleep(min(2 * attempt, 5))
         raise last_error or RuntimeError("model failed")
+
+    async def _call_groq_complete(self, messages: list[dict[str, str]], forced_provider: str | None = None) -> GroqResult:
+        if forced_provider:
+            try:
+                return await asyncio.to_thread(self.groq_client.complete, messages, forced_provider=forced_provider)
+            except TypeError as exc:
+                if "forced_provider" not in str(exc):
+                    raise
+        return await asyncio.to_thread(self.groq_client.complete, messages)
 
     async def _attach_requested_image_if_needed(self, result: GroqResult, messages: list[dict[str, str]]) -> GroqResult:
         request = result.reply.image_request
@@ -816,7 +840,7 @@ class ChatService:
             mode=ResponseMode.SHORT,
             messages=[
                 TelegramOutboundMessage(
-                    text="یک بار کوتاه‌تر بفرست." if long_user_message else "حالم که بهتر شد دوباره بیا",
+                    text="یک بار کوتاه‌تر بفرست." if long_user_message else "الان جوابم گیر کرد؛ حدود ۱۰ دقیقه دیگه خودم دوباره تلاش می‌کنم.",
                     delay_seconds=0.2,
                 )
             ],

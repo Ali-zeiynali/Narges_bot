@@ -192,14 +192,14 @@ class BillingService:
             if row.status == InvoiceStatus.PAID.value:
                 return PaymentConfirmation(self._row_to_invoice(row), True, False, "already paid")
             if row.status == InvoiceStatus.FAILED.value:
-                return PaymentConfirmation(self._row_to_invoice(row), False, False, "already rejected")
+                return PaymentConfirmation(self._row_to_invoice(row), True, False, "already rejected")
 
             row.status = InvoiceStatus.PAID.value if approve else InvoiceStatus.FAILED.value
             if not row.payment_id:
                 row.payment_id = f"manual-review:{reviewer_id or 0}:{now.timestamp():.0f}"
             row.updated_at = now
             session.flush()
-            return PaymentConfirmation(self._row_to_invoice(row), approve, approve, "approved" if approve else "rejected")
+            return PaymentConfirmation(self._row_to_invoice(row), True, approve, "approved" if approve else "rejected")
 
     def mark_failed(self, invoice_id: str, reason: str = "failed") -> None:
         with self.database.orm.session() as session:

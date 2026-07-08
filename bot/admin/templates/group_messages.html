@@ -11,7 +11,7 @@
 <form class="card" method="get">
   <div class="grid three">
     <label>گروه
-      <select name="chat_id">
+      <select name="chat_id" data-auto-submit>
         <option value="">همه گروه‌ها</option>
         {% for g in groups %}
           <option value="{{ g.chat_id }}" {% if chat_id == g.chat_id %}selected{% endif %}>{{ g.title or g.username or g.chat_id }}{% if g.member_count %} ({{ g.member_count }}){% endif %}</option>
@@ -19,7 +19,7 @@
       </select>
     </label>
     <label>بخش
-      <select name="section">
+      <select name="section" data-auto-submit>
         <option value="all" {% if section == "all" %}selected{% endif %}>همه</option>
         <option value="mentions" {% if section == "mentions" %}selected{% endif %}>منشن/ریپلای</option>
         <option value="photos" {% if section == "photos" %}selected{% endif %}>عکس‌ها</option>
@@ -145,4 +145,18 @@
     </table>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll("[data-auto-submit]").forEach(function (select) {
+      select.addEventListener("change", function () {
+        select.form.submit();
+      });
+    });
+    document.querySelectorAll(".chat-thread").forEach(function (thread) {
+      thread.scrollTop = thread.scrollHeight;
+    });
+  });
+</script>
 {% endblock %}

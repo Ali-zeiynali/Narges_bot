@@ -43,6 +43,7 @@ class MenuServiceTests(unittest.TestCase):
         self.assertEqual(callbacks[:3], ["capacity:referral", "billing:stars_menu", "billing:card_menu"])
         self.assertIn("billing:stars_menu", callbacks)
         self.assertIn("billing:card_menu", callbacks)
+        self.assertIn("capacity:groups", callbacks)
         self.assertNotIn("capacity:phone", callbacks)
 
     def test_card_plans_keyboard_contains_toman_plans(self) -> None:
@@ -51,6 +52,14 @@ class MenuServiceTests(unittest.TestCase):
 
         self.assertIn("billing:card_plan:card_100", callbacks)
         self.assertIn("billing:card_plan:card_1000_discount", callbacks)
+
+    def test_group_invite_keyboard_adds_bot_to_group(self) -> None:
+        keyboard = MenuService(make_settings()).group_invite_keyboard("narges_test_bot")
+        buttons = [button for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("https://t.me/narges_test_bot?startgroup=group_reward", buttons[0].url)
+        self.assertIn("admin=", buttons[0].url)
+        self.assertEqual(buttons[1].callback_data, "capacity:open")
 
 
 if __name__ == "__main__":

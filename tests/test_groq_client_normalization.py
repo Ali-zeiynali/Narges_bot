@@ -48,6 +48,21 @@ class GroqClientNormalizationTests(unittest.TestCase):
 
         self.assertEqual(text, "main answer")
 
+    def test_thinking_block_is_removed_before_json_parsing(self) -> None:
+        payload = self.client._loads_json('<think>private chain</think>{"messages":[{"text":"visible"}]}')
+
+        self.assertEqual(payload["messages"][0]["text"], "visible")
+
+    def test_unclosed_thinking_block_recovers_json_payload(self) -> None:
+        payload = self.client._loads_json('<think>private chain\n{"messages":[{"text":"visible"}]}')
+
+        self.assertEqual(payload["messages"][0]["text"], "visible")
+
+    def test_clean_text_reply_strips_thinking_and_code_blocks(self) -> None:
+        text = self.client._clean_text_reply("<think>hidden</think>```python\nprint('x')\n```\nvisible")
+
+        self.assertEqual(text, "visible")
+
 
 if __name__ == "__main__":
     unittest.main()

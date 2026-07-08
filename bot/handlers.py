@@ -225,17 +225,24 @@ def register_handlers(
             text = f"[{replied.content_type}]"
         return f"پیام ریپلای‌شده که کاربر نرگس را روی آن صدا کرده است: {author}: {text[:700]}"
 
-    def is_narges_mentioned(message: Message, bot_username: str = "narges_aibot") -> bool:
+    def is_narges_mentioned(message: Message, bot_username: str = "narges_aibot", bot_id: int | None = None) -> bool:
         text = group_text(message)
         lowered = text.lower()
+        username = (bot_username or "narges_aibot").strip().lower().lstrip("@")
         normalized = re.sub(r"[\u200c\s_]+", "", lowered)
-        if "نرگس" in normalized or f"@{bot_username.lower()}" in lowered or "@narges_aibot" in lowered:
+        if "نرگس" in normalized or f"@{username}" in lowered or "@narges_aibot" in lowered:
             return True
         for entity in (message.entities or message.caption_entities or []):
-            if getattr(entity, "type", None) == "mention":
+            entity_type = str(getattr(entity, "type", None) or "")
+            if entity_type == "text_mention" and bot_id is not None:
+                mentioned_user = getattr(entity, "user", None)
+                if mentioned_user is not None and getattr(mentioned_user, "id", None) == bot_id:
+                    return True
+            if entity_type == "mention":
                 offset = int(getattr(entity, "offset", 0) or 0)
                 length = int(getattr(entity, "length", 0) or 0)
-                if text[offset : offset + length].lower() in {f"@{bot_username.lower()}", "@narges_aibot"}:
+                mention = text[offset : offset + length].lower().lstrip("@")
+                if mention in {username, "narges_aibot"}:
                     return True
         return False
 
@@ -554,7 +561,34 @@ def register_handlers(
             return "این فایل زیادی بزرگه و امن نیست که ذخیره‌اش کنم."
         return UNSUPPORTED_MEDIA_MESSAGE
 
-    async def run_chat_turn(message: Message, bot: Bot, text_value: str, profile, reserved_quota_check=None):
+    async def retry_failed_chat_turn_later(
+        *,
+        bot: Bot,
+        user_id: int,
+        chat_id: int,
+        message_id: int,
+        text_value: str,
+        profile,
+    ) -> None:
+        await asyncio.sleep(10 * 60)
+        try:
+            result = await chat_service.answer(
+                user_id,
+                chat_id,
+                message_id,
+                text_value,
+                datetime.now(UTC),
+                user_profile=profile,
+            )
+            if getattr(result, "provider_failed", False):
+                return
+            for item in result.reply.messages:
+                await bot.send_message(chat_id=chat_id, text=item.text)
+                await asyncio.sleep(min(float(item.delay_seconds or 0), 0.35))
+        except Exception:
+            logger.exception("delayed_failed_turn_retry_failed user_id=%s chat_id=%s", user_id, chat_id)
+
+    async def run_chat_turn(message: Message, bot: Bot, text_value: str, profile, reserved_quota_check=None, allow_error_retry: bool = True):
         trace = RequestTrace(
             "handler_chat_turn",
             {
@@ -569,7 +603,7 @@ def register_handlers(
             typing_task = asyncio.create_task(keep_typing(bot, message.chat.id, stop_typing))
         try:
             with trace.step("chat_service_answer"):
-                return await chat_service.answer(
+                result = await chat_service.answer(
                     message.from_user.id,
                     message.chat.id,
                     message.message_id,
@@ -579,6 +613,18 @@ def register_handlers(
                     reserved_quota_check=reserved_quota_check,
                     trace=trace,
                 )
+                if allow_error_retry and getattr(result, "provider_failed", False) and not is_group_chat_type(getattr(message.chat, "type", None)):
+                    asyncio.create_task(
+                        retry_failed_chat_turn_later(
+                            bot=bot,
+                            user_id=message.from_user.id,
+                            chat_id=message.chat.id,
+                            message_id=message.message_id,
+                            text_value=text_value,
+                            profile=profile,
+                        )
+                    )
+                return result
         except UserFacingError as exc:
             text = str(exc)
             stop_typing.set()
@@ -777,7 +823,8 @@ def register_handlers(
         return await send_text_with_retries(message, caption, bot, attempts=attempts, trace=trace)
 
     async def handle_ready_image(message: Message, bot: Bot, stored_media: StoredMedia, profile) -> None:
-        if media_storage_service.image_count_today(message.from_user.id) > settings.image_daily_limit:
+        matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
+        if not matched_bot_image and media_storage_service.image_count_today(message.from_user.id) > settings.image_daily_limit:
             record_media_message(message, stored_media, "image daily limit reached")
             await message.answer(VISION_ERROR_MESSAGE)
             return
@@ -792,7 +839,6 @@ def register_handlers(
                 await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             duplicate_context = media_storage_service.duplicate_context(stored_media)
             try:
-                matched_bot_image = bot_image_catalog.matching_bot_image(stored_media)
                 if matched_bot_image:
                     description = "کاربر عکس نرگس را ارسال کرده است."
                     media_storage_service.set_vision_description(stored_media.id, description)
@@ -874,6 +920,35 @@ def register_handlers(
             member_count=await group_member_count(bot, event.chat.id),
             active=status in {"member", "administrator", "creator"},
         )
+        if group_invite_reward_service is None:
+            return
+        actor = getattr(event, "from_user", None)
+        actor_user_id = getattr(actor, "id", None) if actor and not getattr(actor, "is_bot", False) else None
+        if status in {"member", "administrator", "creator"}:
+            result = group_invite_reward_service.bot_joined_or_promoted(
+                chat_id=event.chat.id,
+                actor_user_id=actor_user_id,
+                status=status,
+            )
+            if status == "member":
+                group_invite_reward_service.bot_removed_or_demoted(chat_id=event.chat.id, status=status)
+            user_id = result.get("user_id")
+            if user_id and (result.get("member_granted") or result.get("admin_granted")):
+                amount = (10 if result.get("member_granted") else 0) + (10 if result.get("admin_granted") else 0)
+                with suppress(Exception):
+                    await bot.send_message(
+                        user_id,
+                        f"🎁 نرگس به گروه اضافه شد.\n{amount} پیام رایگان به ظرفیتت اضافه شد.",
+                    )
+            return
+        revoked = group_invite_reward_service.bot_removed_or_demoted(chat_id=event.chat.id, status=status)
+        for item in revoked:
+            user_id = item.get("user_id")
+            if not user_id:
+                continue
+            amount = (10 if item.get("member_revoked") else 0) + (10 if item.get("admin_revoked") else 0)
+            with suppress(Exception):
+                await bot.send_message(user_id, f"⚠️ پاداش گروه برگشت خورد.\n{amount} پیام از ظرفیتت کسر شد.")
 
     async def answer_guest_text(bot: Bot, guest_query_id: str | None, text: str) -> None:
         if not guest_query_id or not text.strip():
@@ -885,6 +960,19 @@ def register_handlers(
             description=text[:120],
         )
         await bot.answer_guest_query(guest_query_id=guest_query_id, result=result)
+
+    async def answer_guest_response(bot: Bot, message: Message, guest_query_id: str | None, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if guest_query_id:
+            try:
+                await answer_guest_text(bot, guest_query_id, text)
+                return
+            except Exception:
+                logger.exception("guest_query_answer_failed chat_id=%s", getattr(message.chat, "id", None))
+        with suppress(Exception):
+            await bot.send_message(chat_id=message.chat.id, text=text[:4096])
 
     @dispatcher.update(F.guest_message)
     async def guest_message_handler(update: Update, bot: Bot) -> None:
@@ -906,7 +994,7 @@ def register_handlers(
         security_reason = moderation_service.security_warning_reason(text)
         if security_reason:
             warning = moderation_service.apply_model_warning(caller_user.id, security_reason, message_id)
-            await answer_guest_text(bot, guest_query_id, warning.message)
+            await answer_guest_response(bot, message, guest_query_id, warning.message)
             return
         if group_service.event_count_since(event_type="guest_response", user_id=caller_user.id, seconds=120) >= 4:
             return
@@ -935,7 +1023,7 @@ def register_handlers(
                 metadata={"provider": result.provider, "model": result.model},
             )
             reply_text = "\n\n".join(item.text for item in result.reply.messages).strip()
-            await answer_guest_text(bot, guest_query_id, reply_text)
+            await answer_guest_response(bot, message, guest_query_id, reply_text)
         except Exception:
             logger.exception("guest_message_response_failed chat_id=%s user_id=%s", chat_id, caller_user.id)
             group_service.record_engine_event(
@@ -956,7 +1044,10 @@ def register_handlers(
         schedule_profile_photo_sync(bot, message.from_user)
         identity = await bot_identity(bot)
         bot_username = str(identity.get("username") or "@narges_aibot").lstrip("@")
-        triggered = is_narges_mentioned(message, bot_username) or is_reply_to_bot(message, identity.get("bot_id"))
+        identity_bot_id = int(identity["bot_id"]) if identity.get("bot_id") is not None else None
+        mentioned_narges = is_narges_mentioned(message, bot_username, identity_bot_id)
+        reply_to_bot = is_reply_to_bot(message, identity_bot_id)
+        triggered = mentioned_narges or reply_to_bot
         standalone_photo = is_standalone_group_photo(message)
         observed_text = group_text(message)
         if observed_text:
@@ -969,8 +1060,8 @@ def register_handlers(
                 metadata={
                     "content_type": str(message.content_type),
                     "reply_to_message_id": message.reply_to_message.message_id if message.reply_to_message else None,
-                    "mentioned_narges": is_narges_mentioned(message, bot_username),
-                    "reply_to_bot": is_reply_to_bot(message, identity.get("bot_id")),
+                    "mentioned_narges": mentioned_narges,
+                    "reply_to_bot": reply_to_bot,
                 },
             )
         stored_group_media: StoredMedia | None = None
@@ -1317,6 +1408,9 @@ def register_handlers(
                 [
                     "دستورات ادمین:",
                     "/admin_last [limit] [user_id] - آخرین پیام‌ها",
+                    "/admin_debug_last - دیباگ آخرین پیام خودت",
+                    "/admin_provider [provider] - انتخاب provider پیام‌های بعدی خودت",
+                    "/admin_provider_unset - حذف provider اجباری خودت",
                     "/admin_admins - نمایش ادمین‌ها",
                     "/admin_groups [page] - لیست گروه‌ها و آیدی‌ها",
                     "/admin_users [search] [page] - جستجو/لیست کاربران",
@@ -1430,6 +1524,93 @@ def register_handlers(
             text = " ".join((row.text or "").split())[:180]
             lines.append(f"#{row.id} | user={row.user_id} chat={row.chat_id or '-'} | {row.role}/{row.message_type}\n{text}")
         await send_chunks(message, "\n\n".join(lines))
+
+    @dispatcher.message(Command("admin_debug_last"))
+    async def admin_debug_last_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        user_id = message.from_user.id if message.from_user else 0
+        with history_service.database.orm.session() as session:
+            user_row = session.scalar(
+                select(ConversationMessageORM)
+                .where(ConversationMessageORM.user_id == user_id, ConversationMessageORM.role == "user")
+                .order_by(desc(ConversationMessageORM.id))
+                .limit(1)
+            )
+            assistant_rows = []
+            if user_row is not None:
+                assistant_rows = session.scalars(
+                    select(ConversationMessageORM)
+                    .where(
+                        ConversationMessageORM.user_id == user_id,
+                        ConversationMessageORM.role == "assistant",
+                        ConversationMessageORM.id > user_row.id,
+                    )
+                    .order_by(ConversationMessageORM.id.asc())
+                    .limit(3)
+                ).all()
+        if user_row is None:
+            await message.answer("پیام قبلی از خودت پیدا نشد.")
+            return
+        payload = {}
+        if assistant_rows and assistant_rows[0].ai_request_payload_json:
+            try:
+                payload = json.loads(assistant_rows[0].ai_request_payload_json)
+            except json.JSONDecodeError:
+                payload = {"raw": assistant_rows[0].ai_request_payload_json}
+        await send_json(
+            message,
+            {
+                "user_message": {
+                    "id": user_row.id,
+                    "telegram_message_id": user_row.telegram_message_id,
+                    "text": user_row.text,
+                    "created_at": user_row.created_at,
+                },
+                "assistant_messages": [
+                    {
+                        "id": row.id,
+                        "telegram_message_id": row.telegram_message_id,
+                        "type": row.message_type,
+                        "provider": row.provider,
+                        "model": row.model,
+                        "tokens": row.total_tokens,
+                        "text": row.text,
+                    }
+                    for row in assistant_rows
+                ],
+                "assistant_payload": payload,
+                "recent_debug_logs": debug_service.recent(10, user_id=user_id),
+            },
+        )
+
+    @dispatcher.message(Command("admin_provider"))
+    async def admin_provider_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        user_id = message.from_user.id if message.from_user else 0
+        value = command_args(message).strip()
+        choices = chat_service.groq_client.provider_choices() if hasattr(chat_service.groq_client, "provider_choices") else []
+        if not value:
+            current = (
+                chat_service.groq_client.provider_override_for_user(user_id)
+                if hasattr(chat_service.groq_client, "provider_override_for_user")
+                else None
+            )
+            await send_chunks(message, "provider فعلی: " + (current or "auto") + "\n\nproviderها:\n" + "\n".join(choices))
+            return
+        if hasattr(chat_service.groq_client, "set_provider_override"):
+            chat_service.groq_client.set_provider_override(user_id, value)
+        await message.answer(f"provider پیام‌های بعدی تو تنظیم شد: {value}")
+
+    @dispatcher.message(Command("admin_provider_unset"))
+    async def admin_provider_unset_handler(message: Message) -> None:
+        if not await require_admin_command(message):
+            return
+        user_id = message.from_user.id if message.from_user else 0
+        if hasattr(chat_service.groq_client, "clear_provider_override"):
+            chat_service.groq_client.clear_provider_override(user_id)
+        await message.answer("provider اجباری حذف شد؛ از این به بعد auto است.")
 
     @dispatcher.message(Command("admin_user"))
     async def admin_user_handler(message: Message) -> None:
@@ -1906,6 +2087,21 @@ def register_handlers(
         await callback.message.answer(
             "برای دریافت ۲۰ پیام اضافه، باید شماره موبایل همان اکانت تلگرام را با دکمه زیر بفرستی.",
             reply_markup=menu_service.phone_request_keyboard(),
+        )
+
+    @dispatcher.callback_query(F.data == "capacity:groups")
+    async def capacity_groups_callback(callback: CallbackQuery, bot: Bot) -> None:
+        if not callback.message:
+            return
+        await callback.answer()
+        try:
+            me = await bot.get_me()
+            username = me.username
+        except Exception:
+            username = "narges_aibot"
+        await callback.message.answer(
+            menu_service.group_invite_text(),
+            reply_markup=menu_service.group_invite_keyboard(username),
         )
 
     @dispatcher.callback_query(F.data == "capacity:referral")

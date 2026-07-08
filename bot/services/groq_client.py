@@ -46,6 +46,7 @@ class ProviderConfig:
     kind: str
     model: str
     api_keys: tuple[str, ...]
+    status_name: str
     priority: int | None = None
     base_url: str | None = None
     enabled: bool = True
@@ -79,18 +80,90 @@ class GroqChatClient:
         self.proxy_url = settings.groq_proxy or settings.telegram_proxy
         self.http_client = httpx.Client(proxy=self.proxy_url, timeout=45) if self.proxy_url else httpx.Client(timeout=45)
         self.direct_http_client = httpx.Client(timeout=45)
+        self._user_provider_overrides: dict[int, str] = {}
 
-    def complete(self, messages: list[dict[str, str]]) -> GroqResult:
-        raw_text, usage, provider, model = self._complete_json(messages, NargesReply.model_json_schema(), "chat")
+    def complete(self, messages: list[dict[str, str]], forced_provider: str | None = None) -> GroqResult:
+        return self._complete_chat(messages, forced_provider=forced_provider)
+
+    def set_provider_override(self, user_id: int, provider: str) -> None:
+        self._user_provider_overrides[int(user_id)] = provider.strip()
+
+    def clear_provider_override(self, user_id: int) -> None:
+        self._user_provider_overrides.pop(int(user_id), None)
+
+    def provider_override_for_user(self, user_id: int) -> str | None:
+        return self._user_provider_overrides.get(int(user_id))
+
+    def provider_choices(self) -> list[str]:
+        self._reload_providers_if_changed()
+        choices = []
+        for provider in self.providers:
+            choices.append(f"{provider.status_name}:{provider.model}")
+        return choices
+
+    def _complete_chat(self, messages: list[dict[str, str]], forced_provider: str | None = None) -> GroqResult:
+        last_error: Exception | None = None
+        self._reload_providers_if_changed()
+        for provider in self._candidate_providers(forced_provider):
+            if not provider.enabled:
+                continue
+            keys = self._resolve_keys(provider)
+            if not keys:
+                continue
+            for key_index, api_key in enumerate(keys):
+                if self._key_is_temporarily_disabled(provider.status_name, key_index):
+                    continue
+                if provider.experimental and provider.health_check and not self._provider_is_healthy(provider, api_key):
+                    last_error = ProviderRequestError(provider.name, "health check failed", retryable=True)
+                    self._record_key_failure(provider.status_name, key_index, last_error)
+                    continue
+                try:
+                    raw_text, usage, provider_name, model = self._request_provider(
+                        provider,
+                        api_key,
+                        messages,
+                        NargesReply.model_json_schema(),
+                        "chat",
+                        key_index=key_index,
+                        max_completion_tokens=None,
+                        temperature=None,
+                    )
+                    return self._decode_chat_result(raw_text, usage, provider_name, model)
+                except ProviderRequestError as exc:
+                    last_error = exc
+                    self._record_key_failure(provider.status_name, key_index, exc)
+                    if not exc.retryable:
+                        break
+                    if "HTTP 429" in str(exc):
+                        logger.warning("ai_provider_key_limited provider=%s key_index=%s moving_to_next_key error=%s", provider.name, key_index, exc)
+                        continue
+                    logger.warning("ai_provider_failed provider=%s moving_to_next error=%s", provider.name, exc)
+                    break
+        if last_error:
+            raise last_error
+        if forced_provider:
+            raise RuntimeError(f"No configured AI provider matched or had keys: {forced_provider}")
+        raise RuntimeError("No configured AI provider has an available API key.")
+
+    def _decode_chat_result(self, raw_text: str, usage: dict[str, int | None], provider: str, model: str) -> GroqResult:
         payload = self._try_loads_json(raw_text)
         if payload is None:
+            if self._looks_like_json_fragment(raw_text):
+                raise ProviderRequestError(provider, "invalid JSON chat payload", retryable=True)
             reply = NargesReply.from_text(self._clean_text_reply(raw_text))
         else:
             try:
                 reply = NargesReply.validate_provider_payload(payload)
             except Exception:
                 logger.exception("provider_payload_validation_failed raw_text=%s", raw_text[:1000])
-                reply = NargesReply.from_text(self._clean_text_reply(raw_text, payload))
+                clean_text = self._clean_text_reply(raw_text, payload)
+                if clean_text == self._clean_text_reply("", {}) or self._looks_like_prompt_echo(clean_text):
+                    raise ProviderRequestError(provider, "invalid chat payload echoed request", retryable=True)
+                reply = NargesReply.from_text(clean_text)
+        if not any(message.text.strip() for message in reply.messages):
+            raise ProviderRequestError(provider, "empty chat reply", retryable=True)
+        for message in reply.messages:
+            message.text = self._sanitize_visible_text(message.text)
         return GroqResult(
             reply=reply,
             raw_text=raw_text,
@@ -262,13 +335,12 @@ class GroqChatClient:
             keys = self._resolve_keys(provider)
             if not keys:
                 continue
-            provider_failures = 0
             for key_index, api_key in enumerate(keys):
-                if self._key_is_temporarily_disabled(provider.name, key_index):
+                if self._key_is_temporarily_disabled(provider.status_name, key_index):
                     continue
                 if provider.experimental and provider.health_check and not self._provider_is_healthy(provider, api_key):
                     last_error = ProviderRequestError(provider.name, "health check failed", retryable=True)
-                    self._record_key_failure(provider.name, key_index, last_error)
+                    self._record_key_failure(provider.status_name, key_index, last_error)
                     continue
                 try:
                     return self._request_provider(
@@ -283,14 +355,15 @@ class GroqChatClient:
                     )
                 except ProviderRequestError as exc:
                     last_error = exc
-                    provider_failures += 1
-                    self._record_key_failure(provider.name, key_index, exc)
+                    self._record_key_failure(provider.status_name, key_index, exc)
                     if not exc.retryable:
                         break
-                    if provider_failures >= 1:
+                    if "HTTP 429" in str(exc):
+                        logger.warning("ai_provider_key_limited provider=%s key_index=%s moving_to_next_key error=%s", provider.name, key_index, exc)
+                        continue
+                    else:
                         logger.warning("ai_provider_failed provider=%s moving_to_next error=%s", provider.name, exc)
                         break
-                    logger.warning("ai_provider_failed provider=%s retryable=%s error=%s", provider.name, exc.retryable, exc)
         if last_error:
             raise last_error
         raise RuntimeError("No configured AI provider has an available API key.")
@@ -332,7 +405,7 @@ class GroqChatClient:
         data = response.json()
         raw_text = self._extract_text(provider, data)
         usage = self._extract_usage(data)
-        self._record_key_success(provider.name, key_index)
+        self._record_key_success(provider.status_name, key_index)
         self._log_ai_response(purpose, provider, raw_text, usage)
         return raw_text, usage, provider.name, self._extract_model(data, provider.model)
 
@@ -496,7 +569,7 @@ class GroqChatClient:
         return None
 
     def _loads_json(self, raw_text: str) -> dict[str, Any]:
-        text = raw_text.strip()
+        text = self._strip_thinking(raw_text).strip()
         if text.startswith("```"):
             text = text.strip("`")
             if text.lower().startswith("json"):
@@ -524,28 +597,47 @@ class GroqChatClient:
             for key in ("text", "answer", "message", "content"):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
-                    return value.strip()
+                    return self._sanitize_visible_text(value)
             messages = payload.get("messages")
             if isinstance(messages, list) and messages:
                 first = messages[0]
                 if isinstance(first, dict):
                     value = first.get("text") or first.get("content")
                     if value:
-                        return str(value).strip()
+                        return self._sanitize_visible_text(str(value))
                 if isinstance(first, str):
-                    return first.strip()
-        text = raw_text.strip()
-        text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+                    return self._sanitize_visible_text(first)
+        text = self._strip_thinking(raw_text).strip()
+        text = re.sub(r"^```[^\n`]*\s*.*?```\s*", "", text, flags=re.DOTALL).strip()
+        text = re.sub(r"^```[^\n`]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()
+        text = re.sub(r"```.*?```", "", text, flags=re.DOTALL).strip()
         extracted = self._extract_lenient_text_field(text)
         if extracted:
             return extracted
         if text.startswith("{") and text.endswith("}"):
             text = text.strip("{}").replace('"', "").strip()
-        return text or "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست."
+        return self._sanitize_visible_text(text) or "الان جوابم درست آماده نشد. یک بار کوتاه‌تر بفرست."
+
+    def _strip_thinking(self, raw_text: str) -> str:
+        text = raw_text or ""
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        if re.search(r"<think>", text, flags=re.IGNORECASE):
+            json_start = text.find("{")
+            if json_start >= 0:
+                text = text[json_start:]
+            else:
+                text = re.sub(r"<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+        return text
+
+    def _sanitize_visible_text(self, text: str) -> str:
+        text = self._strip_thinking(text)
+        text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+        return text.strip()
 
     def _repair_partial_json_object(self, raw_text: str) -> dict[str, Any] | None:
-        text = raw_text.strip()
+        text = self._strip_thinking(raw_text).strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text).strip()
@@ -639,6 +731,7 @@ class GroqChatClient:
             model = item["models"][0]
         return ProviderConfig(
             name=str(item["name"]).strip(),
+            status_name=f"{index}:{str(item['name']).strip()}",
             kind=str(item.get("type") or item.get("kind") or "openai_compatible").strip(),
             base_url=str(item.get("base_url") or "").strip() or None,
             api_keys=tuple(str(value).strip() for value in api_keys if str(value).strip()),
@@ -660,8 +753,44 @@ class GroqChatClient:
             use_proxy=bool(item.get("use_proxy", True)),
         )
 
+    def _candidate_providers(self, forced_provider: str | None = None) -> list[ProviderConfig]:
+        value = (forced_provider or "").strip().lower()
+        if not value:
+            return list(self.providers)
+        matches = []
+        for index, provider in enumerate(self.providers):
+            aliases = {
+                provider.name.lower(),
+                provider.status_name.lower(),
+                f"{index}".lower(),
+                f"{index}:{provider.name}".lower(),
+                f"{index}:{provider.name}:{provider.model}".lower(),
+            }
+            if value in aliases:
+                matches.append(provider)
+        return matches
+
     def _client_for_provider(self, provider: ProviderConfig) -> httpx.Client:
         return self.http_client if provider.use_proxy else self.direct_http_client
+
+    def _looks_like_json_fragment(self, raw_text: str) -> bool:
+        text = (raw_text or "").strip()
+        if not text:
+            return True
+        lowered = text.lower()
+        return text.startswith(("{", "[")) or '"messages"' in lowered or '"role"' in lowered or "request_contract" in lowered
+
+    def _looks_like_prompt_echo(self, text: str) -> bool:
+        lowered = (text or "").lower()
+        markers = (
+            "remaining_quota_units_today",
+            "user_profile_photos",
+            "anti_loop.forbidden_reuse",
+            "request_contract",
+            "developer",
+            "system prompt",
+        )
+        return any(marker in lowered for marker in markers)
 
     def _provider_is_healthy(self, provider: ProviderConfig, api_key: str) -> bool:
         cache_key = f"{provider.name}:{provider.base_url}"

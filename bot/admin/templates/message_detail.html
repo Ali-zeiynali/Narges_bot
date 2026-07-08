@@ -34,7 +34,7 @@
     {% for item in related_media %}
     <article class="media-card">
       <a class="media-thumb" href="/admin/media/{{ item.id }}/file" target="_blank">
-        {% if item.media_kind == "image" %}
+        {% if item.media_kind in ["image", "bot_image"] %}
           <img src="/admin/media/{{ item.id }}/file" alt="media {{ item.id }}">
         {% elif item.media_kind in ["voice", "audio"] %}
           <div style="width:100%;padding:16px"><div class="media-icon">🎧</div><audio src="/admin/media/{{ item.id }}/file" controls preload="metadata"></audio></div>
@@ -62,6 +62,19 @@
   <pre><code>{{ ai_request | json_pretty }}</code></pre>
   {% endif %}
 </div>
+{% if ai_request.raw_model_response or ai_request.model_error or ai_request.visible_reply %}
+<div class="grid two">
+  <div class="card">
+    <h3>Model response / error</h3>
+    {% if ai_request.model_error %}<pre><code>{{ ai_request.model_error }}</code></pre>{% endif %}
+    {% if ai_request.raw_model_response %}<pre><code>{{ ai_request.raw_model_response }}</code></pre>{% endif %}
+  </div>
+  <div class="card">
+    <h3>Visible reply</h3>
+    <pre><code>{{ ai_request.visible_reply or message.text }}</code></pre>
+  </div>
+</div>
+{% endif %}
 <div class="card"><h3>Payload کامل</h3><pre><code>{{ ai_request | json_pretty }}</code></pre></div>
 {% endif %}
 {% endblock %}

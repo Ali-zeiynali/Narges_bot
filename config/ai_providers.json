@@ -12,7 +12,7 @@
       ],
       "model": "mistral-large",
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45.0,
       "supports_json_schema": false,
       "supports_prompt_cache": "unknown",
@@ -21,6 +21,42 @@
       "experimental": true,
       "response_format": "none",
       "prompt_cache": true
+    },
+    {
+      "name": "nvidia",
+      "enabled": true,
+      "priority": 10,
+      "type": "openai_compatible",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_keys": [
+        "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"
+      ],
+      "model": "qwen/qwen3.5-397b-a17b",
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "supports_json_schema": false,
+      "supports_prompt_cache": "unknown",
+      "use_proxy": true,
+      "health_check": true
+    },
+    {
+      "name": "openrouter",
+      "type": "openai_compatible",
+      "enabled": true,
+      "base_url": "https://openrouter.ai/api/v1",
+      "model": "google/gemini-flash-1.5",
+      "api_keys": [
+        "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"
+      ],
+      "temperature": 0.7,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45,
+      "prompt_cache": false,
+      "extra_headers": {
+        "HTTP-Referer": "https://localhost/narges",
+        "X-Title": "Narges"
+      }
     },
     {
       "name": "bazaarlink",
@@ -33,7 +69,7 @@
         "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45.0,
       "response_format": "none",
       "use_proxy": true,
@@ -52,7 +88,7 @@
         "kFzEI5iaBCCR2B8uUMChXY8DUB35VlaN"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true
@@ -69,7 +105,7 @@
         "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"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true
@@ -84,7 +120,7 @@
         "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"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true
@@ -99,7 +135,7 @@
         "4SYVWyJlUTuEIN1He47EuId48hywByOY"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 512,
+      "max_completion_tokens": 7000,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true

@@ -113,6 +113,28 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second.ok)
         self.assertTrue(third.ok)
 
+    async def test_revoke_credit_consumes_extra_before_free_quota(self) -> None:
+        self.service.add_extra_credit(1, 2, reason="test")
+
+        result = self.service.revoke_credit(1, 4, reason="test")
+        account = self.service.account_quota(1)
+
+        self.assertEqual(result["extra_units"], 10)
+        self.assertEqual(result["free_units"], 10)
+        self.assertEqual(account.extra_remaining, 0)
+        self.assertEqual(account.daily_remaining, 5)
+        self.assertEqual(account.monthly_remaining, 1490)
+
+    async def test_revoke_credit_never_makes_quota_negative(self) -> None:
+        result = self.service.revoke_credit(1, 1000, reason="test")
+        account = self.service.account_quota(1)
+
+        self.assertEqual(result["extra_units"], 0)
+        self.assertEqual(result["free_units"], 15)
+        self.assertEqual(account.extra_remaining, 0)
+        self.assertEqual(account.daily_remaining, 0)
+        self.assertEqual(account.monthly_remaining, 1485)
+
 
 if __name__ == "__main__":
     unittest.main()

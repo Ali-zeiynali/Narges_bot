@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from bot.services.global_state_service import GlobalStateService
 from bot.services.history_service import HistoryService
 from bot.services.billing_service import BillingService
 from bot.services.group_service import HIDDEN_BOT_STATUSES
+from bot.services.media_service import MediaStorageService
 from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.quota_service import QUOTA_UNIT_SCALE, QuotaService
@@ -391,7 +393,7 @@ class AdminDataService:
                 timeline_statement = timeline_statement.where(ConversationMessageORM.chat_id.in_(visible_chat_ids))
             else:
                 timeline_statement = timeline_statement.where(False)
-            timeline_rows = session.scalars(timeline_statement).all()
+            timeline_rows = self._dedupe_group_timeline_rows(session.scalars(timeline_statement).all())
             events = session.scalars(event_statement).all()
             group_names = self._group_name_map(groups)
             user_names = self._user_name_map(
@@ -428,6 +430,22 @@ class AdminDataService:
             "counts": counts,
         }
 
+    def _dedupe_group_timeline_rows(self, rows: list[ConversationMessageORM]) -> list[ConversationMessageORM]:
+        by_key: dict[tuple[int | None, int | None, str], ConversationMessageORM] = {}
+        for row in rows:
+            key = (row.chat_id, row.telegram_message_id if row.telegram_message_id is not None else -int(row.id), row.role)
+            current = by_key.get(key)
+            if current is None or self._group_timeline_rank(row) > self._group_timeline_rank(current):
+                by_key[key] = row
+        return sorted(by_key.values(), key=lambda row: int(row.id), reverse=True)
+
+    def _group_timeline_rank(self, row: ConversationMessageORM) -> int:
+        if row.message_type == "group_observed":
+            return 0
+        if self._reply_to_message_id(row) is not None:
+            return 3
+        return 2
+
     def record_admin_direct_message(self, user_id: int, text: str, telegram_message_id: int | None) -> None:
         HistoryService(self.database).add(
             user_id,
@@ -442,6 +460,38 @@ class AdminDataService:
                 "target_id": user_id,
                 "telegram_message_id": telegram_message_id,
             },
+        )
+
+    def record_admin_uploaded_media(
+        self,
+        *,
+        target_id: int,
+        target_type: str,
+        text: str,
+        media_type: str,
+        file_payload: tuple[str, bytes] | None,
+        telegram_message_id: int | None,
+    ) -> None:
+        if not file_payload or not telegram_message_id:
+            return
+        filename, content = file_payload
+        if not content:
+            return
+        normalized_type = (media_type or "").strip().lower()
+        media_kind = "image" if normalized_type == "photo" else normalized_type or "document"
+        mime_type = mimetypes.guess_type(filename or "")[0]
+        if media_kind == "image" and not mime_type:
+            mime_type = "image/jpeg"
+        MediaStorageService(self.settings, self.database).record_admin_upload(
+            user_id=int(target_id) if target_type == "user" else 0,
+            chat_id=int(target_id),
+            telegram_message_id=telegram_message_id,
+            content=content,
+            filename=filename,
+            media_kind=media_kind,
+            mime_type=mime_type,
+            caption=text or None,
+            source=f"admin_{target_type}_message",
         )
 
     def record_admin_group_message(self, chat_id: int, text: str, telegram_message_id: int | None) -> None:
@@ -517,13 +567,38 @@ class AdminDataService:
         with self.database.orm.session() as session:
             rows = session.scalars(select(BillingInvoiceORM).order_by(desc(BillingInvoiceORM.created_at)).limit(limit)).all()
             user_names = self._user_name_map(session, [row.user_id for row in rows])
-        return {"invoices": rows, "plans": self.billing_service.plans, "user_names": user_names}
+            receipt_media_ids = [media_id for row in rows for media_id in [self._receipt_media_id(row.payment_id)] if media_id is not None]
+            receipt_media = {
+                row.id: self._media_row(row)
+                for row in session.scalars(select(MediaFileORM).where(MediaFileORM.id.in_(receipt_media_ids))).all()
+            } if receipt_media_ids else {}
+            receipt_media_by_invoice = {
+                row.invoice_id: receipt_media[media_id]
+                for row in rows
+                for media_id in [self._receipt_media_id(row.payment_id)]
+                if media_id is not None and media_id in receipt_media
+            }
+        return {
+            "invoices": rows,
+            "plans": self.billing_service.plans,
+            "user_names": user_names,
+            "receipt_media": receipt_media,
+            "receipt_media_by_invoice": receipt_media_by_invoice,
+        }
 
     def review_invoice(self, invoice_id: str, approve: bool, reviewer_id: int | None = None) -> tuple[bool, Any, str]:
         result = self.billing_service.review_card_invoice(invoice_id, approve=approve, reviewer_id=reviewer_id)
         if result.accepted and result.newly_paid and result.invoice:
             self.quota_service.add_extra_credit(result.invoice.user_id, result.invoice.message_quota, reason=f"card:{result.invoice.invoice_id}")
         return result.accepted, result.invoice, result.reason
+
+    def _receipt_media_id(self, payment_id: str | None) -> int | None:
+        if not payment_id:
+            return None
+        parts = str(payment_id).split(":", 2)
+        if len(parts) >= 2 and parts[0] in {"photo", "document"} and parts[1].isdigit():
+            return int(parts[1])
+        return None
 
     def export_backup(self) -> dict[str, Any]:
         exported: dict[str, Any] = {}
@@ -704,13 +779,16 @@ class AdminDataService:
         providers = self._read_provider_config().get("providers", [])
         statuses = {(item["provider"], item["key_index"]): item for item in self.provider_statuses()}
         result = []
-        for provider in providers:
+        for provider_index, provider in enumerate(providers):
             keys = list(provider.get("api_keys") or [])
+            status_name = f"{provider_index}:{provider.get('name')}"
             result.append(
                 {
                     **provider,
+                    "_index": provider_index,
+                    "_status_name": status_name,
                     "masked_keys": [mask_key(str(key)) for key in keys],
-                    "key_statuses": [statuses.get((provider.get("name"), index), {}) for index, _key in enumerate(keys)],
+                    "key_statuses": [statuses.get((status_name, index), {}) for index, _key in enumerate(keys)],
                 }
             )
         return result
@@ -732,43 +810,49 @@ class AdminDataService:
             for row in rows
         ]
 
-    def add_provider_key(self, provider_name: str, key: str) -> None:
+    def add_provider_key(self, provider_ref: str, key: str) -> None:
+        key = key.strip()
+        if not key:
+            return
         data = self._read_provider_config()
-        for provider in data.get("providers", []):
-            if provider.get("name") == provider_name:
-                provider.setdefault("api_keys", []).append(key.strip())
-                self._write_provider_config(data)
-                return
+        provider = self._provider_by_ref(data, provider_ref)
+        if provider is None:
+            return
+        keys = list(provider.get("api_keys") or [])
+        if key not in keys:
+            keys.append(key)
+        provider["api_keys"] = keys
+        self._write_provider_config(data)
 
-    def delete_provider_key(self, provider_name: str, key_index: int) -> None:
+    def delete_provider_key(self, provider_ref: str, key_index: int) -> None:
         data = self._read_provider_config()
-        for provider in data.get("providers", []):
-            if provider.get("name") == provider_name:
-                keys = list(provider.get("api_keys") or [])
-                if 0 <= key_index < len(keys):
-                    keys.pop(key_index)
-                    provider["api_keys"] = keys
-                    self._write_provider_config(data)
-                return
+        provider = self._provider_by_ref(data, provider_ref)
+        if provider is None:
+            return
+        keys = list(provider.get("api_keys") or [])
+        if 0 <= key_index < len(keys):
+            keys.pop(key_index)
+            provider["api_keys"] = keys
+            self._write_provider_config(data)
 
-    def update_provider(self, provider_name: str, form: dict[str, Any]) -> None:
+    def update_provider(self, provider_ref: str, form: dict[str, Any]) -> None:
         data = self._read_provider_config()
-        for provider in data.get("providers", []):
-            if provider.get("name") == provider_name:
-                provider["enabled"] = str(form.get("enabled", "")).lower() in {"1", "true", "on", "yes"}
-                provider["model"] = str(form.get("model", provider.get("model", ""))).strip()
-                provider["base_url"] = str(form.get("base_url", provider.get("base_url", ""))).strip()
-                provider["response_format"] = str(form.get("response_format", provider.get("response_format", "json_object"))).strip()
-                priority_raw = str(form.get("priority", provider.get("priority", ""))).strip()
-                provider["priority"] = int(priority_raw) if priority_raw.lstrip("-").isdigit() else None
-                provider["timeout_seconds"] = float(form.get("timeout_seconds", provider.get("timeout_seconds", 45)))
-                provider["max_completion_tokens"] = int(form.get("max_completion_tokens", provider.get("max_completion_tokens", 512)))
-                provider["use_proxy"] = str(form.get("use_proxy", "on")).lower() in {"1", "true", "on", "yes"}
-                provider["health_check"] = str(form.get("health_check", "")).lower() in {"1", "true", "on", "yes"}
-                provider["experimental"] = str(form.get("experimental", "")).lower() in {"1", "true", "on", "yes"}
-                provider["prompt_cache"] = str(form.get("prompt_cache", "")).lower() in {"1", "true", "on", "yes"}
-                self._write_provider_config(data)
-                return
+        provider = self._provider_by_ref(data, provider_ref)
+        if provider is None:
+            return
+        provider["enabled"] = str(form.get("enabled", "")).lower() in {"1", "true", "on", "yes"}
+        provider["model"] = str(form.get("model", provider.get("model", ""))).strip()
+        provider["base_url"] = str(form.get("base_url", provider.get("base_url", ""))).strip()
+        provider["response_format"] = str(form.get("response_format", provider.get("response_format", "json_object"))).strip()
+        priority_raw = str(form.get("priority", provider.get("priority", ""))).strip()
+        provider["priority"] = int(priority_raw) if priority_raw.lstrip("-").isdigit() else None
+        provider["timeout_seconds"] = float(form.get("timeout_seconds", provider.get("timeout_seconds", 45)))
+        provider["max_completion_tokens"] = int(form.get("max_completion_tokens", provider.get("max_completion_tokens", 512)))
+        provider["use_proxy"] = str(form.get("use_proxy", "on")).lower() in {"1", "true", "on", "yes"}
+        provider["health_check"] = str(form.get("health_check", "")).lower() in {"1", "true", "on", "yes"}
+        provider["experimental"] = str(form.get("experimental", "")).lower() in {"1", "true", "on", "yes"}
+        provider["prompt_cache"] = str(form.get("prompt_cache", "")).lower() in {"1", "true", "on", "yes"}
+        self._write_provider_config(data)
 
     def logs(self, kind: str = "debug", limit: int = 100) -> dict[str, Any]:
         limit = max(10, min(limit, 300))
@@ -839,11 +923,20 @@ class AdminDataService:
             ).all()
         return {"broadcast": broadcast, "deliveries": deliveries}
 
-    def target_user_ids(self, only_ready: bool = True) -> list[int]:
+    def target_user_ids(self, only_ready: bool = True, active_within_hours: int | None = None) -> list[int]:
         with self.database.orm.session() as session:
             statement = select(UserORM.telegram_id)
             if only_ready:
                 statement = statement.where(UserORM.onboarding_state == "ready")
+            if active_within_hours:
+                since = utc_now() - timedelta(hours=max(1, int(active_within_hours)))
+                active_users = (
+                    select(ConversationMessageORM.user_id)
+                    .where(ConversationMessageORM.created_at >= since)
+                    .group_by(ConversationMessageORM.user_id)
+                    .subquery()
+                )
+                statement = statement.where(UserORM.telegram_id.in_(select(active_users.c.user_id)))
             return [int(value) for value in session.scalars(statement).all()]
 
     def target_group_ids(self) -> list[int]:
@@ -929,6 +1022,20 @@ class AdminDataService:
         path = Path(self.settings.ai_providers_config)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _provider_by_ref(self, data: dict[str, Any], provider_ref: str) -> dict[str, Any] | None:
+        providers = data.get("providers", [])
+        if not isinstance(providers, list):
+            return None
+        ref = str(provider_ref).strip()
+        if ref.isdigit():
+            index = int(ref)
+            if 0 <= index < len(providers) and isinstance(providers[index], dict):
+                return providers[index]
+        for provider in providers:
+            if isinstance(provider, dict) and provider.get("name") == ref:
+                return provider
+        return None
 
     def _split_lines(self, value: str) -> list[str]:
         return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]

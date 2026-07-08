@@ -18,6 +18,7 @@ from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupInviteRewardService, GroupMessageScheduler, GroupService
 from bot.services.group_ai_service import GroupAIService
 from bot.services.groq_client import GroqChatClient
+from bot.services.group_invite_prompt_service import GroupInvitePromptScheduler, GroupInvitePromptService
 from bot.services.history_service import HistoryService
 from bot.services.media_service import BotImageCatalog, MediaStorageService, VisionClient
 from bot.services.memory_service import MemoryService
@@ -54,6 +55,7 @@ class BotApplication:
     group_ai_service: GroupAIService
     profile_photo_service: ProfilePhotoService
     reengagement_service: ReengagementService
+    group_invite_prompt_service: GroupInvitePromptService
     background_tasks: list[asyncio.Task] = field(default_factory=list)
 
     async def startup(self) -> None:
@@ -70,6 +72,13 @@ class BotApplication:
             asyncio.create_task(
                 self._run_resilient("profile-photo-sync", lambda: self.profile_photo_service.run_known_user_sync_forever(self.bot)),
                 name="profile-photo-sync",
+            ),
+            asyncio.create_task(
+                self._run_resilient(
+                    "group-invite-prompt",
+                    GroupInvitePromptScheduler(self.group_invite_prompt_service, self.bot, self.menu_service).run_forever,
+                ),
+                name="group-invite-prompt",
             ),
         ]
         if self.settings.reengagement_enabled:
@@ -128,6 +137,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     channel_service = RequiredChannelService(database, settings.membership_cache_seconds, settings.admin_ids)
     group_service = GroupService(database)
     group_invite_reward_service = GroupInviteRewardService(database, quota_service)
+    group_invite_prompt_service = GroupInvitePromptService(database, quota_service)
     user_service = UserService(database)
     name_service = NameService(settings.name_transliteration_map)
     groq_client = GroqChatClient(settings, database)
@@ -213,4 +223,5 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         group_ai_service=group_ai_service,
         profile_photo_service=profile_photo_service,
         reengagement_service=ReengagementService(database, settings),
+        group_invite_prompt_service=group_invite_prompt_service,
     )

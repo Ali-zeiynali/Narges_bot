@@ -316,6 +316,47 @@ class MediaStorageService:
             created_at=created_at,
         )
 
+    def record_admin_upload(
+        self,
+        *,
+        user_id: int,
+        chat_id: int | None,
+        telegram_message_id: int | None,
+        content: bytes,
+        filename: str,
+        media_kind: str,
+        mime_type: str | None,
+        caption: str | None,
+        source: str,
+    ) -> StoredMedia:
+        created_at = datetime.now(UTC)
+        safe_name = self._safe_original_name(filename) or "admin-upload.bin"
+        content_hash = hashlib.sha256(content).hexdigest()
+        duplicate_id = self._duplicate_media_id(content_hash)
+        metadata = {
+            "source": source,
+            "stored_in_database": True,
+            "content_hash": content_hash,
+        }
+        if duplicate_id:
+            metadata["duplicate_of_media_id"] = duplicate_id
+        return self._record(
+            user_id=user_id,
+            chat_id=chat_id,
+            telegram_message_id=telegram_message_id,
+            telegram_file_id=f"admin:{source}:{telegram_message_id or created_at.timestamp()}:{content_hash[:16]}",
+            media_kind=media_kind,
+            mime_type=mime_type,
+            original_file_name=safe_name,
+            storage_path="",
+            content_hash=content_hash,
+            file_bytes=content,
+            file_size=len(content),
+            caption=caption,
+            metadata=metadata,
+            created_at=created_at,
+        )
+
     def profile_photo_context(self, user_id: int, limit: int = 3) -> list[dict[str, Any]]:
         with self.database.orm.session() as session:
             rows = session.scalars(

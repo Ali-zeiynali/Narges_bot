@@ -13,6 +13,7 @@
       <select name="target_type">
         <option value="users">همه کاربران</option>
         <option value="groups">همه گروه‌ها</option>
+        <option value="group">یک گروه خاص</option>
         <option value="all">همه کاربران و همه گروه‌ها</option>
         <option value="user">یک کاربر خاص</option>
       </select>
@@ -33,7 +34,12 @@
     </label>
   </div>
   <label>متن یا کپشن پیام<textarea name="text"></textarea></label>
-  <label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label>
+  <div class="grid two">
+    <label><input style="width:auto" type="checkbox" name="only_ready" checked> فقط کاربران آماده</label>
+    <label>فعال در چند ساعت اخیر
+      <input name="active_within_hours" type="number" min="1" placeholder="مثلا 2">
+    </label>
+  </div>
   <button>ارسال</button>
 </form>
 

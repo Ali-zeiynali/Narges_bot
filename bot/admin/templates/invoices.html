@@ -28,7 +28,17 @@
       </td>
       <td>{{ i.message_quota }}</td>
       <td><span class="pill">{{ i.status }}</span></td>
-      <td class="ltr">{{ i.payment_id or "-" }}</td>
+      <td>
+        {% set receipt = receipt_media_by_invoice.get(i.invoice_id) %}
+        {% if receipt %}
+          <a class="media-thumb" href="/admin/media/{{ receipt.id }}/file" target="_blank">
+            {% if receipt.media_kind in ["image", "bot_image"] %}<img src="/admin/media/{{ receipt.id }}/file" alt="receipt {{ receipt.id }}">
+            {% else %}<span class="ltr">{{ i.payment_id }}</span>{% endif %}
+          </a>
+        {% else %}
+          <span class="ltr">{{ i.payment_id or "-" }}</span>
+        {% endif %}
+      </td>
       <td>{{ i.created_at|dt }}</td>
       <td>{{ i.updated_at|dt }}</td>
       <td>

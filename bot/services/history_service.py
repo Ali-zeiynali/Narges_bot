@@ -141,7 +141,7 @@ class HistoryService:
                 select(ConversationMessageORM)
                 .where(
                     ConversationMessageORM.user_id == user_id,
-                    ConversationMessageORM.message_type == "chat",
+                    ConversationMessageORM.message_type.in_(("chat", "admin_direct")),
                     ConversationMessageORM.role == "assistant",
                 )
                 .order_by(ConversationMessageORM.id.desc())

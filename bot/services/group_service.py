@@ -401,7 +401,7 @@ class GroupInviteRewardService:
     def bot_removed_or_demoted(self, *, chat_id: int, status: str) -> list[dict[str, Any]]:
         status = (status or "").strip().lower()
         now = datetime.now(UTC)
-        results: list[dict[str, Any]] = []
+        pending_revokes: list[dict[str, Any]] = []
         with self.database.orm.session() as session:
             rows = list(session.scalars(select(GroupInviteRewardORM).where(GroupInviteRewardORM.chat_id == chat_id)).all())
             for row in rows:
@@ -414,12 +414,10 @@ class GroupInviteRewardService:
                 admin_revoke = {}
                 if revoke_admin:
                     row.admin_granted = False
-                    admin_revoke = self.quota_service.revoke_credit(row.user_id, self.ADMIN_REWARD, reason=f"group_admin:{chat_id}")
                 if revoke_member:
                     row.member_granted = False
-                    member_revoke = self.quota_service.revoke_credit(row.user_id, self.MEMBER_REWARD, reason=f"group_member:{chat_id}")
                 if revoke_member or revoke_admin:
-                    results.append(
+                    pending_revokes.append(
                         {
                             "user_id": row.user_id,
                             "member_revoked": revoke_member,
@@ -428,6 +426,13 @@ class GroupInviteRewardService:
                             "admin_revoke": admin_revoke,
                         }
                     )
+        results: list[dict[str, Any]] = []
+        for item in pending_revokes:
+            if item["admin_revoked"]:
+                item["admin_revoke"] = self.quota_service.revoke_credit(item["user_id"], self.ADMIN_REWARD, reason=f"group_admin:{chat_id}")
+            if item["member_revoked"]:
+                item["member_revoke"] = self.quota_service.revoke_credit(item["user_id"], self.MEMBER_REWARD, reason=f"group_member:{chat_id}")
+            results.append(item)
         return results
 
     def _owner_for_chat(self, chat_id: int) -> int | None:

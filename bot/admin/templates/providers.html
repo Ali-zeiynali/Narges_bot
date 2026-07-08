@@ -10,14 +10,14 @@
 {% for p in providers %}
 <div class="card">
   <h3>{{ p.name }} <span class="pill">{{ "فعال" if p.enabled else "غیرفعال" }}</span></h3>
-  <form method="post" action="/admin/providers/{{ p.name }}">
+  <form method="post" action="/admin/providers/{{ p._index }}">
     <div class="grid two">
       <label>priority<input name="priority" type="number" value="{{ p.priority if p.priority is not none else '' }}"></label>
       <label>model<input name="model" class="ltr" value="{{ p.model or (p.models[0] if p.models else '') }}"></label>
       <label>base_url<input name="base_url" class="ltr" value="{{ p.base_url or '' }}"></label>
       <label>response_format<input name="response_format" value="{{ p.response_format or 'json_object' }}"></label>
       <label>timeout_seconds<input name="timeout_seconds" type="number" value="{{ p.timeout_seconds or 45 }}"></label>
-      <label>max_completion_tokens<input name="max_completion_tokens" type="number" value="{{ p.max_completion_tokens or 512 }}"></label>
+      <label>max_completion_tokens<input name="max_completion_tokens" type="number" value="{{ p.max_completion_tokens or 7000 }}"></label>
       <label><input style="width:auto" type="checkbox" name="enabled" {% if p.enabled %}checked{% endif %}> فعال</label>
       <label><input style="width:auto" type="checkbox" name="use_proxy" {% if p.use_proxy is not sameas false %}checked{% endif %}> استفاده از proxy</label>
       <label><input style="width:auto" type="checkbox" name="health_check" {% if p.health_check %}checked{% endif %}> health-check قبل از استفاده</label>
@@ -28,11 +28,18 @@
   </form>
 
   <h4>کلیدها</h4>
+  <form method="post" action="/admin/providers/{{ p._index }}/keys" class="row">
+    <input name="api_key" class="ltr" placeholder="API key / env:NAME / $NAME">
+    <button>اضافه کلید</button>
+  </form>
   <table>
-    <tr><th>#</th><th>کلید</th><th>وضعیت</th><th>خطا</th><th>غیرفعال تا</th><th>آخرین موفق</th></tr>
+    <tr><th>#</th><th>کلید</th><th>وضعیت</th><th>خطا</th><th>غیرفعال تا</th><th>آخرین موفق</th><th>عملیات</th></tr>
     {% for key in p.masked_keys %}
     {% set st = p.key_statuses[loop.index0] %}
-    <tr><td>{{ loop.index0 }}</td><td class="ltr">{{ key }}</td><td>{{ st.status or "unknown" }}</td><td>{{ st.last_error or "-" }}</td><td>{{ st.disabled_until|dt }}</td><td>{{ st.last_success_at|dt }}</td></tr>
+    <tr>
+      <td>{{ loop.index0 }}</td><td class="ltr">{{ key }}</td><td>{{ st.status or "unknown" }}</td><td>{{ st.last_error or "-" }}</td><td>{{ st.disabled_until|dt }}</td><td>{{ st.last_success_at|dt }}</td>
+      <td><form method="post" action="/admin/providers/{{ p._index }}/keys/{{ loop.index0 }}/delete" onsubmit="return confirm('Delete key?');"><button class="bad">حذف</button></form></td>
+    </tr>
     {% endfor %}
   </table>
 </div>

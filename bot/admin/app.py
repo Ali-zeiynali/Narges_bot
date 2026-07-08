@@ -141,6 +141,14 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             failure_reason = error or (delivery.error if delivery else None) or "delivery failed"
             return RedirectResponse(f"/admin/users/{user_id}?flash=ارسال ناموفق: {failure_reason}", status_code=303)
         service.record_admin_direct_message(user_id, text or f"[{media_type}]", delivery.telegram_message_id)
+        service.record_admin_uploaded_media(
+            target_id=user_id,
+            target_type="user",
+            text=text,
+            media_type=media_type,
+            file_payload=file_payload,
+            telegram_message_id=delivery.telegram_message_id,
+        )
         return RedirectResponse(f"/admin/users/{user_id}?flash=پیام از طرف ربات ارسال شد", status_code=303)
 
     @app.get(route("/messages"), response_class=HTMLResponse)
@@ -329,12 +337,15 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
     @app.post(route("/providers/{provider_name}/keys"))
     async def add_provider_key(request: Request, provider_name: str) -> RedirectResponse:
         require_admin(request)
-        return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
+        form = await request.form()
+        service.add_provider_key(provider_name, str(form.get("api_key", "")).strip())
+        return RedirectResponse("/admin/providers?flash=کلید provider اضافه شد", status_code=303)
 
     @app.post(route("/providers/{provider_name}/keys/{key_index}/delete"))
     async def delete_provider_key(request: Request, provider_name: str, key_index: int) -> RedirectResponse:
         require_admin(request)
-        return RedirectResponse("/admin/providers?flash=ویرایش کلید از پنل غیرفعال است", status_code=303)
+        service.delete_provider_key(provider_name, key_index)
+        return RedirectResponse("/admin/providers?flash=کلید provider حذف شد", status_code=303)
 
     @app.get(route("/broadcast"), response_class=HTMLResponse)
     async def broadcast_page(request: Request) -> HTMLResponse:
@@ -359,6 +370,8 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         target_type = str(form.get("target_type", "users")).strip()
         target_value = str(form.get("target_value", "")).strip() or None
         only_ready = str(form.get("only_ready", "on")).lower() in {"on", "true", "1"}
+        active_within_raw = str(form.get("active_within_hours", "")).strip()
+        active_within_hours = int(active_within_raw) if active_within_raw.isdigit() and int(active_within_raw) > 0 else None
         has_file = hasattr(media_file, "filename") and bool(getattr(media_file, "filename", ""))
         if not text and not has_file:
             return RedirectResponse("/admin/broadcast?flash=متن پیام خالی است", status_code=303)
@@ -367,7 +380,7 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             user_target_ids: list[int] = []
             group_target_ids = target_ids
         elif target_type == "all":
-            user_target_ids = service.target_user_ids(only_ready=only_ready)
+            user_target_ids = service.target_user_ids(only_ready=only_ready, active_within_hours=active_within_hours)
             group_target_ids = service.target_group_ids()
             target_ids = user_target_ids + group_target_ids
         elif target_type == "user":
@@ -376,9 +389,15 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             target_ids = [int(target_value)]
             user_target_ids = target_ids
             group_target_ids = []
+        elif target_type == "group":
+            if not target_value or not target_value.lstrip("-").isdigit():
+                return RedirectResponse("/admin/broadcast?flash=شناسه گروه معتبر نیست", status_code=303)
+            target_ids = [int(target_value)]
+            user_target_ids = []
+            group_target_ids = target_ids
         else:
             target_type = "users"
-            target_ids = service.target_user_ids(only_ready=only_ready)
+            target_ids = service.target_user_ids(only_ready=only_ready, active_within_hours=active_within_hours)
             user_target_ids = target_ids
             group_target_ids = []
         broadcast_id = service.create_broadcast(
@@ -415,7 +434,7 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
             error = error_users or error_groups
             deliveries = user_deliveries + group_deliveries
         else:
-            delivery_target_type = "group" if target_type == "groups" else "user"
+            delivery_target_type = "group" if target_type in {"groups", "group"} else "user"
             sent, failed, error, deliveries = await send_broadcast(
                 settings,
                 target_ids,
@@ -426,13 +445,33 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
                 target_type=delivery_target_type,
             )
         service.finish_broadcast(broadcast_id, sent, failed, error, deliveries=deliveries)
-        if target_type == "user":
+        if target_type in {"user", "all"}:
             for delivery in deliveries:
                 if delivery.status == "sent" and delivery.target_type == "user":
                     service.record_admin_direct_message(
                         delivery.target_id,
                         text or f"[{media_type}]",
                         delivery.telegram_message_id,
+                    )
+                    service.record_admin_uploaded_media(
+                        target_id=delivery.target_id,
+                        target_type="user",
+                        text=text,
+                        media_type=media_type,
+                        file_payload=file_payload,
+                        telegram_message_id=delivery.telegram_message_id,
+                    )
+        if target_type in {"groups", "group", "all"}:
+            for delivery in deliveries:
+                if delivery.status == "sent" and delivery.target_type == "group":
+                    service.record_admin_group_message(delivery.target_id, text or f"[{media_type}]", delivery.telegram_message_id)
+                    service.record_admin_uploaded_media(
+                        target_id=delivery.target_id,
+                        target_type="group",
+                        text=text,
+                        media_type=media_type,
+                        file_payload=file_payload,
+                        telegram_message_id=delivery.telegram_message_id,
                     )
         return RedirectResponse(f"/admin/broadcast?flash=ارسال تمام شد: {sent} موفق، {failed} ناموفق", status_code=303)
 

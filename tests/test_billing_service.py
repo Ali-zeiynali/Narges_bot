@@ -81,7 +81,7 @@ class BillingServiceTests(unittest.TestCase):
 
         rejected = self.service.review_card_invoice(invoice.invoice_id, approve=False, reviewer_id=99)
 
-        self.assertFalse(rejected.accepted)
+        self.assertTrue(rejected.accepted)
         self.assertFalse(rejected.newly_paid)
         self.assertEqual(rejected.invoice.status, InvoiceStatus.FAILED)
 
