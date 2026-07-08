@@ -7,7 +7,8 @@
       "type": "openai_compatible",
       "base_url": "https://router.bynara.id/v1",
       "api_keys": [
-        "sk-nry-ahGF9WmmFkTzLKLiQfVyC_vF_Wmv1eK9hmIaCnWL8TE"
+        "sk-nry-ahGF9WmmFkTzLKLiQfVyC_vF_Wmv1eK9hmIaCnWL8TE",
+        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg"
       ],
       "model": "mistral-large",
       "temperature": 0.7,
@@ -29,9 +30,7 @@
       "base_url": "https://bazaarlink.ai/api/v1",
       "model": "gemini-3-flash-preview",
       "api_keys": [
-        "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ",
-        "sk-nry-wUKYyzqMpxH38ftqTaQ0KIF2uMbjJXz1EcooMpnDXlg"
-        
+        "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ"
       ],
       "temperature": 0.7,
       "max_completion_tokens": 512,
@@ -58,7 +57,6 @@
       "use_proxy": true,
       "prompt_cache": true
     },
-    
     {
       "name": "groq",
       "type": "openai_compatible",
