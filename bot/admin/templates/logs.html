@@ -9,6 +9,23 @@
 </div>
 
 <div class="card">
+  <form method="get" class="filters">
+    <label>User ID <input class="ltr" name="user_id" value="{{ user_id or '' }}" placeholder="telegram id"></label>
+    <label>Limit <input class="ltr" name="limit" value="{{ limit }}" type="number" min="10" max="300"></label>
+    <input type="hidden" name="page" value="1">
+    <button type="submit">Filter</button>
+    {% if user_id %}<a class="button" href="/admin/logs">Clear</a>{% endif %}
+  </form>
+  <div class="muted">
+    debug={{ totals.debug }} · usage={{ totals.usage }} · warnings={{ totals.warnings }} · page {{ page }}
+  </div>
+  <div class="actions">
+    {% if has_prev %}<a class="button" href="/admin/logs?user_id={{ user_id or '' }}&limit={{ limit }}&page={{ page - 1 }}">Previous</a>{% endif %}
+    {% if has_next %}<a class="button" href="/admin/logs?user_id={{ user_id or '' }}&limit={{ limit }}&page={{ page + 1 }}">Next</a>{% endif %}
+  </div>
+</div>
+
+<div class="card">
   <h3>زمان‌بندی پیام‌ها</h3>
   <div class="trace">
     {% for t in traces %}

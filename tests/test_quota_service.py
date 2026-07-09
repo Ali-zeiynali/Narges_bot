@@ -80,6 +80,16 @@ class QuotaServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.service.reply_cost(reply), 1)
 
+    async def test_image_reply_costs_fifteen_units(self) -> None:
+        reply = NargesReply.model_validate(
+            {
+                "mode": "short",
+                "messages": [{"text": "caption", "delay_seconds": 0.1, "image_id": "selfie_1"}],
+            }
+        )
+
+        self.assertEqual(self.service.reply_cost(reply), 15)
+
     async def test_group_reply_consumes_one_unit(self) -> None:
         started = await self.service.begin_group_generation(1)
         self.assertTrue(started.ok)

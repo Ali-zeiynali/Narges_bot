@@ -19,6 +19,9 @@ class UserServiceTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_name_then_gender_completes_onboarding(self) -> None:
+        initial = self.service.get(1)
+        self.assertEqual(initial.onboarding_state, OnboardingState.NOT_STARTED)
+
         self.service.save_display_name(1, "علی")
         profile = self.service.get(1)
 

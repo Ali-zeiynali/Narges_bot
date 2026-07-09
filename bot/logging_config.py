@@ -1,9 +1,26 @@
 import logging
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
 _CONFIGURED_KEY: tuple[str, str] | None = None
+
+
+def configure_process_timezone() -> None:
+    import os
+
+    os.environ.setdefault("TZ", "Asia/Tehran")
+    if hasattr(time, "tzset"):
+        try:
+            time.tzset()
+        except Exception:
+            pass
+
+
+class TehranFormatter(logging.Formatter):
+    def converter(self, timestamp):  # type: ignore[override]
+        return time.localtime(timestamp)
 
 
 class WindowsSafeRotatingFileHandler(RotatingFileHandler):
@@ -20,13 +37,14 @@ class WindowsSafeRotatingFileHandler(RotatingFileHandler):
 
 def setup_logging(log_file: str, log_level: str) -> None:
     global _CONFIGURED_KEY
+    configure_process_timezone()
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     key = (str(log_path.resolve()), log_level)
     if _CONFIGURED_KEY == key and logging.getLogger().handlers:
         return
 
-    formatter = logging.Formatter(
+    formatter = TehranFormatter(
         "%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )

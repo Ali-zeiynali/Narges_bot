@@ -223,6 +223,7 @@ class ChatService:
         message_datetime: datetime | None = None,
         user_profile=None,
         reserved_quota_check: QuotaCheck | None = None,
+        minimum_quota_cost: int = 0,
         trace: RequestTrace | None = None,
     ) -> ChatTurnResult:
         owns_trace = trace is None
@@ -243,6 +244,33 @@ class ChatService:
             security_reason = self.moderation_service.security_warning_reason(text)
             if security_reason:
                 warning_result = self.moderation_service.apply_model_warning(user_id, security_reason, message_id)
+                user_message_row_id = self.history_service.add(
+                    user_id,
+                    "user",
+                    text,
+                    chat_id=chat_id,
+                    telegram_message_id=message_id,
+                    created_at=message_datetime,
+                    message_type="warning",
+                    ai_request_payload={
+                        "source": "security_gate",
+                        "sent_to_model": False,
+                        "reason": security_reason,
+                    },
+                )
+                self.history_service.add(
+                    user_id,
+                    "assistant",
+                    warning_result.message,
+                    chat_id=chat_id,
+                    message_type="warning",
+                    ai_request_payload={
+                        "source": "security_gate_warning",
+                        "sent_to_model": False,
+                        "user_message_row_id": user_message_row_id,
+                        "reason": security_reason,
+                    },
+                )
                 raise UserFacingError(warning_result.message)
 
         with trace.step("load_state"):
@@ -352,7 +380,7 @@ class ChatService:
                             message_id,
                             warning.reason,
                         )
-                if not provider_failed and not self.quota_service.can_consume_reply(user_id, result.reply):
+                if not provider_failed and not self.quota_service.can_consume_reply(user_id, result.reply, minimum_cost=minimum_quota_cost):
                     result = GroqResult(
                         reply=self._quota_fallback_reply(),
                         raw_text="{}",
@@ -365,7 +393,7 @@ class ChatService:
                 elif not provider_failed:
                     if result.reply.event_suggestion:
                         logger.info("event_suggestion_ignored_from_chat_model user_id=%s", user_id)
-                    self.quota_service.consume_successful_reply(user_id, result.reply)
+                    self.quota_service.consume_successful_reply(user_id, result.reply, minimum_cost=minimum_quota_cost)
 
             for outbound in result.reply.messages:
                 outbound.text = clamp_repeated_chars(outbound.text)
@@ -468,7 +496,7 @@ class ChatService:
                 )
             with trace.step("refresh_summary_if_needed"):
                 if self.context_builder.should_refresh_summary(user_id):
-                    await asyncio.to_thread(self.context_builder.refresh_summary_with_llm, user_id, self.groq_client)
+                    self._schedule_summary_refresh(user_id, chat_id)
             with trace.step("log_usage"):
                 self.usage_service.log(
                     user_id,
@@ -690,6 +718,8 @@ class ChatService:
         return " ".join((text or "").lower().split())
 
     def _should_apply_model_warning(self, user_text: str, reason: str | None) -> bool:
+        if self._warning_reason_is_only_profanity_or_insult(reason):
+            return False
         if self.moderation_service.security_warning_reason(user_text):
             return True
         user_text_lower = self._normalize_warning_text(user_text)
@@ -701,6 +731,69 @@ class ChatService:
         if any(self._normalize_warning_text(keyword) in user_text_lower for keyword in SEXUAL_WARNING_EXCLUSION_KEYWORDS):
             return False
         return False
+
+    def _schedule_summary_refresh(self, user_id: int, chat_id: int | None) -> None:
+        async def runner() -> None:
+            try:
+                result = await asyncio.to_thread(self.context_builder.refresh_summary_with_llm, user_id, self.groq_client)
+                if not result:
+                    return
+                usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+                self.usage_service.log(
+                    user_id,
+                    chat_id,
+                    int(result.get("estimated_tokens") or 0),
+                    usage,  # type: ignore[arg-type]
+                    provider=str(result.get("provider") or "summary"),
+                    model=str(result.get("model") or "conversation_summary"),
+                )
+                self.debug_service.log(
+                    "conversation_summary_refreshed",
+                    {
+                        "message_count": result.get("message_count"),
+                        "last_message_id": result.get("last_message_id"),
+                        "usage": usage,
+                    },
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception("conversation_summary_background_failed user_id=%s", user_id)
+
+        try:
+            asyncio.create_task(runner(), name=f"conversation-summary-refresh-{user_id}")
+        except RuntimeError:
+            result = self.context_builder.refresh_summary_with_llm(user_id, self.groq_client)
+            if result:
+                usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+                self.usage_service.log(
+                    user_id,
+                    chat_id,
+                    int(result.get("estimated_tokens") or 0),
+                    usage,  # type: ignore[arg-type]
+                    provider=str(result.get("provider") or "summary"),
+                    model=str(result.get("model") or "conversation_summary"),
+                )
+
+    def _warning_reason_is_only_profanity_or_insult(self, reason: str | None) -> bool:
+        normalized = self._normalize_warning_text(reason)
+        if not normalized:
+            return False
+        profanity_markers = {
+            "profanity",
+            "profane",
+            "insult",
+            "abusive",
+            "offensive language",
+            "swear",
+            "vulgar",
+            "harassment",
+            "فحش",
+            "توهین",
+            "رکیک",
+            "ناسزا",
+        }
+        security_markers = {"prompt", "system", "developer", "database", "token", "api", "secret", "password", "injection"}
+        return any(marker in normalized for marker in profanity_markers) and not any(marker in normalized for marker in security_markers)
 
     def _normalize_warning_text(self, text: str | None) -> str:
         normalized = (text or "").lower()

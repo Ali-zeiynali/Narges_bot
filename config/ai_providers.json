@@ -38,7 +38,8 @@
       "supports_json_schema": false,
       "supports_prompt_cache": "unknown",
       "use_proxy": true,
-      "health_check": true
+      "health_check": true,
+      "response_format": "none"
     },
     {
       "name": "openrouter",
@@ -53,6 +54,7 @@
       "max_completion_tokens": 512,
       "timeout_seconds": 45,
       "prompt_cache": false,
+      "response_format": "none",
       "extra_headers": {
         "HTTP-Referer": "https://localhost/narges",
         "X-Title": "Narges"

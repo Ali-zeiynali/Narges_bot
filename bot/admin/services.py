@@ -854,17 +854,35 @@ class AdminDataService:
         provider["prompt_cache"] = str(form.get("prompt_cache", "")).lower() in {"1", "true", "on", "yes"}
         self._write_provider_config(data)
 
-    def logs(self, kind: str = "debug", limit: int = 100) -> dict[str, Any]:
+    def logs(self, kind: str = "debug", limit: int = 100, page: int = 1, user_id: int | None = None) -> dict[str, Any]:
         limit = max(10, min(limit, 300))
+        page = max(1, int(page or 1))
+        offset = (page - 1) * limit
         with self.database.orm.session() as session:
-            debug_rows = session.scalars(select(DebugLogORM).order_by(desc(DebugLogORM.id)).limit(limit)).all()
-            usage_rows = session.scalars(select(UsageLogORM).order_by(desc(UsageLogORM.id)).limit(limit)).all()
-            warning_rows = session.scalars(select(UserWarningEventORM).order_by(desc(UserWarningEventORM.id)).limit(limit)).all()
+            debug_statement = select(DebugLogORM).order_by(desc(DebugLogORM.id))
+            usage_statement = select(UsageLogORM).order_by(desc(UsageLogORM.id))
+            warning_statement = select(UserWarningEventORM).order_by(desc(UserWarningEventORM.id))
+            if user_id is not None:
+                debug_statement = debug_statement.where(DebugLogORM.user_id == user_id)
+                usage_statement = usage_statement.where(UsageLogORM.user_id == user_id)
+                warning_statement = warning_statement.where(UserWarningEventORM.user_id == user_id)
+            debug_total = session.scalar(select(func.count()).select_from(debug_statement.subquery())) or 0
+            usage_total = session.scalar(select(func.count()).select_from(usage_statement.subquery())) or 0
+            warning_total = session.scalar(select(func.count()).select_from(warning_statement.subquery())) or 0
+            debug_rows = session.scalars(debug_statement.offset(offset).limit(limit)).all()
+            usage_rows = session.scalars(usage_statement.offset(offset).limit(limit)).all()
+            warning_rows = session.scalars(warning_statement.offset(offset).limit(limit)).all()
             broadcasts = session.scalars(select(AdminBroadcastORM).order_by(desc(AdminBroadcastORM.id)).limit(30)).all()
             user_names = self._user_name_map(session, self._collect_user_ids(debug_rows, usage_rows, warning_rows))
         traces = [self._trace_row(row) for row in debug_rows if row.event == "request_trace"]
         return {
             "kind": kind,
+            "page": page,
+            "limit": limit,
+            "user_id": user_id,
+            "totals": {"debug": int(debug_total), "usage": int(usage_total), "warnings": int(warning_total)},
+            "has_prev": page > 1,
+            "has_next": max(debug_total, usage_total, warning_total) > offset + limit,
             "debug": debug_rows,
             "traces": traces,
             "usage": usage_rows,

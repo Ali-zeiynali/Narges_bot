@@ -22,8 +22,8 @@ class UserService:
                     first_name=profile.first_name,
                     last_name=profile.last_name,
                     language_code=profile.language_code,
-                    onboarding_state=OnboardingState.NEW.value,
-                    registration_state=OnboardingState.NEW.value,
+                    onboarding_state=OnboardingState.NOT_STARTED.value,
+                    registration_state=OnboardingState.NOT_STARTED.value,
                     referral_code=self._new_referral_code(profile.telegram_id),
                     plan="free",
                     created_at=now,
@@ -83,7 +83,7 @@ class UserService:
         elif profile.display_name:
             self.set_state(user_id, OnboardingState.ASK_GENDER)
         else:
-            self.set_state(user_id, OnboardingState.NEW)
+            self.set_state(user_id, OnboardingState.NOT_STARTED)
         return self.get(user_id)
 
     def set_suggested_name(self, user_id: int, name: str | None) -> None:
@@ -206,7 +206,7 @@ class UserService:
             elif row.display_name:
                 onboarding_state = OnboardingState.ASK_GENDER
             else:
-                onboarding_state = OnboardingState.NEW
+                onboarding_state = OnboardingState.NOT_STARTED
         return UserProfile(
             telegram_id=row.telegram_id,
             username=row.username,

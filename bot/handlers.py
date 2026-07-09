@@ -55,7 +55,7 @@ from bot.services.moderation_service import ModerationService
 from bot.services.narges_state_service import NargesStateService
 from bot.services.name_service import NameService
 from bot.services.profile_photo_service import ProfilePhotoService
-from bot.services.quota_service import QuotaService
+from bot.services.quota_service import IMAGE_TURN_COST_UNITS, QuotaService
 from bot.services.required_channel_service import RequiredChannelService
 from bot.storage.orm import ConversationMessageORM, UserORM
 from bot.services.request_trace import RequestTrace
@@ -588,7 +588,15 @@ def register_handlers(
         except Exception:
             logger.exception("delayed_failed_turn_retry_failed user_id=%s chat_id=%s", user_id, chat_id)
 
-    async def run_chat_turn(message: Message, bot: Bot, text_value: str, profile, reserved_quota_check=None, allow_error_retry: bool = True):
+    async def run_chat_turn(
+        message: Message,
+        bot: Bot,
+        text_value: str,
+        profile,
+        reserved_quota_check=None,
+        allow_error_retry: bool = True,
+        minimum_quota_cost: int = 0,
+    ):
         trace = RequestTrace(
             "handler_chat_turn",
             {
@@ -611,6 +619,7 @@ def register_handlers(
                     message.date,
                     user_profile=profile,
                     reserved_quota_check=reserved_quota_check,
+                    minimum_quota_cost=minimum_quota_cost,
                     trace=trace,
                 )
                 if allow_error_retry and getattr(result, "provider_failed", False) and not is_group_chat_type(getattr(message.chat, "type", None)):
@@ -631,6 +640,7 @@ def register_handlers(
             with suppress(asyncio.CancelledError):
                 await typing_task
             if any(word in text for word in ("سهمیه", "ظرفیت", "تند", "سقف", "limit")):
+                store_not_sent_limit_turn(message, text_value, text)
                 current_profile = user_service.get(message.from_user.id)
                 await message.answer(text, reply_markup=menu_service.capacity_keyboard(phone_bonus_available(current_profile)))
             else:
@@ -645,6 +655,37 @@ def register_handlers(
                 trace.finish(phase="handler_chat_turn", content_chars=len(text_value)),
                 user_id=message.from_user.id,
             )
+
+    def store_not_sent_limit_turn(message: Message, user_text: str, system_text: str) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        if not user_id:
+            return
+        user_message_id = history_service.add(
+            user_id,
+            "user",
+            user_text,
+            chat_id=message.chat.id,
+            telegram_message_id=message.message_id,
+            created_at=message.date,
+            message_type="quota_blocked",
+            ai_request_payload={
+                "source": "quota_gate",
+                "sent_to_model": False,
+                "reason": "quota_or_rate_limit",
+            },
+        )
+        history_service.add(
+            user_id,
+            "assistant",
+            system_text,
+            chat_id=message.chat.id,
+            message_type="system",
+            ai_request_payload={
+                "source": "quota_gate_system_message",
+                "sent_to_model": False,
+                "user_message_row_id": user_message_id,
+            },
+        )
 
     async def deliver_chat_result(message: Message, bot: Bot, result, profile) -> None:
         trace = RequestTrace(
@@ -875,8 +916,16 @@ def register_handlers(
                 logger.exception("vision_description_failed user_id=%s media_id=%s", message.from_user.id, stored_media.id)
                 description = "عکس دریافت شده اما توضیح بینایی آن در این لحظه آماده نشد؛ فقط بدان کاربر یک عکس فرستاده است."
                 media_storage_service.set_vision_description(stored_media.id, description)
+            record_media_message(message, stored_media, "image received", description=description, sent_to_model=True)
             model_text = image_model_text(description, stored_media.caption, duplicate_context)
-            result = await run_chat_turn(message, bot, model_text, profile, reserved_quota_check=quota_check)
+            result = await run_chat_turn(
+                message,
+                bot,
+                model_text,
+                profile,
+                reserved_quota_check=quota_check,
+                minimum_quota_cost=IMAGE_TURN_COST_UNITS,
+            )
         finally:
             await quota_service.finish_generation(message.from_user.id)
         if result:
@@ -889,11 +938,11 @@ def register_handlers(
             return
         await message.answer(text)
 
-    def record_media_message(message: Message, media: StoredMedia, note: str) -> None:
+    def record_media_message(message: Message, media: StoredMedia, note: str, description: str | None = None, sent_to_model: bool = False) -> None:
         history_service.add(
             media.user_id,
             "user",
-            f"[{media.media_kind}] {note}",
+            f"[{media.media_kind}] {note}" + (f": {description[:500]}" if description else ""),
             chat_id=media.chat_id,
             telegram_message_id=media.telegram_message_id,
             created_at=message.date,
@@ -903,6 +952,8 @@ def register_handlers(
                 "media_kind": media.media_kind,
                 "mime_type": media.mime_type,
                 "caption": media.caption,
+                "vision_description": description,
+                "sent_to_model": sent_to_model,
             },
         )
 
@@ -911,13 +962,14 @@ def register_handlers(
         if group_service is None or not is_group_chat_type(getattr(event.chat, "type", None)):
             return
         status = getattr(event.new_chat_member.status, "value", str(event.new_chat_member.status))
+        member_count = await group_member_count(bot, event.chat.id)
         group_service.upsert_group(
             chat_id=event.chat.id,
             title=getattr(event.chat, "title", None),
             username=getattr(event.chat, "username", None),
             chat_type=str(event.chat.type),
             bot_status=status,
-            member_count=await group_member_count(bot, event.chat.id),
+            member_count=member_count,
             active=status in {"member", "administrator", "creator"},
         )
         if group_invite_reward_service is None:
@@ -929,6 +981,7 @@ def register_handlers(
                 chat_id=event.chat.id,
                 actor_user_id=actor_user_id,
                 status=status,
+                member_count=member_count,
             )
             if status == "member":
                 group_invite_reward_service.bot_removed_or_demoted(chat_id=event.chat.id, status=status)
@@ -939,6 +992,12 @@ def register_handlers(
                     await bot.send_message(
                         user_id,
                         f"🎁 نرگس به گروه اضافه شد.\n{amount} پیام رایگان به ظرفیتت اضافه شد.",
+                    )
+            elif actor_user_id and result.get("reason") == "group_too_small":
+                with suppress(Exception):
+                    await bot.send_message(
+                        actor_user_id,
+                        "🎁 پاداش گروه فقط برای گروه‌هایی فعال می‌شود که حداقل ۱۰۰ عضو داشته باشند.",
                     )
             return
         revoked = group_invite_reward_service.bot_removed_or_demoted(chat_id=event.chat.id, status=status)

@@ -4,6 +4,7 @@ from enum import Enum
 
 
 class OnboardingState(str, Enum):
+    NOT_STARTED = "not_started"
     NEW = "new"
     NEED_CHANNELS = "need_channels"
     ASK_NAME_CONFIRM = "ask_name_confirm"

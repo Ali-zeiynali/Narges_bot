@@ -54,9 +54,9 @@ class GroupInviteRewardTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_member_and_admin_rewards_are_idempotent_and_revoked(self) -> None:
-        joined = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="member")
-        joined_again = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="member")
-        promoted = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="administrator")
+        joined = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="member", member_count=100)
+        joined_again = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="member", member_count=100)
+        promoted = self.service.bot_joined_or_promoted(chat_id=-100, actor_user_id=10, status="administrator", member_count=100)
 
         self.assertTrue(joined["member_granted"])
         self.assertFalse(joined["admin_granted"])
@@ -80,7 +80,7 @@ class GroupInviteRewardTests(unittest.TestCase):
         self.assertEqual(self.quota_service.account_quota(10).extra_remaining, 0)
 
     def test_revoking_spent_reward_falls_back_to_free_quota_without_negative_balance(self) -> None:
-        self.service.bot_joined_or_promoted(chat_id=-200, actor_user_id=10, status="member")
+        self.service.bot_joined_or_promoted(chat_id=-200, actor_user_id=10, status="member", member_count=100)
         with self.database.orm.session() as session:
             session.add(
                 QuotaEventORM(
@@ -99,6 +99,13 @@ class GroupInviteRewardTests(unittest.TestCase):
         self.assertEqual(account.extra_remaining, 0)
         self.assertEqual(account.daily_remaining, 0)
         self.assertGreaterEqual(account.monthly_remaining, 0)
+
+    def test_group_reward_requires_at_least_one_hundred_members(self) -> None:
+        result = self.service.bot_joined_or_promoted(chat_id=-300, actor_user_id=10, status="member", member_count=99)
+
+        self.assertFalse(result["member_granted"])
+        self.assertEqual(result["reason"], "group_too_small")
+        self.assertEqual(self.quota_service.account_quota(10).extra_remaining, 0)
 
 
 class GroupInvitePromptTests(unittest.TestCase):

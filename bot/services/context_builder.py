@@ -237,21 +237,25 @@ class ContextBuilder:
         pending_tokens = sum(estimate_tokens(item["text"]) for item in pending)
         return pending_tokens >= SUMMARY_TOKEN_THRESHOLD
 
-    def refresh_summary_with_llm(self, user_id: int, groq_client) -> None:
+    def refresh_summary_with_llm(self, user_id: int, groq_client) -> dict[str, object] | None:
         summary_row = self._summary_row(user_id)
         summarized_id = int(summary_row.summarized_message_id) if summary_row else 0
         existing = summary_row.summary if summary_row else ""
         pending = self.history_service.messages_after(user_id, summarized_id, limit=24)
         if not pending:
-            return
+            return None
         try:
-            summary = groq_client.complete_conversation_summary(existing, pending)
+            if hasattr(groq_client, "complete_conversation_summary_with_usage"):
+                summary, usage, provider, model = groq_client.complete_conversation_summary_with_usage(existing, pending)
+            else:
+                summary = groq_client.complete_conversation_summary(existing, pending)
+                usage, provider, model = {}, None, None
         except Exception:
             logger.exception("conversation_summary_refresh_failed user_id=%s", user_id)
-            return
+            return None
         summary = self._clean_summary(summary)
         if not summary:
-            return
+            return None
         last_id = max(int(item["id"]) for item in pending)
         now = datetime.now(UTC)
         with self.database.orm.session() as session:
@@ -264,6 +268,14 @@ class ContextBuilder:
             row.message_count = int(row.message_count or 0) + len(pending)
             row.token_estimate = estimate_tokens(summary)
             row.updated_at = now
+        return {
+            "usage": usage,
+            "provider": provider,
+            "model": model,
+            "estimated_tokens": sum(estimate_tokens(item["text"]) for item in pending) + estimate_tokens(existing),
+            "message_count": len(pending),
+            "last_message_id": last_id,
+        }
 
     def infer_intent(self, text: str, pending_user_thread: str = "") -> str:
         lowered = (text or "").lower()

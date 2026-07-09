@@ -541,9 +541,10 @@ def create_admin_app(settings: Settings | None = None, database: Database | None
         return render(request, "memories.html", service.memories(user_id=user_id))
 
     @app.get(route("/logs"), response_class=HTMLResponse)
-    async def logs(request: Request, kind: str = "debug") -> HTMLResponse:
+    async def logs(request: Request, kind: str = "debug", user_id: str | None = None, page: int = 1, limit: int = 100) -> HTMLResponse:
         require_admin(request)
-        return render(request, "logs.html", service.logs(kind=kind))
+        parsed_user_id = int(user_id) if user_id and user_id.lstrip("-").isdigit() else None
+        return render(request, "logs.html", service.logs(kind=kind, user_id=parsed_user_id, page=page, limit=limit))
 
     return app
 

@@ -1,6 +1,7 @@
 import json
 import re
-from datetime import UTC, datetime
+import threading
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -22,10 +23,17 @@ BLOCKED_STATE_WORDS = [
 
 
 class NargesStateService:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, cache_ttl_seconds: int = 15) -> None:
         self.database = database
+        self.cache_ttl = timedelta(seconds=max(1, int(cache_ttl_seconds)))
+        self._cache_lock = threading.RLock()
+        self._cached_state: NargesSelfState | None = None
+        self._cache_expires_at: datetime | None = None
 
     def get_active(self) -> NargesSelfState:
+        cached = self._get_cached()
+        if cached is not None:
+            return cached
         with self.database.orm.session() as session:
             row = session.scalar(
                 select(NargesSelfStateORM)
@@ -50,8 +58,11 @@ class NargesStateService:
                 ),
                 source="default",
             )
+            self._set_cached(state)
             return state
-        return NargesSelfState.model_validate(json.loads(row.payload))
+        state = NargesSelfState.model_validate(json.loads(row.payload))
+        self._set_cached(state)
+        return state
 
     def save_candidate(self, candidate: NargesSelfStateCandidate, source: str) -> bool:
         before = self._active_payload()
@@ -92,6 +103,7 @@ class NargesStateService:
                     created_at=now,
                 )
             )
+        self._set_cached(state)
         self._audit("state_update", "accepted", candidate.reason, before, state.model_dump(mode="json"))
         return True
 
@@ -137,6 +149,9 @@ class NargesStateService:
         return row is not None and row.status == "ok"
 
     def _active_payload(self) -> dict | None:
+        cached = self._get_cached()
+        if cached is not None:
+            return cached.model_dump(mode="json")
         with self.database.orm.session() as session:
             row = session.scalar(
                 select(NargesSelfStateORM)
@@ -145,6 +160,26 @@ class NargesStateService:
                 .limit(1)
             )
         return json.loads(row.payload) if row else None
+
+    def invalidate_cache(self) -> None:
+        with self._cache_lock:
+            self._cached_state = None
+            self._cache_expires_at = None
+
+    def _get_cached(self) -> NargesSelfState | None:
+        with self._cache_lock:
+            if self._cached_state is None or self._cache_expires_at is None:
+                return None
+            if self._cache_expires_at <= datetime.now(UTC):
+                self._cached_state = None
+                self._cache_expires_at = None
+                return None
+            return self._cached_state.model_copy(deep=True)
+
+    def _set_cached(self, state: NargesSelfState) -> None:
+        with self._cache_lock:
+            self._cached_state = state.model_copy(deep=True)
+            self._cache_expires_at = datetime.now(UTC) + self.cache_ttl
 
     def _audit(self, action: str, decision: str, reason: str | None, before, after) -> None:
         with self.database.orm.session() as session:

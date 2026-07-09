@@ -108,6 +108,53 @@ class GroupService:
                 ).all()
             ]
 
+    def mark_group_removed(self, chat_id: int, status: str = "kicked", error: str | None = None) -> None:
+        now = datetime.now(UTC)
+        normalized_status = (status or "kicked").strip().lower()
+        with self.database.orm.session() as session:
+            row = session.get(GroupChatORM, chat_id)
+            if row is None:
+                row = GroupChatORM(
+                    chat_id=chat_id,
+                    title=None,
+                    username=None,
+                    chat_type="group",
+                    bot_status=normalized_status,
+                    active=False,
+                    created_at=now,
+                    updated_at=now,
+                    last_seen_at=now,
+                )
+                session.add(row)
+            else:
+                row.bot_status = normalized_status
+                row.active = False
+                row.updated_at = now
+                row.last_seen_at = now
+            session.add(
+                GroupEngineEventORM(
+                    chat_id=chat_id,
+                    event_type="group_marked_inactive",
+                    metadata_json=json.dumps({"status": normalized_status, "error": error}, ensure_ascii=False, default=str),
+                    created_at=now,
+                )
+            )
+
+    def error_means_bot_removed(self, error: str | None) -> bool:
+        text = (error or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "bot was kicked",
+                "bot kicked",
+                "kicked from",
+                "forbidden",
+                "chat not found",
+                "not enough rights",
+                "bot is not a member",
+            )
+        )
+
 
     def record_observed_message(
         self,
@@ -350,18 +397,34 @@ async def send_messages_detailed(bot: Bot, chat_ids: list[int], text: str, targe
 class GroupInviteRewardService:
     MEMBER_REWARD = 10
     ADMIN_REWARD = 10
+    MIN_MEMBER_COUNT = 100
 
     def __init__(self, database: Database, quota_service: QuotaService) -> None:
         self.database = database
         self.quota_service = quota_service
 
-    def bot_joined_or_promoted(self, *, chat_id: int, actor_user_id: int | None, status: str) -> dict[str, Any]:
+    def bot_joined_or_promoted(
+        self,
+        *,
+        chat_id: int,
+        actor_user_id: int | None,
+        status: str,
+        member_count: int | None = None,
+    ) -> dict[str, Any]:
         status = (status or "").strip().lower()
         if status not in ACTIVE_BOT_STATUSES:
-            return {"member_granted": False, "admin_granted": False}
+            return {"member_granted": False, "admin_granted": False, "reason": "inactive_status"}
+        if member_count is None or int(member_count) < self.MIN_MEMBER_COUNT:
+            return {
+                "member_granted": False,
+                "admin_granted": False,
+                "member_count": member_count,
+                "required_member_count": self.MIN_MEMBER_COUNT,
+                "reason": "group_too_small",
+            }
         owner_id = self._owner_for_chat(chat_id) or actor_user_id
         if not owner_id:
-            return {"member_granted": False, "admin_granted": False}
+            return {"member_granted": False, "admin_granted": False, "reason": "missing_owner"}
         now = datetime.now(UTC)
         member_granted = False
         admin_granted = False
@@ -486,6 +549,8 @@ class GroupMessageScheduler:
                         metadata={"schedule_id": schedule.id},
                     )
                 else:
+                    if self.group_service.error_means_bot_removed(item.error):
+                        self.group_service.mark_group_removed(item.target_id, status="kicked", error=item.error)
                     self.group_service.record_engine_event(
                         chat_id=item.target_id,
                         event_type="scheduled_group_message_failed",

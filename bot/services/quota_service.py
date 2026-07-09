@@ -13,6 +13,7 @@ from bot.storage.orm import QuotaEventORM
 
 QUOTA_UNIT_SCALE = 5
 GROUP_REPLY_COST_UNITS = 1
+IMAGE_TURN_COST_UNITS = 3 * QUOTA_UNIT_SCALE
 BUSY_MESSAGE = "عجول نباش! صبر کن قبلی رو جواب بدم."
 
 
@@ -130,10 +131,10 @@ class QuotaService:
                 )
         return QuotaCheck(True, "", account.effective_remaining)
 
-    def consume_successful_reply(self, user_id: int, reply: NargesReply) -> int:
+    def consume_successful_reply(self, user_id: int, reply: NargesReply, minimum_cost: int = 0) -> int:
         if self._debug_bypass(user_id):
             return 0
-        cost = self.reply_cost(reply)
+        cost = max(self.reply_cost(reply), max(0, int(minimum_cost or 0)))
         account = self.account_quota(user_id)
         kind = "quota_consume" if account.daily_remaining >= cost and account.monthly_remaining >= cost else "extra_consume"
         self._record_event(user_id, kind, cost)
@@ -152,10 +153,10 @@ class QuotaService:
         self._debug("group_quota_consumed", user_id, {"kind": kind, "cost_units": cost, "remaining": self.account_quota(user_id)})
         return cost
 
-    def can_consume_reply(self, user_id: int, reply: NargesReply) -> bool:
+    def can_consume_reply(self, user_id: int, reply: NargesReply, minimum_cost: int = 0) -> bool:
         if self._debug_bypass(user_id):
             return True
-        return self.account_quota(user_id).effective_remaining >= self.reply_cost(reply)
+        return self.account_quota(user_id).effective_remaining >= max(self.reply_cost(reply), max(0, int(minimum_cost or 0)))
 
     def add_extra_credit(self, user_id: int, amount: int, reason: str = "manual") -> None:
         self._record_event(user_id, f"extra_grant:{reason}", amount * QUOTA_UNIT_SCALE)
@@ -207,6 +208,8 @@ class QuotaService:
         )
 
     def reply_cost(self, reply: NargesReply) -> int:
+        if any(message.image_id for message in reply.messages):
+            return IMAGE_TURN_COST_UNITS
         words = " ".join(message.text for message in reply.messages).split()
         if len(words) <= 1:
             return 1

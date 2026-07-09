@@ -173,6 +173,14 @@ class GroqChatClient:
         )
 
     def complete_conversation_summary(self, existing_summary: str, messages: list[dict[str, str]]) -> str:
+        summary, _usage, _provider, _model = self.complete_conversation_summary_with_usage(existing_summary, messages)
+        return summary
+
+    def complete_conversation_summary_with_usage(
+        self,
+        existing_summary: str,
+        messages: list[dict[str, str]],
+    ) -> tuple[str, dict[str, int | None], str, str]:
         prompt_payload = {
             "existing_summary": existing_summary,
             "new_messages": [
@@ -191,7 +199,7 @@ class GroqChatClient:
                 "Keep it under 900 characters.",
             ],
         }
-        raw_text, _usage, _provider, _model = self._complete_json(
+        raw_text, usage, provider, model = self._complete_json(
             [
                 {
                     "role": "system",
@@ -206,7 +214,7 @@ class GroqChatClient:
         )
         payload = self._try_loads_json(raw_text) or {}
         summary = payload.get("summary")
-        return str(summary or raw_text).strip()
+        return str(summary or raw_text).strip(), usage, provider, model
 
     def complete_narges_state(self, messages: list[dict[str, str]]) -> tuple[NargesSelfStateCandidate, dict[str, int | None]]:
         raw_text, usage, _provider, _model = self._complete_json(
@@ -431,10 +439,14 @@ class GroqChatClient:
             "model": provider.model,
             "messages": messages,
             "temperature": provider.temperature if temperature is None else temperature,
-            "max_completion_tokens": max_completion_tokens or provider.max_completion_tokens,
             "stream": False,
             **(provider.extra_body or {}),
         }
+        token_limit = max_completion_tokens or provider.max_completion_tokens
+        if provider.name.lower() == "nvidia":
+            payload["max_tokens"] = token_limit
+        else:
+            payload["max_completion_tokens"] = token_limit
         if purpose != "chat" and provider.response_format in {"json_object", "json_schema"}:
             payload["response_format"] = {"type": "json_object"}
         return f"{base_url}/chat/completions", headers, payload
@@ -476,14 +488,14 @@ class GroqChatClient:
                 self._log_ai_error(purpose, provider, variant, exc)
                 raise ProviderRequestError(provider.name, exc.__class__.__name__, retryable=True) from exc
             last_response = response
-            if response.status_code != 400:
+            if response.status_code not in {400, 422}:
                 return response
             if index == 0:
                 self._log_ai_error(
                     purpose,
                     provider,
                     variant,
-                    RuntimeError(f"HTTP 400, retrying compatible payload: {response.text[:500]}"),
+                    RuntimeError(f"HTTP {response.status_code}, retrying compatible payload: {response.text[:500]}"),
                 )
         return last_response  # type: ignore[return-value]
 
