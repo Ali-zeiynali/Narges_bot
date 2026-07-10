@@ -72,7 +72,15 @@ class Database:
                 "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
                 "ALTER TABLE media_files ADD COLUMN IF NOT EXISTS file_bytes BYTEA",
                 "ALTER TABLE group_chats ADD COLUMN IF NOT EXISTS member_count INTEGER",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS biography TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_completion_state VARCHAR(32) NOT NULL DEFAULT 'idle'",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_invalid_attempts INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_profile_prompt_sent_at TIMESTAMP WITH TIME ZONE",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS purpose VARCHAR(64) NOT NULL DEFAULT 'chat_reply'",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS latency_ms INTEGER",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS metadata TEXT",
                 "CREATE INDEX IF NOT EXISTS idx_media_files_content_hash ON media_files(content_hash)",
+                "CREATE INDEX IF NOT EXISTS idx_usage_logs_purpose_created ON usage_logs(purpose, created_at)",
                 """
                 CREATE TABLE IF NOT EXISTS group_invite_rewards (
                     id SERIAL PRIMARY KEY,

@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, time, timedelta
 
 from bot.persona.texts.state_prompts import STATE_PERSONA
-from bot.services.groq_client import GroqChatClient
+from bot.services.ai_provider_client import AIProviderClient
 from bot.services.narges_state_service import NargesStateService
 
 
@@ -20,9 +20,9 @@ STATE_SLOT_WINDOW_MINUTES = 7
 
 
 class NargesStateScheduler:
-    def __init__(self, state_service: NargesStateService, groq_client: GroqChatClient) -> None:
+    def __init__(self, state_service: NargesStateService, ai_provider_client: AIProviderClient) -> None:
         self.state_service = state_service
-        self.groq_client = groq_client
+        self.ai_provider_client = ai_provider_client
 
     async def run_due_once(self, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -57,7 +57,7 @@ class NargesStateScheduler:
             },
         ]
         try:
-            candidate, _usage = await asyncio.to_thread(self.groq_client.complete_narges_state, messages)
+            candidate, _usage = await asyncio.to_thread(self.ai_provider_client.complete_narges_state, messages)
             saved = self.state_service.save_candidate(candidate, source=f"scheduler:{slot}")
             self.state_service.mark_scheduler_run(run_date, slot, "ok" if saved else "rejected")
             return saved

@@ -2,6 +2,7 @@
   "providers": [
     {
       "name": "nararouter",
+      "id": "nararouter",
       "enabled": true,
       "priority": 10,
       "type": "openai_compatible",
@@ -12,37 +13,42 @@
       ],
       "model": "mistral-large",
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
+      "max_completion_tokens": 512,
       "timeout_seconds": 45.0,
       "supports_json_schema": false,
       "supports_prompt_cache": "unknown",
       "use_proxy": true,
-      "health_check": true,
+      "health_check": false,
       "experimental": true,
       "response_format": "none",
       "prompt_cache": true
     },
     {
       "name": "nvidia",
+      "id": "nvidia",
       "enabled": true,
-      "priority": 10,
+      "priority": 40,
       "type": "openai_compatible",
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_keys": [
         "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"
       ],
-      "model": "qwen/qwen3.5-397b-a17b",
+      "model": "nemotron-3-ultra-550b-a55b",
       "temperature": 0.7,
       "max_completion_tokens": 512,
-      "timeout_seconds": 45,
+      "timeout_seconds": 45.0,
       "supports_json_schema": false,
       "supports_prompt_cache": "unknown",
       "use_proxy": true,
-      "health_check": true,
-      "response_format": "none"
+      "health_check": false,
+      "response_format": "none",
+      "experimental": false,
+      "prompt_cache": false
     },
     {
       "name": "openrouter",
+      "id": "openrouter-gemini",
+      "priority": 50,
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://openrouter.ai/api/v1",
@@ -62,25 +68,28 @@
     },
     {
       "name": "bazaarlink",
+      "id": "bazaarlink-gemini",
       "type": "openai_compatible",
       "enabled": true,
-      "priority": 20,
+      "priority": 60,
       "base_url": "https://bazaarlink.ai/api/v1",
       "model": "gemini-3-flash-preview",
       "api_keys": [
         "sk-bl-WrLil0bE5NRn3pFVUdVhZ1nlOq9wdvhDXwOWFXEGrhDgKvGQ"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
+      "max_completion_tokens": 512,
       "timeout_seconds": 45.0,
       "response_format": "none",
       "use_proxy": true,
-      "health_check": true,
+      "health_check": false,
       "experimental": true,
       "prompt_cache": true
     },
     {
       "name": "mistral",
+      "id": "mistral-large",
+      "priority": 30,
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://api.mistral.ai/v1",
@@ -90,13 +99,15 @@
         "kFzEI5iaBCCR2B8uUMChXY8DUB35VlaN"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
+      "max_completion_tokens": 512,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true
     },
     {
       "name": "groq",
+      "id": "groq-qwen",
+      "priority": 10,
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://api.groq.com/openai/v1",
@@ -107,28 +118,35 @@
         "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"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
+      "max_completion_tokens": 512,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true
     },
     {
       "name": "groq",
+      "id": "groq-llama",
+      "priority": 20,
       "type": "openai_compatible",
-      "enabled": true,
+      "enabled": false,
       "base_url": "https://api.groq.com/openai/v1",
       "model": "llama-3.3-70b-versatile",
       "api_keys": [
         "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"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
-      "timeout_seconds": 45,
+      "max_completion_tokens": 512,
+      "timeout_seconds": 45.0,
       "use_proxy": true,
-      "prompt_cache": true
+      "prompt_cache": true,
+      "response_format": "json_object",
+      "health_check": false,
+      "experimental": false
     },
     {
       "name": "mistral",
+      "id": "mistral-devstral",
+      "priority": 70,
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://api.mistral.ai/v1",
@@ -137,7 +155,7 @@
         "4SYVWyJlUTuEIN1He47EuId48hywByOY"
       ],
       "temperature": 0.7,
-      "max_completion_tokens": 7000,
+      "max_completion_tokens": 512,
       "timeout_seconds": 45,
       "use_proxy": true,
       "prompt_cache": true

@@ -23,7 +23,7 @@ class GroupAIServiceTests(unittest.TestCase):
         self.database = Database(str(Path(self.tmp.name) / "group-ai.sqlite3"))
         self.database.migrate()
         self.service = GroupAIService(
-            groq_client=object(),
+            ai_provider_client=object(),
             narges_state_service=object(),
             memory_service=object(),
             history_service=HistoryService(self.database),

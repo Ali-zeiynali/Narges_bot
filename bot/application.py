@@ -17,7 +17,7 @@ from bot.services.debug_service import DebugService
 from bot.services.global_state_service import GlobalStateService
 from bot.services.group_service import GroupInviteRewardService, GroupMessageScheduler, GroupService
 from bot.services.group_ai_service import GroupAIService
-from bot.services.groq_client import GroqChatClient
+from bot.services.ai_provider_client import AIProviderClient
 from bot.services.group_invite_prompt_service import GroupInvitePromptScheduler, GroupInvitePromptService
 from bot.services.history_service import HistoryService
 from bot.services.media_service import BotImageCatalog, MediaStorageService, VisionClient
@@ -140,10 +140,10 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     group_invite_prompt_service = GroupInvitePromptService(database, quota_service)
     user_service = UserService(database)
     name_service = NameService(settings.name_transliteration_map)
-    groq_client = GroqChatClient(settings, database)
+    ai_provider_client = AIProviderClient(settings, database)
     narges_state_service = NargesStateService(database)
     global_state_service = GlobalStateService(database)
-    narges_state_scheduler = NargesStateScheduler(narges_state_service, groq_client)
+    narges_state_scheduler = NargesStateScheduler(narges_state_service, ai_provider_client)
     history_service = HistoryService(database)
     media_storage_service = MediaStorageService(settings, database)
     bot_image_catalog = BotImageCatalog(settings, database)
@@ -158,7 +158,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
     chat_service = ChatService(
         validator=MessageValidator(settings),
         persona_compiler=PersonaCompiler(settings.persona_version),
-        groq_client=groq_client,
+        ai_provider_client=ai_provider_client,
         narges_state_service=narges_state_service,
         memory_service=memory_service,
         history_service=history_service,
@@ -174,7 +174,7 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         profile_photo_service=profile_photo_service,
     )
     group_ai_service = GroupAIService(
-        groq_client=groq_client,
+        ai_provider_client=ai_provider_client,
         narges_state_service=narges_state_service,
         memory_service=memory_service,
         history_service=history_service,
@@ -222,6 +222,6 @@ def create_bot_application(settings: Settings | None = None) -> BotApplication:
         group_service=group_service,
         group_ai_service=group_ai_service,
         profile_photo_service=profile_photo_service,
-        reengagement_service=ReengagementService(database, settings),
+        reengagement_service=ReengagementService(database, settings, ai_provider_client, memory_service),
         group_invite_prompt_service=group_invite_prompt_service,
     )

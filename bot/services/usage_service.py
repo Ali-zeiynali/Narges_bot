@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 from bot.storage.database import Database
@@ -18,6 +19,9 @@ class UsageService:
         usage: dict[str, int | None],
         provider: str | None = None,
         model: str | None = None,
+        purpose: str = "chat_reply",
+        latency_ms: int | None = None,
+        metadata: dict | None = None,
     ) -> None:
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
@@ -37,6 +41,9 @@ class UsageService:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
+                    purpose=purpose,
+                    latency_ms=latency_ms,
+                    metadata_json=json.dumps(metadata, ensure_ascii=False, default=str) if metadata else None,
                     created_at=datetime.now(UTC),
                 )
             )

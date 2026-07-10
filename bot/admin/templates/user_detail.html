@@ -55,6 +55,9 @@
         <tr><td>gender</td><td>{{ detail.user.gender or "-" }}</td></tr>
         <tr><td>phone</td><td class="ltr">{{ detail.user.phone_number or "-" }}</td></tr>
         <tr><td>phone_verified_at</td><td>{{ detail.user.phone_verified_at|dt }}</td></tr>
+        <tr><td>biography</td><td>{{ detail.user.biography or "-" }}</td></tr>
+        <tr><td>profile_completion_state</td><td>{{ detail.user.profile_completion_state }}</td></tr>
+        <tr><td>quota_profile_prompt_sent_at</td><td>{{ detail.user.quota_profile_prompt_sent_at|dt }}</td></tr>
         <tr><td>onboarding_state</td><td>{{ detail.user.onboarding_state }}</td></tr>
         <tr><td>registration_state</td><td>{{ detail.user.registration_state }}</td></tr>
         <tr><td>membership_state</td><td>{{ detail.user.membership_state }}</td></tr>

@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import logging
 import mimetypes
@@ -133,13 +133,12 @@ def register_handlers(
         lines = [
             "✨ افزایش ظرفیت",
             "",
-            "یکی را انتخاب کن:",
-            "🎁 دعوت دوستان (پیام رایگان)",
+            "راه‌های رایگان را از ردیف اول انتخاب کن:",
+            "🎁 دعوت دوستان · 👤 تکمیل پروفایل · 👥 افزودن به گروه",
+            "",
             "⭐ افزایش با Stars",
             "💳 خرید پیام",
         ]
-        if phone_bonus_available(profile):
-            lines.append("📱 افزایش با شماره موبایل")
         return "\n".join(lines)
 
     def schedule_profile_photo_sync(bot: Bot, user: User | None) -> None:
@@ -523,7 +522,39 @@ def register_handlers(
             f"👥 دعوت‌شده‌ها: {stats['total']}\n"
             f"✅ کامل‌شده: {stats['qualified']}\n"
             f"⭐ پاداش‌گرفته: {stats['rewarded']}",
+            reply_markup=menu_service.referral_keyboard(),
         )
+
+    def leaderboard_text(user_id: int) -> str:
+        board = user_service.referral_leaderboard(user_id)
+        fake_entries = [
+            ("🥇", "رها", "عاشق سفر، موسیقی و آشنا شدن با آدم‌های تازه ✨", 25),
+            ("🥈", "نیلا", "دانشجو، کتاب‌خون و همیشه دنبال یک گفت‌وگوی خوب 📚", 20),
+            ("🥉", "آوا", "کافه، عکاسی و کلی انرژی خوب ☕", 15),
+        ]
+        lines = ["🏆 لیدربرد دعوت نرگس", "", "✨ برترین دعوت‌کننده‌ها"]
+        for rank, (medal, name, bio, count) in enumerate(fake_entries, start=1):
+            lines.extend([f"{medal} رتبه {rank} · {name}", f"📝 {bio}", f"👥 {count} دعوت موفق", ""])
+        for item in board["entries"]:
+            lines.extend(
+                [
+                    f"🎖 رتبه {item['rank']} · {item['name']}",
+                    f"📝 {item['biography']}",
+                    f"👥 {item['successful']} دعوت موفق",
+                    "",
+                ]
+            )
+        current = board["current"]
+        lines.extend(
+            [
+                "━━━━━━━━━━━━",
+                f"🔟 جایگاه شما · {current['name']}",
+                f"📊 رتبه واقعی: {current['rank']}",
+                f"📝 {current['biography']}",
+                f"👥 {current['successful']} دعوت موفق",
+            ]
+        )
+        return "\n".join(lines)
 
     async def notify_referral_reward(bot: Bot, inviter_id: int, invited_user_id: int) -> None:
         with suppress(Exception):
@@ -643,6 +674,17 @@ def register_handlers(
                 store_not_sent_limit_turn(message, text_value, text)
                 current_profile = user_service.get(message.from_user.id)
                 await message.answer(text, reply_markup=menu_service.capacity_keyboard(phone_bonus_available(current_profile)))
+                account = quota_service.account_quota(message.from_user.id)
+                if (
+                    account.effective_remaining <= 0
+                    and current_profile
+                    and not current_profile.phone_bonus_claimed
+                    and user_service.should_offer_profile_for_quota(message.from_user.id)
+                ):
+                    await message.answer(
+                        "🎁 با تکمیل پروفایلت می‌تونی ظرفیت رایگان اضافه و دائمی بگیری.",
+                        reply_markup=menu_service.profile_completion_keyboard(),
+                    )
             else:
                 await message.answer(text)
             return None
@@ -874,6 +916,18 @@ def register_handlers(
         quota_check = await quota_service.begin_generation(message.from_user.id)
         if not quota_check.ok:
             await message.answer(quota_check.message)
+            profile = user_service.get(message.from_user.id)
+            account = quota_service.account_quota(message.from_user.id)
+            if (
+                account.effective_remaining <= 0
+                and profile
+                and not profile.phone_bonus_claimed
+                and user_service.should_offer_profile_for_quota(message.from_user.id)
+            ):
+                await message.answer(
+                    "🎁 با تکمیل پروفایلت می‌تونی ظرفیت رایگان اضافه و دائمی بگیری.",
+                    reply_markup=menu_service.profile_completion_keyboard(),
+                )
             return
         try:
             with suppress(Exception):
@@ -1649,17 +1703,17 @@ def register_handlers(
             return
         user_id = message.from_user.id if message.from_user else 0
         value = command_args(message).strip()
-        choices = chat_service.groq_client.provider_choices() if hasattr(chat_service.groq_client, "provider_choices") else []
+        choices = chat_service.ai_provider_client.provider_choices() if hasattr(chat_service.ai_provider_client, "provider_choices") else []
         if not value:
             current = (
-                chat_service.groq_client.provider_override_for_user(user_id)
-                if hasattr(chat_service.groq_client, "provider_override_for_user")
+                chat_service.ai_provider_client.provider_override_for_user(user_id)
+                if hasattr(chat_service.ai_provider_client, "provider_override_for_user")
                 else None
             )
             await send_chunks(message, "provider فعلی: " + (current or "auto") + "\n\nproviderها:\n" + "\n".join(choices))
             return
-        if hasattr(chat_service.groq_client, "set_provider_override"):
-            chat_service.groq_client.set_provider_override(user_id, value)
+        if hasattr(chat_service.ai_provider_client, "set_provider_override"):
+            chat_service.ai_provider_client.set_provider_override(user_id, value)
         await message.answer(f"provider پیام‌های بعدی تو تنظیم شد: {value}")
 
     @dispatcher.message(Command("admin_provider_unset"))
@@ -1667,8 +1721,8 @@ def register_handlers(
         if not await require_admin_command(message):
             return
         user_id = message.from_user.id if message.from_user else 0
-        if hasattr(chat_service.groq_client, "clear_provider_override"):
-            chat_service.groq_client.clear_provider_override(user_id)
+        if hasattr(chat_service.ai_provider_client, "clear_provider_override"):
+            chat_service.ai_provider_client.clear_provider_override(user_id)
         await message.answer("provider اجباری حذف شد؛ از این به بعد auto است.")
 
     @dispatcher.message(Command("admin_user"))
@@ -2036,14 +2090,15 @@ def register_handlers(
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         schedule_profile_photo_sync(bot, message.from_user)
-        if not await ensure_membership(message, bot):
-            return
-        if not await ensure_not_blocked_for_model(message):
-            return
         try:
             stored_media = await media_storage_service.store_photo(bot, message)
         except MediaStorageError as exc:
             await message.answer(media_storage_error_message(exc))
+            return
+        record_media_message(message, stored_media, "photo received")
+        if not await ensure_membership(message, bot):
+            return
+        if not await ensure_not_blocked_for_model(message):
             return
         pending = billing_service.latest_pending_card_invoice(message.from_user.id)
         if pending:
@@ -2066,18 +2121,16 @@ def register_handlers(
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         schedule_profile_photo_sync(bot, message.from_user)
-        if not await ensure_membership(message, bot):
-            return
-        if not await ensure_not_blocked_for_model(message):
-            return
         mime_type = (message.document.mime_type or mimetypes.guess_type(message.document.file_name or "")[0] or "").lower()
-        if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
-            await answer_unsupported_media(message, UNSUPPORTED_MEDIA_MESSAGE)
-            return
         try:
             stored_media = await media_storage_service.store_document(bot, message)
         except MediaStorageError as exc:
             await message.answer(media_storage_error_message(exc))
+            return
+        record_media_message(message, stored_media, "document received")
+        if not await ensure_membership(message, bot):
+            return
+        if not await ensure_not_blocked_for_model(message):
             return
         pending = billing_service.latest_pending_card_invoice(message.from_user.id)
         if pending:
@@ -2104,49 +2157,46 @@ def register_handlers(
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         schedule_profile_photo_sync(bot, message.from_user)
+        text = UNSUPPORTED_AUDIO_MESSAGE if (message.voice or message.audio or message.video or message.video_note) else UNSUPPORTED_MEDIA_MESSAGE
+        try:
+            stored_media = await media_storage_service.store_unsupported_media(bot, message)
+        except MediaStorageError as exc:
+            await message.answer(media_storage_error_message(exc))
+            return
+        record_media_message(message, stored_media, f"unsupported {message.content_type}")
         if not await ensure_membership(message, bot):
             return
         if not await ensure_not_blocked_for_model(message):
             return
-        text = UNSUPPORTED_AUDIO_MESSAGE if (message.voice or message.audio or message.video or message.video_note) else UNSUPPORTED_MEDIA_MESSAGE
-        if message.voice:
-            try:
-                stored_media = await media_storage_service.store_unsupported_media(bot, message)
-            except MediaStorageError as exc:
-                await message.answer(media_storage_error_message(exc))
-                return
-            record_media_message(message, stored_media, "unsupported voice")
-        else:
-            history_service.add(
-                message.from_user.id,
-                "user",
-                "[unsupported_media] not stored",
-                chat_id=message.chat.id,
-                telegram_message_id=message.message_id,
-                created_at=message.date,
-                message_type="media",
-                ai_request_payload={
-                    "source": "unsupported_media",
-                    "stored": False,
-                    "reason": "only images and voice are stored",
-                    "content_type": message.content_type,
-                },
-            )
         await answer_unsupported_media(message, text)
 
-    @dispatcher.callback_query(F.data == "capacity:phone")
-    async def capacity_phone_callback(callback: CallbackQuery) -> None:
+    @dispatcher.callback_query(F.data.in_({"capacity:phone", "profile:start"}))
+    async def profile_start_callback(callback: CallbackQuery) -> None:
         if not callback.message:
             return
         profile = user_service.get(callback.from_user.id)
         if not phone_bonus_available(profile):
-            await callback.answer("شماره موبایل قبلاً ثبت شده.", show_alert=True)
+            await callback.answer("پروفایلت قبلاً تکمیل شده و پاداش را گرفته‌ای.", show_alert=True)
             return
+        user_service.start_profile_completion(callback.from_user.id)
         await callback.answer()
         await callback.message.answer(
-            "برای دریافت ۲۰ پیام اضافه، باید شماره موبایل همان اکانت تلگرام را با دکمه زیر بفرستی.",
-            reply_markup=menu_service.phone_request_keyboard(),
+            "✨ تکمیل پروفایل\n\nاول یک بیوگرافی کوتاه درباره خودت بنویس؛ علایق، حال‌وهوات یا چیزهایی که دوست داری نرگس بداند.\n\nبین ۱۰ تا ۳۰۰ کاراکتر.",
+            reply_markup=menu_service.profile_cancel_keyboard(),
         )
+
+    @dispatcher.callback_query(F.data == "profile:cancel")
+    async def profile_cancel_callback(callback: CallbackQuery) -> None:
+        user_service.cancel_profile_completion(callback.from_user.id)
+        await callback.answer("لغو شد.")
+        if callback.message:
+            await callback.message.answer("تکمیل پروفایل لغو شد.", reply_markup=ReplyKeyboardRemove())
+
+    @dispatcher.callback_query(F.data == "referral:leaderboard")
+    async def referral_leaderboard_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(leaderboard_text(callback.from_user.id))
 
     @dispatcher.callback_query(F.data == "capacity:groups")
     async def capacity_groups_callback(callback: CallbackQuery, bot: Bot) -> None:
@@ -2214,10 +2264,18 @@ def register_handlers(
             return
         if not await ensure_not_blocked_for_model(message):
             return
+        profile = user_service.get(message.from_user.id)
+        if profile is None or profile.profile_completion_state != "awaiting_phone":
+            await message.answer("برای ثبت شماره، اول از بخش افزایش ظرفیت «تکمیل پروفایل» را شروع کن.", reply_markup=ReplyKeyboardRemove())
+            return
         if message.contact.user_id != message.from_user.id:
+            cancelled = user_service.register_profile_invalid_attempt(message.from_user.id)
+            if cancelled:
+                await message.answer("دو بار ورودی نامعتبر بود؛ تکمیل پروفایل لغو شد.", reply_markup=ReplyKeyboardRemove())
+                return
             await message.answer(
-                "این شماره متعلق به اکانت تلگرام تو نیست. فقط با دکمه ارسال شماره موبایل اکانت خودت قابل قبول است.",
-                reply_markup=ReplyKeyboardRemove(),
+                "این شماره متعلق به اکانت تلگرام تو نیست. یک بار دیگر فقط شماره همین اکانت را بفرست.",
+                reply_markup=menu_service.phone_request_keyboard(),
             )
             return
         can_claim = user_service.save_phone_number(message.from_user.id, message.contact.phone_number)
@@ -2226,7 +2284,10 @@ def register_handlers(
             return
         quota_service.add_extra_credit(message.from_user.id, 20, reason="phone")
         user_service.mark_phone_bonus_claimed(message.from_user.id)
-        await message.answer("شماره موبایل تأیید شد. ۲۰ پیام به ظرفیت اضافه‌ات اضافه شد.", reply_markup=ReplyKeyboardRemove())
+        await message.answer(
+            "🎉 پروفایلت با موفقیت تکمیل شد!\n\n✅ شماره تأیید شد\n🎁 ۲۰ پیام رایگان دائمی به ظرفیتت اضافه شد.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         await show_account(message)
 
     @dispatcher.message(F.text)
@@ -2236,12 +2297,42 @@ def register_handlers(
             return
         user_service.upsert_telegram_user(profile_from_user(message.from_user))
         schedule_profile_photo_sync(bot, message.from_user)
+        profile = user_service.get(message.from_user.id)
+        text_value = clamp_repeated_chars((message.text or "").strip())
+        if profile and profile.profile_completion_state == "awaiting_bio":
+            bio = " ".join(text_value.split())
+            if len(bio) < 10 or len(bio) > 300:
+                cancelled = user_service.register_profile_invalid_attempt(message.from_user.id)
+                if cancelled:
+                    await message.answer("دو بار ورودی نامعتبر بود؛ تکمیل پروفایل لغو شد.")
+                else:
+                    await message.answer(
+                        "بیوگرافی باید بین ۱۰ تا ۳۰۰ کاراکتر باشد؛ یک بار دیگر بفرست.",
+                        reply_markup=menu_service.profile_cancel_keyboard(),
+                    )
+                return
+            user_service.save_biography(message.from_user.id, bio)
+            await message.answer(
+                "خیلی خوب شد ✨ فقط یک قدم دیگر تا ظرفیت رایگان اضافی فاصله داری.\nشماره همین اکانت تلگرام را با دکمه پایین بفرست.",
+                reply_markup=menu_service.phone_request_keyboard(),
+            )
+            await message.answer("هر وقت خواستی می‌تونی این مرحله را لغو کنی.", reply_markup=menu_service.profile_cancel_keyboard())
+            return
+        if profile and profile.profile_completion_state == "awaiting_phone":
+            cancelled = user_service.register_profile_invalid_attempt(message.from_user.id)
+            if cancelled:
+                await message.answer("دو بار ورودی نامعتبر بود؛ تکمیل پروفایل لغو شد.", reply_markup=ReplyKeyboardRemove())
+            else:
+                await message.answer(
+                    "برای این مرحله باید با دکمه پایین شماره همین اکانت تلگرام را بفرستی؛ یک بار دیگر امتحان کن.",
+                    reply_markup=menu_service.phone_request_keyboard(),
+                )
+            return
         if await handle_name_text(message, bot):
             return
         if not await ensure_membership(message, bot):
             return
         profile = user_service.get(message.from_user.id)
-        text_value = clamp_repeated_chars((message.text or "").strip())
         if profile and profile.onboarding_state == OnboardingState.ASK_GENDER:
             await ask_for_gender(message, message.from_user.id)
             return
@@ -2271,6 +2362,9 @@ def register_handlers(
                 capacity_text(profile),
                 reply_markup=menu_service.capacity_keyboard(phone_bonus_available(profile)),
             )
+            return
+        if text_value == "🏆 لیدربرد":
+            await message.answer(leaderboard_text(message.from_user.id))
             return
         if text_value == "💬 راهنما":
             await message.answer("💬 پیام معمولی بفرست؛ مستقیم به نرگس می‌رسه.\nبرای حساب و ظرفیت هم از دکمه‌های پایین استفاده کن.")

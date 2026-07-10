@@ -12,6 +12,13 @@
       <tr><td>کاربر</td><td><a href="/admin/users/{{ message.user_id }}">{{ user_names.get(message.user_id, "کاربر " ~ message.user_id) }}</a></td></tr>
       <tr><td>telegram_id</td><td class="ltr">{{ message.user_id }}</td></tr>
       <tr><td>chat_id</td><td>{{ message.chat_id }}</td></tr>
+      {% if group %}
+      <tr><td>group</td><td><b>👥 {{ group.title or group.username or group.chat_id }}</b></td></tr>
+      <tr><td>group_username</td><td>{% if group.username %}@{{ group.username }}{% else %}-{% endif %}</td></tr>
+      <tr><td>group_type</td><td>{{ group.chat_type }}</td></tr>
+      <tr><td>group_members</td><td>{{ group.member_count or "-" }}</td></tr>
+      <tr><td>bot_status</td><td>{{ group.bot_status or "-" }}</td></tr>
+      {% endif %}
       <tr><td>telegram_message_id</td><td>{{ message.telegram_message_id or "-" }}</td></tr>
       <tr><td>role</td><td>{{ message.role }}</td></tr>
       <tr><td>type</td><td>{{ message.message_type }}</td></tr>

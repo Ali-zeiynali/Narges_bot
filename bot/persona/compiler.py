@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from bot.models.context import BuiltContext
 from bot.models.memory import MemoryItem
@@ -21,6 +24,7 @@ class PersonaCompiler:
     def __init__(self, version: str, cache: PersonaCache | None = None) -> None:
         self.version = version
         self.cache = cache or PersonaCache()
+        self._fingerprint = self._persona_fingerprint()
 
     def compile(
         self,
@@ -34,108 +38,149 @@ class PersonaCompiler:
         current_message_datetime: str | None = None,
         user_gender: str | None = None,
     ) -> CompiledPersona:
+        cache_version = f"{self.version}:{self._fingerprint}"
+        section_name = "static:base"
+        static_prompt = self.cache.get(cache_version, section_name)
+        if static_prompt is None:
+            static_prompt = self._build_static_prompt()
+            self.cache.set(cache_version, section_name, static_prompt)
+
+        runtime_context = self._runtime_context(
+            state=state,
+            memories=memories,
+            context=context,
+            short_term_messages=short_term_messages or [],
+            search_results=conversation_search_results or [],
+            current_message_datetime=current_message_datetime,
+        )
+        if runtime_context:
+            system_prompt = (
+                static_prompt
+                + f"\n\n{RUNTIME_CONTEXT_TITLE}\n"
+                + json.dumps(runtime_context, ensure_ascii=False, separators=(",", ":"), default=str)
+            )
+        else:
+            system_prompt = static_prompt
         conversation_state = self._conversation_state(context)
-        sexual_gender = None
-        if conversation_state == "sexual":
-            sexual_gender = user_gender if user_gender in {"male", "female"} else "adult"
-        section_name = f"static:{conversation_state}:{sexual_gender or 'base'}"
-        cache_version = f"{self.version}:{self._persona_fingerprint()}"
-        cached = self.cache.get(cache_version, section_name)
-        if cached is None:
-            cached = self._build_static_prompt(sexual_gender)
-            self.cache.set(cache_version, section_name, cached)
+        return CompiledPersona(system_prompt=system_prompt, sections=("core_base", f"state_{conversation_state}"))
 
-        runtime_context = {
-            "persona_version": self.version,
-            "current_message_datetime": current_message_datetime,
-            "narges_state": self._state_for_user(state),
-            "conversation_context": context.for_prompt() if context else self._fallback_context(memories),
-            "gender_style": self._gender_style(user_gender),
-            "state_rules": {
-                "allowed_values": ["normal", "sexual"],
-                "previous_state": conversation_state,
-                "instruction": "Each structured response should set conversation_state to normal or sexual. Set sexual only when current_user_message itself is explicitly sexual. Do not keep sexual because of previous context, persona text, memories, vague affection, or older messages.",
-            },
-            "hard_rules": [
-                "The conversation model may manage user memory with memory_suggestions.",
-                "Use current_user_message together with pending_user_thread; do not interpret a short message in isolation when a thread is present.",
-                "If inferred_intent is guessing, make one or two real guesses from pending_user_thread, do not ask what to guess, and keep memory_suggestions empty.",
-                "Use active memories naturally; do not repeat them as a list in the reply.",
-                "Memory lines include created_at and expires_at. Use those timestamps silently for recency; mention time only when it matters.",
-                "Pay attention to memory created_at, updated_at, and expires_at. Prefer the most recently updated active memory when memories conflict.",
-                "Prefer adding expires_in_days for temporary moods, events, conflicts, plans, reminders, unresolved short-lived topics, or short-lived user states; leave it null for stable identity, preferences, projects, goals, constraints, boundaries, and interaction style.",
-                "Never reuse or paraphrase the last assistant answer when anti_loop.forbidden_reuse is true.",
-                "Keep replies short. never code or technical detail.",
-            ],
-        }
-        prompt = cached + f"\n\n{RUNTIME_CONTEXT_TITLE}\n" + json.dumps(runtime_context, ensure_ascii=False)
-        sections = ("core_base",) if sexual_gender is None else ("core_base", f"core_{sexual_gender}_sex")
-        return CompiledPersona(system_prompt=prompt, sections=sections)
-
-    def _fallback_context(self, memories: list[MemoryItem]) -> dict:
-        return {
-            "summary": "",
-            "facts": [],
-            "recent_intent": None,
-            "relevant_memories": [memory.summary for memory in memories],
-            "current_user_message": "",
-            "last_user_messages": [],
-            "short_conversation_summary": "",
-            "pending_user_thread": "",
-            "inferred_intent": "unknown",
-            "directly_relevant_memories": [memory.summary for memory in memories],
-            "anti_loop": {"forbidden_reuse": False},
-        }
-
-    def _build_static_prompt(self, sexual_gender: str | None = None) -> str:
+    def _build_static_prompt(self) -> str:
         try:
-            persona = build_persona_prompt(include_core=True, gender=sexual_gender)
+            persona = build_persona_prompt(include_core=True)
         except TypeError:
-            persona = build_persona_prompt(include_base=True, gender=sexual_gender)
-        return f"{STABLE_SYSTEM_PREFIX}\n\n{persona}\n\n{ENGINE_RULES}"
+            persona = build_persona_prompt(include_base=True)
+        return f"{STABLE_SYSTEM_PREFIX}\n\n{persona}\n\n{ENGINE_RULES}".strip()
 
-    def _gender_style(self, gender: str | None) -> dict:
-        if gender == "female":
-            return {
-                "enabled": True,
-                "target": "female_user",
-                "instruction": "Use the female-user style section only when it is relevant and natural. Do not include male-user assumptions.",
+    def _runtime_context(
+        self,
+        *,
+        state: NargesSelfState,
+        memories: list[MemoryItem],
+        context: BuiltContext | None,
+        short_term_messages: list[dict[str, str]],
+        search_results: list[dict[str, str]],
+        current_message_datetime: str | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if current_message_datetime:
+            payload["time"] = current_message_datetime
+
+        state_payload = self._state_for_user(state)
+        if state_payload:
+            payload["narges_state"] = state_payload
+
+        if context is not None:
+            summary = self._compact_text(getattr(context, "short_conversation_summary", "") or getattr(context, "summary", ""), 320)
+            thread = self._compact_text(getattr(context, "pending_user_thread", ""), 650)
+            intent = str(getattr(context, "inferred_intent", "") or getattr(context, "recent_intent", "")).strip()
+            if summary:
+                payload["summary"] = summary
+            if thread:
+                payload["recent_thread"] = thread
+            if intent and intent != "unknown":
+                payload["intent"] = intent
+            conversation_state = self._conversation_state(context)
+            payload["conversation_state"] = conversation_state
+            payload["state_rules"] = {
+                "allowed": ["normal", "sexual"],
+                "instruction": (
+                    "Set conversation_state from the current user message only. Use sexual only for an explicitly sexual current message; "
+                    "otherwise use normal. Never carry sexual state from older context, memories, affection, or persona text."
+                ),
             }
-        if gender == "male":
-            return {
-                "enabled": True,
-                "target": "male_user",
-                "instruction": "Use the male-user style section only when it is relevant and natural. Do not include female-user assumptions.",
-            }
-        return {"enabled": False, "target": None, "instruction": "No gender-specific section is active."}
+
+        memory_lines = self._memory_lines(memories, limit=6, char_budget=720)
+        if memory_lines:
+            payload["relevant_memories"] = memory_lines
+
+        recent = self._compact_messages(short_term_messages, limit=4, text_limit=220)
+        if recent:
+            payload["recent_messages"] = recent
+
+        search = self._compact_messages(search_results, limit=3, text_limit=260)
+        if search:
+            payload["history_matches"] = search
+        return payload
 
     def _conversation_state(self, context: BuiltContext | None) -> str:
-        if context and context.state.mode == "sexual":
-            return "sexual"
-        return "normal"
+        return "sexual" if context and context.state.mode == "sexual" else "normal"
+
+    def _memory_lines(self, memories: list[MemoryItem], limit: int, char_budget: int) -> list[str]:
+        result: list[str] = []
+        used = 0
+        for memory in memories[:limit]:
+            kind = getattr(getattr(memory, "kind", None), "value", getattr(memory, "kind", "fact"))
+            summary = self._compact_text(getattr(memory, "summary", ""), 220)
+            if not summary:
+                continue
+            line = f"{kind}: {summary}"
+            if result and used + len(line) > char_budget:
+                break
+            result.append(line)
+            used += len(line)
+        return result
+
+    def _compact_messages(self, items: list[dict[str, str]], limit: int, text_limit: int) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for item in items[-limit:]:
+            text = self._compact_text(str(item.get("text") or item.get("content") or ""), text_limit)
+            if not text:
+                continue
+            compact: dict[str, str] = {"text": text}
+            role = str(item.get("role") or "").strip()
+            created_at = str(item.get("created_at") or "").strip()
+            if role:
+                compact["role"] = role
+            if created_at:
+                compact["created_at"] = created_at
+            result.append(compact)
+        return result
+
+    def _state_for_user(self, state: NargesSelfState) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key in ("mood", "energy", "activity"):
+            value = getattr(state, key, None)
+            if value not in (None, ""):
+                result[key] = value
+        updated_at = getattr(state, "updated_at", None)
+        if updated_at is not None:
+            result["updated_at"] = updated_at.isoformat()
+        return result
+
+    def _compact_text(self, value: str, limit: int) -> str:
+        compact = " ".join((value or "").split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 1].rstrip() + "…"
 
     def _persona_fingerprint(self) -> str:
         root = Path(__file__).resolve().parents[2]
-        paths = [
-            root / "Persona.md",
+        paths = (
             root / "bot" / "persona" / "shards" / "core.py",
             root / "bot" / "persona" / "texts" / "engine_prompts.py",
-            root / "bot" / "persona" / "texts" / "state_prompts.py",
-        ]
+        )
         digest = hashlib.sha256()
         for path in paths:
-            if not path.exists():
-                continue
-            stat = path.stat()
-            digest.update(str(path).encode("utf-8"))
-            digest.update(str(stat.st_mtime_ns).encode("ascii"))
-            digest.update(str(stat.st_size).encode("ascii"))
+            if path.exists():
+                digest.update(path.read_bytes())
         return digest.hexdigest()[:16]
-
-    def _state_for_user(self, state: NargesSelfState) -> dict:
-        return {
-            "mood": state.mood,
-            "energy": state.energy,
-            "activity": state.activity,
-            "updated_at": state.updated_at.isoformat(),
-        }

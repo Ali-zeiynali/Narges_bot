@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from bot.models.user import OnboardingState, TelegramUserProfile, UserProfile
 from bot.storage.database import Database
 from bot.storage.orm import UserORM
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 
 
 class UserService:
@@ -124,7 +124,44 @@ class UserService:
             return not row.phone_bonus_claimed
 
     def mark_phone_bonus_claimed(self, user_id: int) -> None:
-        self._update(user_id, phone_bonus_claimed=True)
+        self._update(user_id, phone_bonus_claimed=True, profile_completion_state="completed", profile_invalid_attempts=0)
+
+    def start_profile_completion(self, user_id: int) -> None:
+        self._update(user_id, profile_completion_state="awaiting_bio", profile_invalid_attempts=0)
+
+    def cancel_profile_completion(self, user_id: int) -> None:
+        self._update(user_id, profile_completion_state="idle", profile_invalid_attempts=0)
+
+    def save_biography(self, user_id: int, biography: str) -> None:
+        self._update(
+            user_id,
+            biography=" ".join((biography or "").split())[:500],
+            profile_completion_state="awaiting_phone",
+            profile_invalid_attempts=0,
+        )
+
+    def register_profile_invalid_attempt(self, user_id: int) -> bool:
+        """Return True when the second invalid input cancels the flow."""
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, user_id)
+            if row is None:
+                return True
+            attempts = int(row.profile_invalid_attempts or 0) + 1
+            row.profile_invalid_attempts = attempts
+            if attempts >= 2:
+                row.profile_completion_state = "idle"
+                row.profile_invalid_attempts = 0
+            row.updated_at = datetime.now(UTC)
+            return attempts >= 2
+
+    def should_offer_profile_for_quota(self, user_id: int) -> bool:
+        with self.database.orm.session() as session:
+            row = session.get(UserORM, user_id)
+            if row is None or row.phone_bonus_claimed or row.quota_profile_prompt_sent_at is not None:
+                return False
+            row.quota_profile_prompt_sent_at = datetime.now(UTC)
+            row.updated_at = datetime.now(UTC)
+            return True
 
     def set_referred_by_code(self, user_id: int, referral_code: str | None) -> None:
         if not referral_code:
@@ -177,6 +214,51 @@ class UserService:
             "qualified": sum(1 for row in rows if self._is_referral_qualified(row)),
             "rewarded": sum(1 for row in rows if row.referral_bonus_claimed_at is not None),
             "users": rows,
+        }
+
+    def referral_leaderboard(self, user_id: int, visible_real: int = 6) -> dict:
+        with self.database.orm.session() as session:
+            counts = session.execute(
+                select(UserORM.referred_by_user_id, func.count(UserORM.telegram_id).label("successful"))
+                .where(UserORM.referred_by_user_id.is_not(None), UserORM.referral_bonus_claimed_at.is_not(None))
+                .group_by(UserORM.referred_by_user_id)
+                .order_by(desc("successful"), UserORM.referred_by_user_id)
+            ).all()
+            count_map = {int(inviter_id): int(count) for inviter_id, count in counts if inviter_id is not None}
+            ranked_ids = [int(inviter_id) for inviter_id, _count in counts]
+            visible_ids = ranked_ids[: max(0, visible_real)]
+            profiles = {
+                int(row.telegram_id): row
+                for row in session.scalars(select(UserORM).where(UserORM.telegram_id.in_(set(visible_ids + [user_id])))).all()
+            }
+        entries = []
+        for index, inviter_id in enumerate(visible_ids, start=4):
+            row = profiles.get(inviter_id)
+            if row is None:
+                continue
+            entries.append(
+                {
+                    "rank": index,
+                    "user_id": inviter_id,
+                    "name": row.display_name or row.first_name or row.username or f"کاربر {inviter_id}",
+                    "biography": row.biography or "عضو فعال نرگس",
+                    "successful": count_map.get(inviter_id, 0),
+                }
+            )
+        try:
+            real_rank = ranked_ids.index(user_id) + 4
+        except ValueError:
+            real_rank = len(ranked_ids) + 4
+        current = profiles.get(user_id)
+        return {
+            "entries": entries,
+            "current": {
+                "rank": real_rank,
+                "user_id": user_id,
+                "name": (current.display_name or current.first_name or current.username) if current else f"کاربر {user_id}",
+                "biography": (current.biography or "هنوز بیوگرافی ثبت نشده") if current else "هنوز بیوگرافی ثبت نشده",
+                "successful": count_map.get(user_id, 0),
+            },
         }
 
     def ensure_referral_code(self, user_id: int) -> str:
@@ -235,6 +317,10 @@ class UserService:
             phone_number=row.phone_number,
             phone_verified_at=row.phone_verified_at,
             phone_bonus_claimed=bool(row.phone_bonus_claimed),
+            biography=row.biography,
+            profile_completion_state=row.profile_completion_state or "idle",
+            profile_invalid_attempts=int(row.profile_invalid_attempts or 0),
+            quota_profile_prompt_sent_at=row.quota_profile_prompt_sent_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

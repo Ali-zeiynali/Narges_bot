@@ -53,10 +53,11 @@ class MenuService:
     def reply_menu(self, debug: bool = False) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton(text="👤 پروفایل"), KeyboardButton(text="⚡ افزایش ظرفیت")],
-            [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="💬 راهنما")],
+            [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="🏆 لیدربرد"), KeyboardButton(text="💬 راهنما")],
         ]
         if debug:
             keyboard[1].append(KeyboardButton(text="🧠 حافظه‌ها"))
+        
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, selective=True)
 
     def main_menu(self, debug: bool = False) -> InlineKeyboardMarkup:
@@ -90,14 +91,30 @@ class MenuService:
 
     def capacity_keyboard(self, phone_available: bool = True) -> InlineKeyboardMarkup:
         rows = [
-            [InlineKeyboardButton(text="🎁 دعوت دوستان (پیام رایگان)", callback_data="capacity:referral")],
+            [
+                InlineKeyboardButton(text="🎁 دعوت · رایگان", callback_data="capacity:referral"),
+                InlineKeyboardButton(text="👤 پروفایل · رایگان", callback_data="profile:start"),
+                InlineKeyboardButton(text="👥 گروه · رایگان", callback_data="capacity:groups"),
+            ],
             [InlineKeyboardButton(text="⭐ افزایش با Stars", callback_data="billing:stars_menu")],
             [InlineKeyboardButton(text="💳 خرید پیام", callback_data="billing:card_menu")],
         ]
-        if phone_available:
-            rows.append([InlineKeyboardButton(text="📱 افزایش با شماره موبایل", callback_data="capacity:phone")])
-        rows.append([InlineKeyboardButton(text="➕ اضافه کردن نرگس به گروه‌ها (پیام رایگان)", callback_data="capacity:groups")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def profile_completion_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="✨ تکمیل پروفایل", callback_data="profile:start")]]
+        )
+
+    def profile_cancel_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="✖️ لغو", callback_data="profile:cancel")]]
+        )
+
+    def referral_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🏆 لیدربرد دعوت", callback_data="referral:leaderboard")]]
+        )
 
     def group_invite_text(self) -> str:
         return (

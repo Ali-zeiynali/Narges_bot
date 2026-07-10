@@ -52,5 +52,9 @@ class UserProfile:
     phone_number: str | None
     phone_verified_at: datetime | None
     phone_bonus_claimed: bool
+    biography: str | None
+    profile_completion_state: str
+    profile_invalid_attempts: int
+    quota_profile_prompt_sent_at: datetime | None
     created_at: datetime
     updated_at: datetime

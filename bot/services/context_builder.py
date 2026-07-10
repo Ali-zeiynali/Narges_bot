@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -16,142 +17,10 @@ from bot.utils.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
-
-SUMMARY_MESSAGE_THRESHOLD = 8
-SUMMARY_TOKEN_THRESHOLD = 900
-SHORT_MESSAGE_CHARS = 90
-THREAD_LOOKBACK_MESSAGES = 3
-SEXUAL_TRIGGER_WORDS = {
-    "سکس",
-    "سکسی",
-    "جنسی",
-    "شهوت",
-    "تحریک",
-    "تحریکم",
-    "تحریکت",
-    "بوس",
-    "بوسم",
-    "ببوس",
-    "بغل",
-    "بدن",
-    "لب",
-    "گردن",
-    "سینه",
-    "پستان",
-    "ممه",
-    "کص",
-    "کس",
-    "کون",
-    "کیر",
-    "واژن",
-    "آلت",
-    "دیک",
-    "حشری",
-    "هورنی",
-    "خیس",
-    "لخت",
-    "برهنه",
-    "نود",
-    "پورن",
-    "لاس",
-    "معاشقه",
-    "رابطه جنسی",
-    "دخول",
-    "ارضا",
-    "ارضام",
-    "ارضات",
-    "بمال",
-    "بمالم",
-    "بخور",
-    "لیس",
-    "ساک",
-    "بکن",
-    "بکنم",
-    "میخوامت",
-    "می خوامت",
-    "sex",
-    "sexual",
-    "sexy",
-    "nsfw",
-    "erotic",
-    "kiss",
-    "horny",
-    "nude",
-    "naked",
-    "fuck",
-    "dick",
-    "pussy",
-    "ass",
-    "boob",
-    "breast",
-    "wet",
-    "cum",
-    "bj",
-    "oral",
-}
-SEXUAL_BODY_WORDS = {
-    "بدن",
-    "لب",
-    "گردن",
-    "سینه",
-    "پستان",
-    "ممه",
-    "کص",
-    "کس",
-    "کون",
-    "کیر",
-    "واژن",
-    "آلت",
-    "دیک",
-    "ران",
-    "body",
-    "lip",
-    "neck",
-    "boob",
-    "breast",
-    "pussy",
-    "dick",
-    "ass",
-}
-SEXUAL_ACTION_WORDS = {
-    "بوس",
-    "ببوس",
-    "بغل",
-    "لمس",
-    "بمال",
-    "بخور",
-    "لیس",
-    "ساک",
-    "تحریک",
-    "ارضا",
-    "بکن",
-    "بخواب",
-    "kiss",
-    "touch",
-    "lick",
-    "fuck",
-    "suck",
-}
-SEXUAL_INTENT_WORDS = {
-    "میخوام",
-    "میخام",
-    "می خوام",
-    "می خواهم",
-    "دلم میخواد",
-    "دلم می خواد",
-    "دوست دارم",
-    "بیا",
-    "بریم",
-    "بکنیم",
-    "برام",
-    "باهام",
-    "میخوامت",
-    "می خوامت",
-    "want",
-    "wanna",
-    "let's",
-    "with me",
-}
+SUMMARY_MESSAGE_THRESHOLD = 24
+SUMMARY_TOKEN_THRESHOLD = 2200
+THREAD_LOOKBACK_MESSAGES = 6
+THREAD_MAX_CHARS = 720
 
 
 class ContextBuilder:
@@ -160,19 +29,21 @@ class ContextBuilder:
         self.history_service = history_service
 
     def build(self, user_id: int, user_text: str, memories: list[MemoryItem]) -> BuiltContext:
-        summary = self._summary(user_id)
-        row = self._state_row(user_id)
-        last_user_messages = self.history_service.recent_user_messages(user_id, limit=THREAD_LOOKBACK_MESSAGES)
-        pending_user_thread = self.build_pending_user_thread(user_text, last_user_messages)
+        summary_row, state_row = self._load_rows(user_id)
+        summary = summary_row.summary if summary_row and summary_row.summary else ""
+        recent_turns = self.history_service.recent_turns(user_id, limit=THREAD_LOOKBACK_MESSAGES)
+        last_user_messages = [item for item in recent_turns if item.get("role") == "user"][-3:]
+        pending_user_thread = self.build_pending_user_thread(user_text, recent_turns)
         inferred_intent = self.infer_intent(user_text, pending_user_thread)
-        mode = "sexual" if self._has_sexual_trigger(user_text) else "normal"
-        relationship_stage = row.relationship_stage if row else "new"
-        familiarity_score = float(row.familiarity_score or 0) if row else 0.0
         last_assistant = self.history_service.last_assistant_reply(user_id)
         relevant_memories = self._memory_lines(memories)
+        relationship_stage = state_row.relationship_stage if state_row else "new"
+        familiarity_score = float(state_row.familiarity_score or 0) if state_row else 0.0
+        forbid_reuse = bool(last_assistant)
+
         return BuiltContext(
             state=ContextState(
-                mode=mode,
+                mode=self._conversation_mode(user_text),
                 topic=self._topic_hint(pending_user_thread or user_text),
                 relationship_stage=relationship_stage,
                 familiarity_score=familiarity_score,
@@ -185,7 +56,7 @@ class ContextBuilder:
             anti_loop=AntiLoopContext(
                 last_assistant_text_hash=last_assistant["text_hash"] if last_assistant else None,
                 last_assistant_intent=last_assistant["intent"] if last_assistant else None,
-                forbidden_reuse=bool(last_assistant),
+                forbidden_reuse=forbid_reuse,
             ),
             current_user_message=user_text,
             last_user_messages=last_user_messages,
@@ -193,6 +64,14 @@ class ContextBuilder:
             short_conversation_summary=self._short_summary(summary),
             inferred_intent=inferred_intent,
             directly_relevant_memories=relevant_memories,
+        )
+
+    def with_memories(self, context: BuiltContext, memories: list[MemoryItem]) -> BuiltContext:
+        lines = self._memory_lines(memories)
+        return replace(
+            context,
+            relevant_memories=lines,
+            directly_relevant_memories=lines,
         )
 
     def observe_turn(
@@ -207,20 +86,20 @@ class ContextBuilder:
         now = (message_datetime or datetime.now(UTC)).astimezone(UTC)
         user_hash = self.history_service.message_hash(user_text)
         assistant_hash = self.history_service.message_hash(assistant_text)
-        user_intent = self.infer_intent(user_text)
-        mode = "sexual" if self._has_sexual_trigger(user_text) else "normal"
+        intent = self.infer_intent(user_text)
         with self.database.orm.session() as session:
             row = session.get(ConversationContextStateORM, user_id)
             if row is None:
                 row = ConversationContextStateORM(user_id=user_id, updated_at=now)
                 session.add(row)
-            row.mode = mode
+            familiarity = min(1.0, float(row.familiarity_score or 0) + 0.012)
+            row.mode = "normal"
             row.topic = self._topic_hint(user_text)
-            row.recent_intent = user_intent
-            row.intent_confidence = 0.7
-            row.relationship_stage = self._next_relationship_stage(row.relationship_stage, row.familiarity_score)
-            row.trust_level = min(1.0, float(row.trust_level or 0) + 0.015)
-            row.familiarity_score = min(1.0, float(row.familiarity_score or 0) + 0.035)
+            row.recent_intent = intent
+            row.intent_confidence = 0.75
+            row.relationship_stage = self._next_relationship_stage(row.relationship_stage, familiarity)
+            row.trust_level = min(1.0, float(row.trust_level or 0) + 0.006)
+            row.familiarity_score = familiarity
             row.last_user_message_hash = user_hash
             row.last_assistant_text_hash = assistant_hash
             row.last_assistant_intent = assistant_intent
@@ -234,22 +113,17 @@ class ContextBuilder:
         if pending_count >= SUMMARY_MESSAGE_THRESHOLD:
             return True
         pending = self.history_service.messages_after(user_id, summarized_id, limit=SUMMARY_MESSAGE_THRESHOLD)
-        pending_tokens = sum(estimate_tokens(item["text"]) for item in pending)
-        return pending_tokens >= SUMMARY_TOKEN_THRESHOLD
+        return sum(estimate_tokens(item["text"]) for item in pending) >= SUMMARY_TOKEN_THRESHOLD
 
-    def refresh_summary_with_llm(self, user_id: int, groq_client) -> dict[str, object] | None:
+    def refresh_summary_with_llm(self, user_id: int, ai_provider_client) -> dict[str, object] | None:
         summary_row = self._summary_row(user_id)
         summarized_id = int(summary_row.summarized_message_id) if summary_row else 0
         existing = summary_row.summary if summary_row else ""
-        pending = self.history_service.messages_after(user_id, summarized_id, limit=24)
+        pending = self.history_service.messages_after(user_id, summarized_id, limit=20)
         if not pending:
             return None
         try:
-            if hasattr(groq_client, "complete_conversation_summary_with_usage"):
-                summary, usage, provider, model = groq_client.complete_conversation_summary_with_usage(existing, pending)
-            else:
-                summary = groq_client.complete_conversation_summary(existing, pending)
-                usage, provider, model = {}, None, None
+            summary, usage, provider, model = ai_provider_client.complete_conversation_summary_with_usage(existing, pending)
         except Exception:
             logger.exception("conversation_summary_refresh_failed user_id=%s", user_id)
             return None
@@ -278,167 +152,167 @@ class ContextBuilder:
         }
 
     def infer_intent(self, text: str, pending_user_thread: str = "") -> str:
-        lowered = (text or "").lower()
-        compact = re.sub(r"\s+", " ", lowered).strip()
+        compact = self._normalize(text)
+        if not compact:
+            return "unknown"
         if self._is_guessing(compact):
             return "guessing"
         if pending_user_thread and self._is_continuation(compact):
             return "continuation"
-        if any(word in lowered for word in ("bug", "error", "exception", "traceback", "خطا", "باگ")):
+        if self._contains_any(compact, ("bug", "error", "exception", "traceback", "خطا", "باگ")):
             return "technical"
-        if any(word in lowered for word in ("code", "api", "sql", "python", "fastapi", "aiogram", "server", "deploy", "render", "database", "postgres", "کد", "سرور", "دیتابیس", "پروژه")):
+        if self._contains_any(
+            compact,
+            ("code", "api", "sql", "python", "fastapi", "aiogram", "server", "deploy", "database", "postgres", "کد", "سرور", "دیتابیس", "دیپلوی"),
+        ):
             return "technical"
-        if any(word in lowered for word in ("نه", "اشتباه", "منظورم", "تصحیح", "wrong", "actually")):
+        if compact in {"نه", "اشتباهه", "غلطه", "wrong"} or compact.startswith(("منظورم ", "تصحیح ", "actually ")):
             return "correction"
-        if any(word in lowered for word in ("خفه", "احمق", "کسکش", "کثافت", "لعنتی", "idiot", "shut up", "stupid")):
-            return "insult"
-        if any(word in lowered for word in ("ناراحت", "غم", "استرس", "حالم", "تنها", "خسته", "sad", "stress", "lonely")):
+        if self._contains_any(compact, ("ناراحت", "غمگین", "استرس", "تنها", "خسته", "حالم بده", "sad", "stress", "lonely")):
             return "support"
-        if not compact:
-            return "unknown"
+        if self._contains_any(compact, ("خفه", "احمق", "کثافت", "لعنتی", "idiot", "shut up", "stupid")):
+            return "insult"
+        if compact in {"دوباره", "بازم", "یه بار دیگه", "retry", "again"}:
+            return "retry"
         return "casual"
 
-    def build_pending_user_thread(self, current_text: str, last_user_messages: list[dict[str, str]]) -> str:
-        messages = [item.get("text", "").strip() for item in last_user_messages if item.get("text")]
-        messages.append((current_text or "").strip())
-        recent = [message for message in messages[-(THREAD_LOOKBACK_MESSAGES + 1):] if message]
-        if not recent or not self._looks_like_pending_thread(recent):
+    def build_pending_user_thread(self, current_text: str, recent_messages: list[dict[str, str]]) -> str:
+        current = self._compact(current_text, 260)
+        normalized_current = self._normalize(current)
+        if not current or not (self._is_continuation(normalized_current) or self._is_guessing(normalized_current)):
             return ""
-        joined = " / ".join(recent)
-        lowered = joined.lower()
-        topics: list[str] = []
-        if any(word in lowered for word in ("project", "پروژه")):
-            topics.append("یک پروژه")
-        if any(word in lowered for word in ("secret", "confidential", "private", "محرمانه", "خصوصی")):
-            topics.append("محرمانه")
-        if any(word in lowered for word in ("deploy", "publish", "render", "host", "test", "دیپلوی", "منتشر", "تست", "هاست", "بذارم", "بزارم")):
-            topics.append("انتشار، دیپلوی یا تست")
-        if topics:
-            return f"کاربر در چند پیام کوتاه پشت سر هم درباره {' و '.join(topics)} حرف می‌زند. پیام فعلی ادامه همان thread است."
-        return f"کاربر در چند پیام کوتاه پشت سر هم یک منظور ادامه‌دار را می‌سازد: {joined[:260]}"
+        items: list[str] = []
+        for item in recent_messages[-THREAD_LOOKBACK_MESSAGES:]:
+            text = self._compact(str(item.get("text") or ""), 220)
+            if not text:
+                continue
+            role = "کاربر" if item.get("role") == "user" else "نرگس"
+            items.append(f"{role}: {text}")
+        items.append(f"کاربر: {current}")
+        joined = "\n".join(items)
+        return self._compact(joined, THREAD_MAX_CHARS)
 
-    def _summary(self, user_id: int) -> str:
-        row = self._summary_row(user_id)
-        return row.summary if row and row.summary else ""
+    def _load_rows(self, user_id: int) -> tuple[ConversationSummaryORM | None, ConversationContextStateORM | None]:
+        with self.database.orm.session() as session:
+            summary = session.get(ConversationSummaryORM, user_id)
+            state = session.get(ConversationContextStateORM, user_id)
+            return summary, state
 
     def _summary_row(self, user_id: int) -> ConversationSummaryORM | None:
         with self.database.orm.session() as session:
             return session.get(ConversationSummaryORM, user_id)
 
-    def _state_row(self, user_id: int) -> ConversationContextStateORM | None:
-        with self.database.orm.session() as session:
-            return session.get(ConversationContextStateORM, user_id)
-
     def _memory_lines(self, memories: list[MemoryItem]) -> list[str]:
         lines: list[str] = []
-        for memory in memories[:8]:
-            summary = re.sub(r"\s+", " ", memory.summary).strip()
-            created = memory.created_at.astimezone(UTC).date().isoformat()
-            updated = memory.updated_at.astimezone(UTC).date().isoformat()
-            expires = memory.expires_at.astimezone(UTC).date().isoformat() if memory.expires_at else "none"
-            lines.append(f"#{memory.id} | {memory.kind.value} | created_at={created} | updated_at={updated} | expires_at={expires}: {summary[:180]}")
+        used = 0
+        for memory in memories[:6]:
+            summary = self._compact(memory.summary, 190)
+            if not summary:
+                continue
+            kind = getattr(memory.kind, "value", str(memory.kind))
+            timestamps = [f"created_at={memory.created_at.isoformat()}"]
+            if memory.updated_at and memory.updated_at != memory.created_at:
+                timestamps.append(f"updated_at={memory.updated_at.isoformat()}")
+            if memory.expires_at:
+                timestamps.append(f"expires_at={memory.expires_at.isoformat()}")
+            line = f"{kind}: {summary} ({', '.join(timestamps)})"
+            if lines and used + len(line) > 620:
+                break
+            lines.append(line)
+            used += len(line)
         return lines
 
-    def _conversation_state(self, value: str | None) -> str:
-        return value if value in {"normal", "sexual"} else "normal"
+    def _contains_any(self, text: str, values: tuple[str, ...]) -> bool:
+        return any(value in text for value in values)
 
-    def _has_sexual_trigger(self, text: str) -> bool:
-        normalized = self._normalize_trigger_text(text)
-        if not normalized:
-            return False
-        compact = normalized.replace(" ", "")
-        tokens = set(re.findall(r"[\wآ-ی]+", normalized, flags=re.UNICODE))
-        normalized_triggers = [self._normalize_trigger_text(word) for word in SEXUAL_TRIGGER_WORDS]
-        if any(self._contains_trigger(normalized, compact, tokens, word) for word in normalized_triggers):
-            return True
-        body_words = [self._normalize_trigger_text(word) for word in SEXUAL_BODY_WORDS]
-        action_words = [self._normalize_trigger_text(word) for word in SEXUAL_ACTION_WORDS]
-        intent_words = [self._normalize_trigger_text(word) for word in SEXUAL_INTENT_WORDS]
-        has_body = any(self._contains_trigger(normalized, compact, tokens, word) for word in body_words)
-        has_action = any(self._contains_trigger(normalized, compact, tokens, word) for word in action_words)
-        has_intent = any(self._contains_trigger(normalized, compact, tokens, word) for word in intent_words)
-        return (has_body and has_action) or (has_intent and (has_body or has_action))
-
-    def _contains_trigger(self, normalized: str, compact: str, tokens: set[str], word: str) -> bool:
-        if not word:
-            return False
-        compact_word = word.replace(" ", "")
-        if compact_word in {"کس", "کص"}:
-            return word in tokens or compact_word in tokens
-        if " " in word:
-            return word in normalized or compact_word in compact
-        return word in normalized or compact_word in compact
-
-    def _normalize_trigger_text(self, text: str) -> str:
-        normalized = (text or "").lower()
-        normalized = normalized.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
-        return re.sub(r"\s+", " ", normalized).strip()
-
-    def _mode_for_intent(self, intent: str) -> str:
-        if intent == "technical":
-            return "technical"
-        if intent == "support":
-            return "support"
-        return "casual"
+    def _normalize(self, text: str) -> str:
+        text = (text or "").replace("ي", "ی").replace("ك", "ک")
+        normalized = (text or "").lower().replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
+        return re.sub(r"\s+", " ", normalized).strip(" ؟?!.,،")
 
     def _topic_hint(self, text: str) -> str | None:
         words = re.findall(r"[\w\u0600-\u06FF]{3,}", text or "")
-        if not words:
-            return None
-        return " ".join(words[:8])[:120]
-
-    def _looks_like_pending_thread(self, messages: list[str]) -> bool:
-        if len(messages) < 2:
-            return False
-        short_count = sum(len(message) <= SHORT_MESSAGE_CHARS for message in messages)
-        if short_count >= 2 and any(self._is_continuation(message.lower()) or self._is_guessing(message.lower()) for message in messages):
-            return True
-        joined = " ".join(messages).lower()
-        return short_count >= 3 and any(word in joined for word in ("project", "پروژه", "secret", "محرمانه", "deploy", "دیپلوی", "بذارم", "بزارم"))
+        return " ".join(words[:7])[:100] if words else None
 
     def _is_guessing(self, text: str) -> bool:
-        normalized = re.sub(r"[؟?!.\s]+", " ", text or "").strip()
-        return normalized in {"حدس بزن", "حدس بزنم", "guess", "guess what"} or "حدس بزن" in normalized
+        if text in {"حدس بزن", "حدس بزنم", "guess", "guess what"} or text.startswith("حدس بزن "):
+            return True
+        return text in {"حدس بزن", "حدس بزنم", "guess", "guess what"} or text.startswith("حدس بزن ")
 
     def _is_continuation(self, text: str) -> bool:
-        normalized = re.sub(r"[؟?!.\s]+", " ", text or "").strip()
-        if len(normalized) <= 2:
+        if len(text) <= 2:
             return True
-        continuation_values = {
+        real_values = {"خب", "باشه", "اوکی", "آره", "اره", "نه", "ادامه", "بعدش", "حالا چی", "پس چی", "همون", "اینو", "اون رو", "چرا", "چطور", "دوباره"}
+        if text in real_values or (len(text) <= 18 and text.startswith(("و ", "پس ", "یعنی ", "خب "))):
+            return True
+        values = {
             "خب",
             "باشه",
             "اوکی",
-            "اره",
             "آره",
+            "اره",
             "نه",
-            "نمیگم",
-            "هیچی",
-            "محرمانه",
-            "خصوصی",
             "ادامه",
             "بعدش",
-            "یه چیزی",
+            "حالا چی",
+            "پس چی",
+            "همون",
+            "اینو",
+            "اون رو",
+            "چرا",
+            "چطور",
+            "دوباره",
             "ok",
             "yeah",
-            "nope",
-            "nothing",
+            "no",
+            "then",
+            "why",
+            "how",
         }
-        return normalized in continuation_values or len(normalized) <= 14
+        return text in values or (len(text) <= 18 and text.startswith(("و ", "پس ", "یعنی ", "خب ")))
+
+    def _conversation_mode(self, text: str) -> str:
+        normalized = self._normalize(text)
+        if not normalized:
+            return "normal"
+        sexual_terms = (
+            "sexual",
+            "sex",
+            "kiss",
+            "touch",
+            "سکس",
+            "جنسی",
+            "ببوس",
+            "بوس",
+            "لمس",
+            "بدنت",
+            "بدنم",
+        )
+        if not any(term in normalized for term in sexual_terms):
+            return "normal"
+        explicit_terms = ("sexual", "sex", "kiss", "touch", "سکس", "جنسی", "ببوس", "بوس", "لمس")
+        if "عکس" in normalized and not any(term in normalized for term in explicit_terms):
+            return "normal"
+        return "sexual"
 
     def _next_relationship_stage(self, current: str | None, familiarity_score: float | None) -> str:
         score = float(familiarity_score or 0)
-        if score >= 0.75:
+        if score >= 0.8:
             return "close"
-        if score >= 0.35:
+        if score >= 0.45:
             return "familiar"
-        if score >= 0.1:
+        if score >= 0.15:
             return "warming_up"
         return current or "new"
 
     def _short_summary(self, summary: str) -> str:
-        summary = re.sub(r"\s+", " ", (summary or "").strip())
-        return summary[:260]
+        return self._compact(summary, 320)
 
     def _clean_summary(self, summary: str) -> str:
-        summary = re.sub(r"\s+", " ", (summary or "").strip())
-        return summary[:700]
+        return self._compact(summary, 600)
+
+    def _compact(self, value: str, limit: int) -> str:
+        compact = re.sub(r"\s+", " ", (value or "").strip())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 1].rstrip() + "…"

@@ -24,7 +24,9 @@
     <tr>
       <td><a href="/admin/messages/{{ m.id }}">{{ m.id }}</a></td>
       <td><a href="/admin/users/{{ m.user_id }}">{{ user_names.get(m.user_id, "کاربر " ~ m.user_id) }}</a></td>
-      <td class="ltr">{{ m.chat_id or "-" }}</td>
+      <td class="ltr">
+        {% if m.message_type.startswith("group_") %}👥 {{ group_names.get(m.chat_id, m.chat_id) }} · {% endif %}{{ m.chat_id or "-" }}
+      </td>
       <td>{{ m.role }}</td>
       <td>{{ m.message_type }}</td>
       <td>

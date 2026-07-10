@@ -75,13 +75,14 @@
     <h3>Usage</h3>
     <div class="table-wrap">
       <table data-enhance="true">
-        <thead><tr><th>کاربر</th><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>زمان</th></tr></thead>
+        <thead><tr><th>کاربر</th><th>purpose</th><th>provider</th><th>model</th><th>prompt</th><th>completion</th><th>total</th><th>latency</th><th>زمان</th></tr></thead>
         <tbody>
         {% for u in usage %}
         <tr>
           <td>{% if u.user_id %}<a href="/admin/users/{{ u.user_id }}">{{ user_names.get(u.user_id, "کاربر " ~ u.user_id) }}</a>{% else %}-{% endif %}</td>
-          <td>{{ u.provider }}</td><td>{{ u.model }}</td>
+          <td><span class="pill">{{ u.purpose }}</span></td><td>{{ u.provider }}</td><td>{{ u.model }}</td>
           <td class="ltr">{{ u.prompt_tokens or "-" }}</td><td class="ltr">{{ u.completion_tokens or "-" }}</td><td class="ltr">{{ u.total_tokens or "-" }}</td>
+          <td class="ltr">{{ u.latency_ms or "-" }} ms</td>
           <td>{{ u.created_at|dt }}</td>
         </tr>
         {% endfor %}

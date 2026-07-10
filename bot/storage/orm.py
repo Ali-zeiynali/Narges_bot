@@ -49,6 +49,10 @@ class UserORM(Base):
     phone_number: Mapped[str | None] = mapped_column(String(32))
     phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     phone_bonus_claimed: Mapped[bool] = mapped_column(Boolean, default=False)
+    biography: Mapped[str | None] = mapped_column(Text)
+    profile_completion_state: Mapped[str] = mapped_column(String(32), default="idle")
+    profile_invalid_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    quota_profile_prompt_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -174,6 +178,9 @@ class UsageLogORM(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     total_tokens: Mapped[int | None] = mapped_column(Integer)
+    purpose: Mapped[str] = mapped_column(String(64), default="chat_reply")
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    metadata_json: Mapped[str | None] = mapped_column("metadata", Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

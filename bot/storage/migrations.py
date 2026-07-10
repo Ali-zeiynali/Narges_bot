@@ -561,4 +561,20 @@ MIGRATIONS: list[tuple[str, str]] = [
             ON group_invite_rewards(chat_id);
         """,
     ),
+    (
+        "022_profile_completion_and_usage_breakdown",
+        """
+        ALTER TABLE users ADD COLUMN biography TEXT;
+        ALTER TABLE users ADD COLUMN profile_completion_state TEXT NOT NULL DEFAULT 'idle';
+        ALTER TABLE users ADD COLUMN profile_invalid_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE users ADD COLUMN quota_profile_prompt_sent_at TEXT;
+
+        ALTER TABLE usage_logs ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat_reply';
+        ALTER TABLE usage_logs ADD COLUMN latency_ms INTEGER;
+        ALTER TABLE usage_logs ADD COLUMN metadata TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_usage_logs_purpose_created
+            ON usage_logs(purpose, created_at);
+        """,
+    ),
 ]

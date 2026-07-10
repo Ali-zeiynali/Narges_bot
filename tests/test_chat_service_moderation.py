@@ -11,7 +11,7 @@ from bot.services.chat_service import ChatService
 from bot.services.context_builder import ContextBuilder
 from bot.services.conversation_search_tool import ConversationSearchTool
 from bot.services.debug_service import DebugService
-from bot.services.groq_client import GroqResult, ImageSelectionResult
+from bot.services.ai_provider_client import ProviderResult, ImageSelectionResult
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.services.moderation_service import ModerationService
@@ -54,7 +54,7 @@ def make_settings(path: str) -> Settings:
     )
 
 
-class FakeWarningGroqClient:
+class FakeWarningProviderClient:
     def complete(self, messages):
         reply = NargesReply.model_validate(
             {
@@ -65,10 +65,10 @@ class FakeWarningGroqClient:
                 "event_suggestion": None,
             }
         )
-        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+        return ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
-class FakeSexualWarningGroqClient:
+class FakeSexualWarningProviderClient:
     def complete(self, messages):
         reply = NargesReply.model_validate(
             {
@@ -79,10 +79,10 @@ class FakeSexualWarningGroqClient:
                 "event_suggestion": None,
             }
         )
-        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+        return ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
-class FakeMemorySuggestionGroqClient:
+class FakeMemorySuggestionProviderClient:
     def complete(self, messages):
         reply = NargesReply.model_validate(
             {
@@ -101,10 +101,10 @@ class FakeMemorySuggestionGroqClient:
                 "event_suggestion": None,
             }
         )
-        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+        return ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
-class FakeUnsupportedMemorySuggestionGroqClient:
+class FakeUnsupportedMemorySuggestionProviderClient:
     def complete(self, messages):
         reply = NargesReply.model_validate(
             {
@@ -123,10 +123,10 @@ class FakeUnsupportedMemorySuggestionGroqClient:
                 "event_suggestion": None,
             }
         )
-        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+        return ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
-class FakeCountingGroqClient:
+class FakeCountingProviderClient:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -141,10 +141,10 @@ class FakeCountingGroqClient:
                 "event_suggestion": None,
             }
         )
-        return GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
+        return ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10})
 
 
-class FakeImageSelectionGroqClient(FakeCountingGroqClient):
+class FakeImageSelectionProviderClient(FakeCountingProviderClient):
     def __init__(self, image_id: str | None) -> None:
         super().__init__()
         self.image_id = image_id
@@ -176,13 +176,13 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.quota = QuotaService(self.database, self.settings)
         self.moderation = ModerationService(self.database)
         self.debug = DebugService(self.database, self.settings)
-        self.service = self.make_service(FakeWarningGroqClient())
+        self.service = self.make_service(FakeWarningProviderClient())
 
-    def make_service(self, groq_client, bot_image_catalog=None) -> ChatService:
+    def make_service(self, ai_provider_client, bot_image_catalog=None) -> ChatService:
         return ChatService(
             validator=MessageValidator(self.settings),
             persona_compiler=PersonaCompiler("v"),
-            groq_client=groq_client,  # type: ignore[arg-type]
+            ai_provider_client=ai_provider_client,  # type: ignore[arg-type]
             narges_state_service=NargesStateService(self.database),
             memory_service=MemoryService(self.database),
             history_service=self.history,
@@ -200,7 +200,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_photo_text_does_not_create_backend_image_request(self) -> None:
-        groq = FakeImageSelectionGroqClient("selfie_1")
+        groq = FakeImageSelectionProviderClient("selfie_1")
         service = self.make_service(groq, FakeImageCatalog())
         reply = NargesReply.model_validate(
             {
@@ -214,7 +214,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service._attach_requested_image_if_needed(
-            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
             [{"role": "user", "content": json.dumps({"user_message": "عکس بده از خودت"}, ensure_ascii=False)}],
         )
 
@@ -222,7 +222,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(groq.selection_calls, 0)
 
     async def test_model_image_request_uses_second_catalog_selection(self) -> None:
-        groq = FakeImageSelectionGroqClient("selfie_1")
+        groq = FakeImageSelectionProviderClient("selfie_1")
         service = self.make_service(groq, FakeImageCatalog())
         reply = NargesReply.model_validate(
             {
@@ -236,7 +236,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service._attach_requested_image_if_needed(
-            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
             [{"role": "user", "content": json.dumps({"user_message": "عکس بده از خودت"}, ensure_ascii=False)}],
         )
 
@@ -245,7 +245,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.usage["image_selection_total_tokens"], 3)
 
     async def test_repeated_normal_photo_request_forces_catalog_selection(self) -> None:
-        groq = FakeImageSelectionGroqClient("selfie_1")
+        groq = FakeImageSelectionProviderClient("selfie_1")
         service = self.make_service(groq, FakeImageCatalog())
         for index in range(3):
             self.history.add(9, "user", f"send your selfie please {index}")
@@ -261,7 +261,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service._force_repeated_photo_request_if_needed(
-            GroqResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
+            ProviderResult(reply=reply, raw_text="{}", usage={"total_tokens": 10}),
             [{"role": "user", "content": json.dumps({"user_message": "send your selfie please again"}, ensure_ascii=False)}],
             9,
             "send your selfie please again",
@@ -284,7 +284,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.quota.remaining_today(1), 40)
 
     async def test_prompt_injection_is_blocked_before_model(self) -> None:
-        groq = FakeCountingGroqClient()
+        groq = FakeCountingProviderClient()
         service = self.make_service(groq)
 
         with self.assertRaises(Exception) as context:
@@ -302,7 +302,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.quota.remaining_today(5), 40)
 
     async def test_sexual_model_warning_is_ignored(self) -> None:
-        service = self.make_service(FakeSexualWarningGroqClient())
+        service = self.make_service(FakeSexualWarningProviderClient())
 
         result = await service.answer(
             user_id=4,
@@ -317,7 +317,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.quota.remaining_today(4), 39)
 
     async def test_chat_model_memory_suggestions_are_validated_and_saved_once(self) -> None:
-        service = self.make_service(FakeMemorySuggestionGroqClient())
+        service = self.make_service(FakeMemorySuggestionProviderClient())
 
         await service.answer(
             user_id=2,
@@ -332,7 +332,7 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("black tea", memories[0].summary)
 
     async def test_unsupported_model_memory_suggestions_are_rejected(self) -> None:
-        service = self.make_service(FakeUnsupportedMemorySuggestionGroqClient())
+        service = self.make_service(FakeUnsupportedMemorySuggestionProviderClient())
 
         await service.answer(
             user_id=3,

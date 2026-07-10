@@ -148,7 +148,7 @@ class AdminBackupTests(unittest.TestCase):
         self.assertEqual([group.chat_id for group in group_messages["groups"]], [1])
         self.assertEqual(service.target_group_ids(), [1])
 
-    def test_user_messages_include_group_rows_only_when_user_filtered(self) -> None:
+    def test_all_messages_include_private_and_group_rows(self) -> None:
         database = Database(str(Path(self.tmp.name) / "user-group-messages.sqlite3"))
         database.migrate()
         now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
@@ -185,10 +185,10 @@ class AdminBackupTests(unittest.TestCase):
         detail = service.user_detail(1)["messages"]
 
         self.assertEqual({row.text for row in filtered}, {"private", "group"})
-        self.assertEqual([row.text for row in global_messages], ["private"])
+        self.assertEqual([row.text for row in global_messages], ["group", "private"])
         self.assertEqual({row.text for row in detail}, {"private", "group"})
 
-    def test_group_messages_timeline_includes_observed_rows(self) -> None:
+    def test_group_messages_hide_unhandled_observed_rows(self) -> None:
         database = Database(str(Path(self.tmp.name) / "group-panel.sqlite3"))
         database.migrate()
         now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
@@ -224,10 +224,15 @@ class AdminBackupTests(unittest.TestCase):
         messages = service.group_messages()
 
         self.assertEqual([row.text for row in messages["messages"]], ["mention"])
-        self.assertEqual([row["text"] for row in messages["timeline"]], ["ordinary", "mention"])
-        self.assertEqual(messages["timeline"][1]["reply_preview"]["text"], "ordinary")
+        self.assertEqual([row["text"] for row in messages["timeline"]], ["mention"])
+        self.assertEqual(messages["timeline"][0]["reply_preview"]["text"], "ordinary")
         self.assertEqual(messages["counts"]["all"], 2)
         self.assertEqual(messages["counts"]["observed"], 1)
+
+        mention = messages["messages"][0]
+        detail = service.message_detail(mention.id)
+        self.assertEqual(detail["group"].title, "Group")
+        self.assertEqual(detail["group"].chat_id, -100)
 
     def test_media_gallery_includes_following_assistant_reply(self) -> None:
         database = Database(str(Path(self.tmp.name) / "media.sqlite3"))

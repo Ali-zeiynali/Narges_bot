@@ -40,7 +40,8 @@ class MenuServiceTests(unittest.TestCase):
         keyboard = MenuService(make_settings()).capacity_keyboard(phone_available=False)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
-        self.assertEqual(callbacks[:3], ["capacity:referral", "billing:stars_menu", "billing:card_menu"])
+        self.assertEqual(callbacks[:3], ["capacity:referral", "profile:start", "capacity:groups"])
+        self.assertEqual(callbacks[3:5], ["billing:stars_menu", "billing:card_menu"])
         self.assertIn("billing:stars_menu", callbacks)
         self.assertIn("billing:card_menu", callbacks)
         self.assertIn("capacity:groups", callbacks)

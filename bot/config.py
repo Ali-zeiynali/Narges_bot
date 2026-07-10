@@ -69,7 +69,7 @@ class Settings:
     admin_panel_host: str = "127.0.0.1"
     admin_panel_port: int = 8080
     reengagement_enabled: bool = True
-    reengagement_after_hours: int = 30
+    reengagement_after_hours: int = 4
     reengagement_message: str = "دلم برات تنگ شدهه🥺 کجایی"
     reengagement_check_seconds: int = 600
     webhook_base_url: str | None = None
@@ -127,7 +127,7 @@ def bool_env(name: str, default: bool = False) -> bool:
 def load_settings() -> Settings:
     load_dotenv()
     proxy = os.getenv("TELEGRAM_PROXY", "").strip()
-    groq_proxy = os.getenv("GROQ_PROXY", "").strip() or proxy
+    groq_proxy = os.getenv("GROQ_PROXY", "").strip()
     default_name_map = {
         "ali": "علی",
         "mohammad": "محمد",
@@ -175,7 +175,7 @@ def load_settings() -> Settings:
         admin_panel_host=os.getenv("ADMIN_PANEL_HOST", "127.0.0.1").strip(),
         admin_panel_port=int_env("ADMIN_PANEL_PORT", 8080, 1, 65535),
         reengagement_enabled=bool_env("REENGAGEMENT_ENABLED", True),
-        reengagement_after_hours=int_env("REENGAGEMENT_AFTER_HOURS", 30, 1, 720),
+        reengagement_after_hours=int_env("REENGAGEMENT_AFTER_HOURS", 4, 1, 720),
         reengagement_message=os.getenv("REENGAGEMENT_MESSAGE", "دلم برات تنگ شدهه🥺 کجایی").strip() or "دلم برات تنگ شدهه🥺 کجایی",
         reengagement_check_seconds=int_env("REENGAGEMENT_CHECK_SECONDS", 600, 60, 86400),
         webhook_base_url=(

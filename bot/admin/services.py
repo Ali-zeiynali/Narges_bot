@@ -172,7 +172,10 @@ class AdminDataService:
             tokens_today = session.scalar(select(func.coalesce(func.sum(UsageLogORM.total_tokens), 0)).where(UsageLogORM.created_at >= today)) or 0
             recent_messages = session.scalars(
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.role == "assistant")
+                .where(
+                    ConversationMessageORM.role == "user",
+                    ~ConversationMessageORM.message_type.like("group_%"),
+                )
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(10)
             ).all()
@@ -309,6 +312,7 @@ class AdminDataService:
             row = session.get(ConversationMessageORM, message_id)
             user_names = self._user_name_map(session, [row.user_id] if row else [])
             related_media = self._media_by_message(session, [row]).get(row.id, []) if row else []
+            group = session.get(GroupChatORM, row.chat_id) if row and row.chat_id is not None else None
         payload = {}
         if row and row.ai_request_payload_json:
             try:
@@ -326,7 +330,7 @@ class AdminDataService:
                 "model": row.model,
                 "note": "This older row had no stored ai_request_payload; showing reconstructed audit metadata.",
             }
-        return {"message": row, "ai_request": payload, "user_names": user_names, "related_media": related_media}
+        return {"message": row, "ai_request": payload, "user_names": user_names, "related_media": related_media, "group": group}
 
     def messages(self, user_id: int | None = None, limit: int = 300) -> dict[str, Any]:
         limit = max(20, min(limit, 1000))
@@ -338,12 +342,13 @@ class AdminDataService:
             )
             if user_id is not None:
                 statement = statement.where(ConversationMessageORM.user_id == user_id)
-            else:
-                statement = statement.where(~ConversationMessageORM.message_type.like("group_%"))
             rows = session.scalars(statement).all()
             user_names = self._user_name_map(session, [row.user_id for row in rows])
             media_by_message = self._media_by_message(session, rows)
-        return {"messages": rows, "user_id": user_id, "limit": limit, "user_names": user_names, "media_by_message": media_by_message}
+            chat_ids = [row.chat_id for row in rows if row.chat_id is not None and row.message_type.startswith("group_")]
+            groups = list(session.scalars(select(GroupChatORM).where(GroupChatORM.chat_id.in_(chat_ids))).all()) if chat_ids else []
+            group_names = self._group_name_map(groups)
+        return {"messages": rows, "user_id": user_id, "limit": limit, "user_names": user_names, "media_by_message": media_by_message, "group_names": group_names}
 
     def group_messages(self, chat_id: int | None = None, section: str = "all", limit: int = 300) -> dict[str, Any]:
         limit = max(20, min(limit, 1000))
@@ -381,7 +386,10 @@ class AdminDataService:
             rows = session.scalars(message_statement).all()
             timeline_statement = (
                 select(ConversationMessageORM)
-                .where(ConversationMessageORM.message_type.like("group_%"))
+                .where(
+                    ConversationMessageORM.message_type.like("group_%"),
+                    ConversationMessageORM.message_type != "group_observed",
+                )
                 .order_by(desc(ConversationMessageORM.id))
                 .limit(limit)
             )
@@ -1420,10 +1428,15 @@ class AdminDataService:
             "user_id": row.user_id,
             "user_name": (user_names or {}).get(row.user_id, f"کاربر {row.user_id}"),
             "role": row.role,
+            "message_type": row.message_type,
+            "chat_id": row.chat_id,
             "text": row.text,
             "provider": row.provider,
             "model": row.model,
             "total_tokens": row.total_tokens,
+            "purpose": row.purpose,
+            "latency_ms": row.latency_ms,
+            "metadata": self._json_object(row.metadata_json),
             "created_at": row.created_at,
         }
 
