@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -13,8 +12,7 @@ from bot.storage.database import Database
 from bot.services.ai_provider_client import AIProviderClient
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
-from bot.services.usage_service import UsageService
-from bot.storage.orm import ConversationMessageORM, ConversationSummaryORM, UserORM
+from bot.storage.orm import ConversationMessageORM, UserORM
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +25,6 @@ class ReengagementService:
         self.ai_provider_client = ai_provider_client
         self.memory_service = memory_service
         self.history_service = HistoryService(database)
-        self.usage_service = UsageService(database, settings.groq_model)
 
     def due_users(self) -> list[int]:
         if not self.settings.reengagement_enabled:
@@ -62,52 +59,10 @@ class ReengagementService:
         return due
 
     def generate_message(self, user_id: int) -> str:
-        recent = self.history_service.recent_turns(user_id, limit=5)
-        memories = self.memory_service.list_active(user_id, limit=6)
-        with self.database.orm.session() as session:
-            summary_row = session.get(ConversationSummaryORM, user_id)
-        payload = {
-            "recent_messages": [{"role": item.get("role"), "text": str(item.get("text") or "")[:300]} for item in recent[-5:]],
-            "conversation_summary": str(summary_row.summary if summary_row else "")[:500],
-            "memories": [str(memory.summary)[:220] for memory in memories[:6]],
-        }
-        schema = {
-            "type": "object",
-            "properties": {"message": {"type": "string", "minLength": 1, "maxLength": 500}},
-            "required": ["message"],
-            "additionalProperties": False,
-        }
-        raw, usage, provider, model = self.ai_provider_client.complete_structured(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "تو نرگس هستی؛ یک دختر صمیمی، کوتاه‌گو و طبیعی. این فقط یک پیگیری چهار ساعت بعد از گفت‌وگوست. "
-                        "اگر موضوع باز یا حال مهمی در پیام‌های اخیر هست، مشخص و طبیعی پیگیری کن. اگر خبری نیست، یک سلام کوتاه و غیرتکراری بفرست. "
-                        "به حافظه یا سیستم اشاره نکن، ادعای خبری که نداری نکن، فشار عاطفی نیاور و فقط یک پیام کوتاه بنویس. فقط JSON بده."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)},
-            ],
-            schema,
-            "reengagement",
-            max_completion_tokens=140,
-            temperature=0.65,
-        )
-        try:
-            message = str(json.loads(raw).get("message") or "").strip()
-        except (json.JSONDecodeError, AttributeError):
-            message = raw.strip()
-        self.usage_service.log(
-            user_id,
-            user_id,
-            int(usage.get("total_tokens") or 0),
-            usage,
-            provider=provider,
-            model=model,
-            purpose="reengagement",
-        )
-        return message[:500]
+        # Re-engagement must never expose a provider's JSON envelope and does
+        # not justify another model call. The admin-configured text is stable,
+        # predictable and token-free.
+        return str(self.settings.reengagement_message or "").strip()[:500]
 
     def mark_sent(self, user_id: int) -> None:
         with self.database.orm.session() as session:

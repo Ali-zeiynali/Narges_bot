@@ -39,7 +39,13 @@ class DebugService:
 
     def trace(self, event: str, payload: dict[str, Any], user_id: int | None = None) -> None:
         text = json.dumps(payload, ensure_ascii=False, default=str)
-        logger.info("trace_event event=%s user_id=%s total_ms=%s", event, user_id, payload.get("total_ms"))
+        logger.info(
+            "trace_event event=%s user_id=%s total_ms=%s payload=%s",
+            event,
+            user_id,
+            payload.get("total_ms"),
+            text[:6000],
+        )
         self._insert(event, text, user_id)
 
     def _insert(self, event: str, text: str, user_id: int | None = None) -> None:

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import base64
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Integer, desc, func, select
+from sqlalchemy import Boolean, DateTime, Integer, LargeBinary, desc, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from bot.config import Settings
@@ -595,6 +596,9 @@ class AdminDataService:
         }
 
     def review_invoice(self, invoice_id: str, approve: bool, reviewer_id: int | None = None) -> tuple[bool, Any, str]:
+        current = self.billing_service.get_invoice(invoice_id)
+        if approve and current and current.payment_method == "card" and not current.payment_id:
+            return False, current, "receipt is required before approval"
         result = self.billing_service.review_card_invoice(invoice_id, approve=approve, reviewer_id=reviewer_id)
         if result.accepted and result.newly_paid and result.invoice:
             self.quota_service.add_extra_credit(result.invoice.user_id, result.invoice.message_quota, reason=f"card:{result.invoice.invoice_id}")
@@ -618,7 +622,7 @@ class AdminDataService:
                     for row in rows
                 ]
         return {
-            "format": "narges-admin-backup-v1",
+            "format": "narges-admin-backup-v2",
             "created_at": utc_now().isoformat(),
             "tables": exported,
         }
@@ -1069,6 +1073,8 @@ class AdminDataService:
     def _json_value(self, value: Any) -> Any:
         if isinstance(value, datetime):
             return value.isoformat()
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return {"$binary_base64": base64.b64encode(bytes(value)).decode("ascii")}
         return value
 
     def _db_value(self, column, value: Any) -> Any:
@@ -1081,6 +1087,11 @@ class AdminDataService:
                 return value
         if isinstance(column.type, Boolean):
             return bool(value)
+        if isinstance(column.type, LargeBinary) and isinstance(value, dict) and "$binary_base64" in value:
+            try:
+                return base64.b64decode(str(value["$binary_base64"]), validate=True)
+            except (ValueError, TypeError):
+                raise ValueError(f"binary backup value for {column.name} is invalid")
         return value
 
     def _primary_key_exists(self, session, table, pk_columns, cleaned: dict[str, Any]) -> bool:
@@ -1423,6 +1434,7 @@ class AdminDataService:
         }
 
     def _message_row(self, row: ConversationMessageORM, user_names: dict[int, str] | None = None) -> dict[str, Any]:
+        metadata = self._loads_json(row.ai_request_payload_json)
         return {
             "id": row.id,
             "user_id": row.user_id,
@@ -1434,9 +1446,9 @@ class AdminDataService:
             "provider": row.provider,
             "model": row.model,
             "total_tokens": row.total_tokens,
-            "purpose": row.purpose,
-            "latency_ms": row.latency_ms,
-            "metadata": self._json_object(row.metadata_json),
+            "purpose": metadata.get("purpose") or row.message_type,
+            "latency_ms": metadata.get("latency_ms"),
+            "metadata": metadata,
             "created_at": row.created_at,
         }
 
@@ -1459,6 +1471,9 @@ class AdminDataService:
             "prompt_tokens": row.prompt_tokens,
             "completion_tokens": row.completion_tokens,
             "total_tokens": row.total_tokens,
+            "purpose": row.purpose,
+            "latency_ms": row.latency_ms,
+            "metadata": self._loads_json(row.metadata_json),
             "created_at": row.created_at,
         }
 

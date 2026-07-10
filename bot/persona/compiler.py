@@ -38,11 +38,13 @@ class PersonaCompiler:
         current_message_datetime: str | None = None,
         user_gender: str | None = None,
     ) -> CompiledPersona:
+        conversation_state = self._conversation_state(context)
+        sexual_gender = user_gender if conversation_state == "sexual" and user_gender in {"male", "female"} else None
         cache_version = f"{self.version}:{self._fingerprint}"
-        section_name = "static:base"
+        section_name = f"static:{conversation_state}:{sexual_gender or 'base'}"
         static_prompt = self.cache.get(cache_version, section_name)
         if static_prompt is None:
-            static_prompt = self._build_static_prompt()
+            static_prompt = self._build_static_prompt(sexual_gender)
             self.cache.set(cache_version, section_name, static_prompt)
 
         runtime_context = self._runtime_context(
@@ -61,14 +63,16 @@ class PersonaCompiler:
             )
         else:
             system_prompt = static_prompt
-        conversation_state = self._conversation_state(context)
-        return CompiledPersona(system_prompt=system_prompt, sections=("core_base", f"state_{conversation_state}"))
+        sections = ("core_base", f"state_{conversation_state}")
+        if sexual_gender:
+            sections += (f"core_{sexual_gender}_sex",)
+        return CompiledPersona(system_prompt=system_prompt, sections=sections)
 
-    def _build_static_prompt(self) -> str:
+    def _build_static_prompt(self, sexual_gender: str | None = None) -> str:
         try:
-            persona = build_persona_prompt(include_core=True)
+            persona = build_persona_prompt(include_core=True, gender=sexual_gender)
         except TypeError:
-            persona = build_persona_prompt(include_base=True)
+            persona = build_persona_prompt(include_base=True, gender=sexual_gender)
         return f"{STABLE_SYSTEM_PREFIX}\n\n{persona}\n\n{ENGINE_RULES}".strip()
 
     def _runtime_context(

@@ -318,6 +318,13 @@ class AIProviderClient:
         self._reload_providers_if_changed()
         last_error: ProviderRequestError | None = None
         candidates = self._candidate_providers(forced_provider)
+        logger.info(
+            "AI_PURPOSE_START purpose=%s forced_provider=%s candidates=%s input_messages=%s",
+            purpose,
+            forced_provider,
+            [provider.id for provider in candidates if provider.enabled],
+            len(messages),
+        )
         for provider in candidates:
             if not provider.enabled or self._provider_is_temporarily_disabled(provider.id):
                 continue
@@ -331,6 +338,14 @@ class AIProviderClient:
                 if self._key_is_temporarily_disabled(provider.id, key_index):
                     continue
                 attempted_keys += 1
+                logger.info(
+                    "AI_ATTEMPT_START purpose=%s provider=%s key_index=%s attempt=%s elapsed_ms=%s",
+                    purpose,
+                    provider.id,
+                    key_index,
+                    attempted_keys,
+                    int((time.perf_counter() - overall_started) * 1000),
+                )
                 if provider.health_check and not self._provider_is_healthy(provider, api_key):
                     error = ProviderRequestError(provider.name, "health check failed", retryable=True, key_scoped=True)
                     self._record_key_failure(provider.id, key_index, error)
@@ -1025,8 +1040,15 @@ class AIProviderClient:
     def _log_ai_request(self, purpose: str, provider: ProviderConfig, key_index: int, payload: dict[str, Any]) -> None:
         messages = payload.get("messages")
         input_chars = 0
+        role_chars: dict[str, int] = {}
         if isinstance(messages, list):
-            input_chars = sum(len(str(item.get("content") or "")) for item in messages if isinstance(item, dict))
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                chars = len(str(item.get("content") or ""))
+                input_chars += chars
+                role = str(item.get("role") or "unknown")
+                role_chars[role] = role_chars.get(role, 0) + chars
         else:
             input_chars = len(str(payload.get("input") or "")) + len(str(payload.get("system_instruction") or ""))
         logger.info(
@@ -1038,6 +1060,7 @@ class AIProviderClient:
                     "model": provider.model,
                     "key_index": key_index,
                     "input_chars": input_chars,
+                    "input_chars_by_role": role_chars,
                     "max_output_tokens": payload.get(provider.token_parameter)
                     or (payload.get("generation_config") or {}).get("max_output_tokens"),
                     "structured": "response_format" in payload,

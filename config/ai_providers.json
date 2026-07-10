@@ -107,7 +107,6 @@
     {
       "name": "groq",
       "id": "groq-qwen",
-      "priority": 10,
       "type": "openai_compatible",
       "enabled": true,
       "base_url": "https://api.groq.com/openai/v1",
@@ -126,7 +125,6 @@
     {
       "name": "groq",
       "id": "groq-llama",
-      "priority": 20,
       "type": "openai_compatible",
       "enabled": false,
       "base_url": "https://api.groq.com/openai/v1",

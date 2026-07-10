@@ -19,6 +19,7 @@ class ReengagementServiceTests(unittest.TestCase):
             reengagement_enabled=True,
             reengagement_after_hours=4,
             groq_model="test-model",
+            reengagement_message="follow up",
         )
         self.service = ReengagementService(self.database, self.settings, object(), object())
 
@@ -44,6 +45,9 @@ class ReengagementServiceTests(unittest.TestCase):
         HistoryService(self.database).add(2, "user", "group", chat_id=-100, created_at=old, message_type="group_mention")
 
         self.assertEqual(self.service.due_users(), [])
+
+    def test_message_is_plain_configured_text_without_model_call(self) -> None:
+        self.assertEqual(self.service.generate_message(1), "follow up")
 
 
 if __name__ == "__main__":

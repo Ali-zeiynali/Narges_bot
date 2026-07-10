@@ -22,6 +22,14 @@ SUMMARY_TOKEN_THRESHOLD = 2200
 THREAD_LOOKBACK_MESSAGES = 6
 THREAD_MAX_CHARS = 720
 
+SEXUAL_TRIGGER_WORDS = {
+    "سکس", "سکسی", "جنسی", "شهوت", "تحریک", "حشری", "هورنی", "پورن", "نود",
+    "لخت", "برهنه", "بوس", "ببوس", "بغل", "لمس", "بمال", "لیس", "ساک", "ارضا", "دخول", "بکن",
+    "بدن", "لب", "گردن", "ران", "ممه", "سینه", "پستان", "کص", "کس", "کون", "کیر", "واژن", "آلت", "دیک", "خیس",
+    "رابطه جنسی", "معاشقه", "sex", "sexual", "sexy", "nsfw", "erotic", "kiss",
+    "horny", "nude", "naked", "porn", "fuck", "dick", "pussy", "boob", "breast",
+}
+
 
 class ContextBuilder:
     def __init__(self, database: Database, history_service: HistoryService) -> None:
@@ -93,7 +101,9 @@ class ContextBuilder:
                 row = ConversationContextStateORM(user_id=user_id, updated_at=now)
                 session.add(row)
             familiarity = min(1.0, float(row.familiarity_score or 0) + 0.012)
-            row.mode = "normal"
+            detected_mode = "sexual" if self._has_sexual_trigger(user_text) else "normal"
+            model_mode = conversation_state if conversation_state in {"normal", "sexual"} else "normal"
+            row.mode = "sexual" if detected_mode == "sexual" or model_mode == "sexual" else "normal"
             row.topic = self._topic_hint(user_text)
             row.recent_intent = intent
             row.intent_confidence = 0.75
@@ -272,28 +282,31 @@ class ContextBuilder:
         return text in values or (len(text) <= 18 and text.startswith(("و ", "پس ", "یعنی ", "خب ")))
 
     def _conversation_mode(self, text: str) -> str:
+        return "sexual" if self._has_sexual_trigger(text) else "normal"
+
+    def _has_sexual_trigger(self, text: str) -> bool:
         normalized = self._normalize(text)
         if not normalized:
-            return "normal"
-        sexual_terms = (
-            "sexual",
-            "sex",
-            "kiss",
-            "touch",
-            "سکس",
-            "جنسی",
-            "ببوس",
-            "بوس",
-            "لمس",
-            "بدنت",
-            "بدنم",
-        )
-        if not any(term in normalized for term in sexual_terms):
-            return "normal"
-        explicit_terms = ("sexual", "sex", "kiss", "touch", "سکس", "جنسی", "ببوس", "بوس", "لمس")
-        if "عکس" in normalized and not any(term in normalized for term in explicit_terms):
-            return "normal"
-        return "sexual"
+            return False
+        compact = normalized.replace(" ", "")
+        tokens = set(re.findall(r"[\wآ-ی]+", normalized, flags=re.UNICODE))
+        allowed_suffixes = {"م", "ت", "ش", "مت", "مش", "تش", "مون", "تون", "شون", "ها", "هام", "هات", "هاش"}
+        for trigger in SEXUAL_TRIGGER_WORDS:
+            word = self._normalize(trigger)
+            if not word:
+                continue
+            compact_word = word.replace(" ", "")
+            # These very short words must be whole tokens so that ordinary
+            # words such as «عکس» do not become sexual accidentally.
+            if compact_word in {"کس", "کص"}:
+                if compact_word in tokens:
+                    return True
+            elif " " in word:
+                if word in normalized or compact_word in compact:
+                    return True
+            elif word in tokens or any(token.startswith(word) and token[len(word):] in allowed_suffixes for token in tokens):
+                return True
+        return False
 
     def _next_relationship_stage(self, current: str | None, familiarity_score: float | None) -> str:
         score = float(familiarity_score or 0)

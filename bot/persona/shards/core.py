@@ -210,17 +210,19 @@ def build_persona_prompt(
 ) -> str:
     parts: list[str] = []
     if include_base:
-        parts.append("\n\n".join(CORE_BASE))
+        parts.append(CORE_BASE.strip())
     if gender == "male":
-        parts.append("\n\n".join(CORE_MALE_SEX))
+        parts.append(CORE_MALE_SEX.strip())
     elif gender == "female":
-        parts.append("\n\n".join(CORE_FEMALE_SEX))
+        parts.append(CORE_FEMALE_SEX.strip())
     elif gender == "adult":
-        parts.append("\n\n".join(CORE_ADULT_SEX))
+        # There is no separate unknown-gender module. The runtime state still
+        # tells the model that this turn is sexual, without guessing anatomy.
+        pass
     return "\n\n".join(parts)
 
 
 # سه متغیر آماده برای استفادهٔ سریع
-CORE_GENERAL = "\n\n".join(CORE_BASE)
+CORE_GENERAL = CORE_BASE.strip()
 CORE_FOR_MALES = build_persona_prompt(gender="male")
 CORE_FOR_FEMALES = build_persona_prompt(gender="female")

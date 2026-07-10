@@ -37,6 +37,11 @@ SEXUAL_OR_PROFANITY_HINTS = {
     "فحش",
 }
 
+PROFANITY_TERMS = {
+    "fuck", "shit", "bitch", "asshole", "فحش", "احمق", "کثافت", "لعنتی", "جنده",
+    "کسکش", "کصکش", "کسخل", "کصخل", "بی ناموس", "بیناموس", "گه", "گوه",
+}
+
 
 @dataclass(frozen=True)
 class BlockStatus:
@@ -131,12 +136,28 @@ class ModerationService:
         normalized = self._normalize_security_text(text)
         if not normalized:
             return None
-        if self._has_only_sexual_or_profanity_signal(normalized):
+        # Insults are persona input, never a moderation offence. This guard is
+        # intentionally before prompt-injection detection so abusive wording
+        # cannot accumulate warnings through a coincidental keyword match.
+        if self.is_profanity_message(normalized):
             return None
-        for pattern in PROMPT_INJECTION_PATTERNS:
+        strong_patterns = (
+            PROMPT_INJECTION_PATTERNS[0],
+            PROMPT_INJECTION_PATTERNS[2],
+            PROMPT_INJECTION_PATTERNS[4],
+            PROMPT_INJECTION_PATTERNS[5],
+        )
+        for pattern in strong_patterns:
             if re.search(pattern, normalized, flags=re.IGNORECASE | re.DOTALL):
                 return "prompt/role injection attempt"
         return None
+
+    def is_profanity_message(self, text: str | None) -> bool:
+        normalized = self._normalize_security_text(text)
+        if not normalized:
+            return False
+        tokens = set(re.findall(r"[\wآ-ی]+", normalized, flags=re.UNICODE))
+        return any(term in normalized if " " in term else term in tokens for term in PROFANITY_TERMS)
 
     def delete_warning(self, user_id: int, warning_id: int) -> bool:
         with self.database.orm.session() as session:

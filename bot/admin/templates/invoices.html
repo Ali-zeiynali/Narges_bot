@@ -42,11 +42,13 @@
       <td>{{ i.created_at|dt }}</td>
       <td>{{ i.updated_at|dt }}</td>
       <td>
-        {% if i.status == "pending" and i.plan_id.startswith("card_") %}
+        {% if i.status == "pending" and i.plan_id.startswith("card_") and i.payment_id %}
         <div class="actions">
           <form method="post" action="/admin/invoices/{{ i.invoice_id }}/approve" onsubmit="return confirm('این پرداخت تایید شود؟');"><button>تایید</button></form>
           <form method="post" action="/admin/invoices/{{ i.invoice_id }}/reject" onsubmit="return confirm('این پرداخت رد شود؟');"><button class="bad">رد</button></form>
         </div>
+        {% elif i.status == "pending" and i.plan_id.startswith("card_") %}
+          منتظر رسید
         {% else %}
           -
         {% endif %}

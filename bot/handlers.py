@@ -133,8 +133,7 @@ def register_handlers(
         lines = [
             "✨ افزایش ظرفیت",
             "",
-            "راه‌های رایگان را از ردیف اول انتخاب کن:",
-            "🎁 دعوت دوستان · 👤 تکمیل پروفایل · 👥 افزودن به گروه",
+            "راه‌های رایگان را از دکمه‌های زیر انتخاب کن:",
             "",
             "⭐ افزایش با Stars",
             "💳 خرید پیام",
@@ -165,10 +164,12 @@ def register_handlers(
 
     def looks_like_receipt_message(text: str) -> bool:
         lowered = (text or "").strip().lower()
-        if any(word in lowered for word in ("رسید", "پیگیری", "واریز", "کارت به کارت", "پرداخت", "receipt", "paid")):
-            return True
         digits = "".join(char for char in lowered if char.isdigit())
-        return len(digits) >= 6
+        has_receipt_word = any(
+            word in lowered
+            for word in ("رسید", "پیگیری", "واریز", "کارت به کارت", "پرداخت", "receipt", "paid")
+        )
+        return len(digits) >= 6 or (has_receipt_word and len(digits) >= 4)
 
     def jsonable(value):
         if isinstance(value, BaseModel):
@@ -688,6 +689,21 @@ def register_handlers(
             else:
                 await message.answer(text)
             return None
+        except Exception as exc:
+            logger.exception(
+                "chat_turn_unhandled_error user_id=%s chat_id=%s message_id=%s",
+                message.from_user.id,
+                message.chat.id,
+                message.message_id,
+            )
+            trace.add(
+                "chat_turn_unhandled_error",
+                0,
+                error=f"{exc.__class__.__name__}: {str(exc)[:300]}",
+            )
+            with suppress(Exception):
+                await message.answer("الان جوابم آماده نشد؛ دوباره بفرست.")
+            return None
         finally:
             stop_typing.set()
             with suppress(asyncio.CancelledError):
@@ -764,7 +780,16 @@ def register_handlers(
                         )
                 else:
                     with trace.step("send_text", index=index):
-                        sent_message_id = await send_text_with_retries(message, item.text, bot, trace=trace)
+                        reply_markup = None
+                        if index == 0 and not is_group_chat_type(getattr(message.chat, "type", None)):
+                            reply_markup = menu_service.reply_menu(can_debug(message.from_user.id))
+                        sent_message_id = await send_text_with_retries(
+                            message,
+                            item.text,
+                            bot,
+                            trace=trace,
+                            reply_markup=reply_markup,
+                        )
                     history_service.set_telegram_message_id(getattr(result, "assistant_message_id", None), sent_message_id)
             if profile and not profile.gender:
                 today = message.date.astimezone(UTC).date().isoformat()
@@ -795,6 +820,7 @@ def register_handlers(
         bot: Bot | None = None,
         attempts: int = 5,
         trace: RequestTrace | None = None,
+        reply_markup=None,
     ) -> int | None:
         last_error: Exception | None = None
         should_reply = is_group_chat_type(getattr(message.chat, "type", None))
@@ -816,7 +842,7 @@ def register_handlers(
                             allow_sending_without_reply=True,
                         )
                 else:
-                    sent = await message.answer(text)
+                    sent = await message.answer(text, reply_markup=reply_markup)
                 if trace:
                     trace.add(
                         "send_text_attempt",

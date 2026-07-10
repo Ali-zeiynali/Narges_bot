@@ -404,6 +404,8 @@ class ChatService:
             return self.ai_provider_client.complete(messages)
 
     def _should_apply_model_warning(self, user_text: str, reason: str | None) -> bool:
+        if self.moderation_service.is_profanity_message(user_text):
+            return False
         combined = f"{user_text or ''} {reason or ''}".lower()
         sexual_terms = (
             "sex",

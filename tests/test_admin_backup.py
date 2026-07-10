@@ -11,6 +11,7 @@ from bot.config import Settings
 from bot.services.history_service import HistoryService
 from bot.storage.database import Database
 from bot.storage.orm import ConversationMessageORM, GroupChatORM, MediaFileORM, UserORM
+from bot.services.billing_service import BillingService
 
 
 def make_settings() -> Settings:
@@ -77,6 +78,74 @@ class AdminBackupTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertGreaterEqual(report["inserted"], 2)
         self.assertGreaterEqual(report["skipped"], 1)
+
+    def test_backup_round_trips_media_binary_and_dashboard_messages(self) -> None:
+        with self.source.orm.session() as session:
+            session.add(UserORM(telegram_id=11, username="photo", first_name="Photo"))
+            session.add(
+                MediaFileORM(
+                    user_id=11,
+                    telegram_file_id="file-id",
+                    media_kind="image",
+                    mime_type="image/jpeg",
+                    storage_path="",
+                    file_bytes=b"\x00\x01photo-bytes\xff",
+                    file_size=14,
+                )
+            )
+        HistoryService(self.source).add(11, "user", "dashboard message")
+
+        source_service = AdminDataService(self.source, make_settings())
+        target_service = AdminDataService(self.target, make_settings())
+        payload = source_service.export_backup()
+        json.dumps(payload, ensure_ascii=False)
+        target_service.import_backup(payload)
+
+        with self.target.orm.session() as session:
+            media = session.scalar(select(MediaFileORM).where(MediaFileORM.user_id == 11))
+        self.assertEqual(media.file_bytes, b"\x00\x01photo-bytes\xff")
+        snapshot = source_service.dashboard()
+        self.assertEqual(snapshot.recent_messages[0]["text"], "dashboard message")
+
+    def test_admin_invoice_receipt_is_visible_and_approval_is_idempotent(self) -> None:
+        with self.source.orm.session() as session:
+            session.add(UserORM(telegram_id=21, username="payer", first_name="Payer"))
+            media = MediaFileORM(
+                user_id=21,
+                telegram_file_id="receipt-file",
+                media_kind="image",
+                mime_type="image/jpeg",
+                storage_path="",
+                file_bytes=b"receipt",
+                file_size=7,
+            )
+            session.add(media)
+            session.flush()
+            media_id = media.id
+        billing = BillingService(self.source)
+        invoice = billing.create_card_invoice(21, "card_100")
+        billing.attach_card_receipt(21, f"photo:{media_id}:receipt-file")
+        service = AdminDataService(self.source, make_settings())
+
+        invoice_view = service.invoices()
+        self.assertEqual(invoice_view["receipt_media_by_invoice"][invoice.invoice_id]["id"], media_id)
+        first = service.review_invoice(invoice.invoice_id, approve=True)
+        second = service.review_invoice(invoice.invoice_id, approve=True)
+
+        self.assertTrue(first[0])
+        self.assertTrue(second[0])
+        self.assertEqual(service.quota_service.account_quota(21).extra_remaining, 100 * 5)
+
+    def test_admin_cannot_approve_card_invoice_without_receipt(self) -> None:
+        billing = BillingService(self.source)
+        invoice = billing.create_card_invoice(22, "card_100")
+        service = AdminDataService(self.source, make_settings())
+
+        accepted, current, reason = service.review_invoice(invoice.invoice_id, approve=True)
+
+        self.assertFalse(accepted)
+        self.assertEqual(current.status.value, "pending")
+        self.assertIn("receipt", reason)
 
     def test_users_sort_handles_mixed_naive_and_aware_datetimes(self) -> None:
         database = Database(str(Path(self.tmp.name) / "mixed.sqlite3"))

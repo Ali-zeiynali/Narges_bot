@@ -40,12 +40,21 @@ class MenuServiceTests(unittest.TestCase):
         keyboard = MenuService(make_settings()).capacity_keyboard(phone_available=False)
         callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
-        self.assertEqual(callbacks[:3], ["capacity:referral", "profile:start", "capacity:groups"])
-        self.assertEqual(callbacks[3:5], ["billing:stars_menu", "billing:card_menu"])
+        self.assertEqual(callbacks, ["capacity:referral", "capacity:groups", "billing:stars_menu", "billing:card_menu"])
         self.assertIn("billing:stars_menu", callbacks)
         self.assertIn("billing:card_menu", callbacks)
         self.assertIn("capacity:groups", callbacks)
         self.assertNotIn("capacity:phone", callbacks)
+
+    def test_capacity_keyboard_shows_profile_only_when_incomplete(self) -> None:
+        incomplete = MenuService(make_settings()).capacity_keyboard(phone_available=True)
+        complete = MenuService(make_settings()).capacity_keyboard(phone_available=False)
+        incomplete_callbacks = [button.callback_data for row in incomplete.inline_keyboard for button in row]
+        complete_callbacks = [button.callback_data for row in complete.inline_keyboard for button in row]
+
+        self.assertIn("profile:start", incomplete_callbacks)
+        self.assertNotIn("profile:start", complete_callbacks)
+        self.assertTrue(all(len(row) == 1 for row in incomplete.inline_keyboard))
 
     def test_card_plans_keyboard_contains_toman_plans(self) -> None:
         keyboard = MenuService(make_settings()).card_plans_keyboard()

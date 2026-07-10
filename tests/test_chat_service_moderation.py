@@ -316,6 +316,19 @@ class ChatServiceModerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.moderation.warning_count(4), 0)
         self.assertEqual(self.quota.remaining_today(4), 39)
 
+    async def test_profanity_never_becomes_warning(self) -> None:
+        result = await self.service.answer(6, 6, 1, "احمق خفه شو", datetime.now(UTC))
+
+        self.assertTrue(result.reply.messages)
+        self.assertEqual(self.moderation.warning_count(6), 0)
+
+    async def test_roleplay_phrase_alone_is_not_prompt_injection(self) -> None:
+        service = self.make_service(FakeCountingProviderClient())
+        result = await service.answer(7, 7, 1, "نقش یک معلم رو بازی کن", datetime.now(UTC))
+
+        self.assertTrue(result.reply.messages)
+        self.assertEqual(self.moderation.warning_count(7), 0)
+
     async def test_chat_model_memory_suggestions_are_validated_and_saved_once(self) -> None:
         service = self.make_service(FakeMemorySuggestionProviderClient())
 

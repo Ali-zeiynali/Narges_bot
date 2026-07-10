@@ -53,7 +53,8 @@ class MenuService:
     def reply_menu(self, debug: bool = False) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton(text="👤 پروفایل"), KeyboardButton(text="⚡ افزایش ظرفیت")],
-            [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="🏆 لیدربرد"), KeyboardButton(text="💬 راهنما")],
+            [KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="🏆 لیدربرد")],
+            [KeyboardButton(text="💬 راهنما")],
         ]
         if debug:
             keyboard[1].append(KeyboardButton(text="🧠 حافظه‌ها"))
@@ -91,14 +92,13 @@ class MenuService:
 
     def capacity_keyboard(self, phone_available: bool = True) -> InlineKeyboardMarkup:
         rows = [
-            [
-                InlineKeyboardButton(text="🎁 دعوت · رایگان", callback_data="capacity:referral"),
-                InlineKeyboardButton(text="👤 پروفایل · رایگان", callback_data="profile:start"),
-                InlineKeyboardButton(text="👥 گروه · رایگان", callback_data="capacity:groups"),
-            ],
+            [InlineKeyboardButton(text="🎁 دعوت دوستان (رایگان)", callback_data="capacity:referral")],
+            [InlineKeyboardButton(text="👥 افزودن به گروه (رایگان)", callback_data="capacity:groups")],
             [InlineKeyboardButton(text="⭐ افزایش با Stars", callback_data="billing:stars_menu")],
             [InlineKeyboardButton(text="💳 خرید پیام", callback_data="billing:card_menu")],
         ]
+        if phone_available:
+            rows.insert(1, [InlineKeyboardButton(text="👤 تکمیل پروفایل (رایگان)", callback_data="profile:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def profile_completion_keyboard(self) -> InlineKeyboardMarkup:

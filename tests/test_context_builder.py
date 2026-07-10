@@ -8,6 +8,7 @@ from bot.services.context_builder import ContextBuilder
 from bot.services.history_service import HistoryService
 from bot.services.memory_service import MemoryService
 from bot.storage.database import Database
+from bot.storage.orm import ConversationContextStateORM
 
 
 class ContextBuilderTests(unittest.TestCase):
@@ -84,6 +85,21 @@ class ContextBuilderTests(unittest.TestCase):
         context = self.builder.build(1, "next message", [])
 
         self.assertEqual(context.for_prompt()["state"]["mode"], "normal")
+        with self.database.orm.session() as session:
+            self.assertEqual(session.get(ConversationContextStateORM, 1).mode, "sexual")
+
+    def test_model_normal_state_is_persisted_when_message_has_no_sexual_word(self) -> None:
+        self.builder.observe_turn(
+            user_id=2,
+            user_text="سلام خوبی",
+            assistant_text="سلام",
+            assistant_intent="casual",
+            conversation_state="normal",
+            message_datetime=datetime.now(UTC),
+        )
+
+        with self.database.orm.session() as session:
+            self.assertEqual(session.get(ConversationContextStateORM, 2).mode, "normal")
 
     def test_sexual_keyword_forces_sexual_state_for_current_message(self) -> None:
         context = self.builder.build(1, "sexual topic please", [])
